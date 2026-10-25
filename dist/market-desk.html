@@ -1757,6 +1757,19 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     for (let i = 0; i < paths; i++) { let x = 0; for (let k = 0; k < n; k++) { x += sd * C.gauss(r); if (x >= up) { hitT++; break; } if (x <= dn) { hitS++; break; } } }
     return { pTarget: hitT / paths, pStop: hitS / paths, pNeither: (paths - hitT - hitS) / paths, minutes: n, rr: Math.abs(t - e) / Math.abs(e - s) };
   }
+  /* Where an open up/down call stands: the move since it was made, that move in daily-volatility units for the bars
+     elapsed (positive = in the call's favour), and the chance it finishes beyond its flat band on the called side,
+     from a driftless walk over the bars left. Geometry only: it knows nothing about the reasons behind the call. */
+  function callStanding({ direction, p0, price, bandPct = 1, dailyVolPct, barsElapsed, barsLeft }) {
+    const a = Number(p0), b = Number(price), v = Number(dailyVolPct) / 100;
+    if (!(a > 0 && b > 0 && v > 0) || (direction !== "up" && direction !== "down")) return null;
+    const x = Math.log(b / a), dir = direction === "up" ? 1 : -1, band = Math.min(0.99, Math.max(0, Number(bandPct) || 0) / 100);
+    const need = Math.log(1 + dir * band), zFor = barsElapsed > 0 ? dir * x / (v * Math.sqrt(barsElapsed)) : 0;
+    let p;
+    if (!(barsLeft > 0)) p = dir > 0 ? (x > need ? 1 : 0) : (x < need ? 1 : 0);
+    else { const s = v * Math.sqrt(barsLeft); p = dir > 0 ? 1 - C.normCdf((need - x) / s) : C.normCdf((need - x) / s); }
+    return { movePct: (b / a - 1) * 100, zFor, oddsNowPct: p * 100 };
+  }
   // Expectancy and other stats of logged day trades {side, entry, exit, shares, stop?, fees?}.
   function tradeStats(trades) {
     const rows = trades.filter(t => t.entry > 0 && t.exit > 0 && t.shares > 0).map(t => { const dir = t.side === "short" ? -1 : 1, pnl = dir * (t.exit - t.entry) * t.shares - (Number(t.fees) || 0), risk = t.stop > 0 ? Math.abs(t.entry - t.stop) * t.shares : null; return Object.assign({}, t, { pnl, r: risk ? pnl / risk : null }); });
@@ -1839,7 +1852,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);
 
@@ -2149,6 +2162,18 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     const short = Q.barrierOdds({ entry: 100, stop: 101, target: 98, side: "short", dailyVolPct: 6, minutesLeft: 1440, paths: 4000 }); near(short.pTarget, Math.log(101 / 100) / Math.log(101 / 98), 0.03);
     const late = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 1, minutesLeft: 10 }); ok(late.pNeither > 0.9, "ten quiet minutes rarely reach either level");
     eq(Q.barrierOdds({ entry: 100, stop: 101, target: 102, dailyVolPct: 2, minutesLeft: 60 }), null);
+  });
+  test("open-call standing: odds to finish on the called side from here, and the move in volatility units", () => {
+    const Q = MD.quant;
+    near(Q.callStanding({ direction: "up", p0: 100, price: 100, bandPct: 0, dailyVolPct: 2, barsElapsed: 5, barsLeft: 10 }).oddsNowPct, 50, 1e-6);
+    const up = Q.callStanding({ direction: "up", p0: 100, price: 110, bandPct: 0, dailyVolPct: 2, barsElapsed: 4, barsLeft: 25 });
+    near(up.oddsNowPct, 100 * MD.core.normCdf(Math.log(1.1) / 0.1), 1e-9); near(up.movePct, 10, 1e-9); near(up.zFor, Math.log(1.1) / 0.04, 1e-9);
+    const dn = Q.callStanding({ direction: "down", p0: 100, price: 100 / 1.1, bandPct: 0, dailyVolPct: 2, barsElapsed: 4, barsLeft: 25 });
+    near(dn.oddsNowPct, up.oddsNowPct, 1e-9); near(dn.zFor, up.zFor, 1e-9);
+    const against = Q.callStanding({ direction: "up", p0: 100, price: 90, bandPct: 1, dailyVolPct: 2, barsElapsed: 4, barsLeft: 4 }); ok(against.oddsNowPct < 1 && against.zFor < -2.5, JSON.stringify(against));
+    ok(Q.callStanding({ direction: "up", p0: 100, price: 100, bandPct: 1, dailyVolPct: 2, barsElapsed: 1, barsLeft: 10 }).oddsNowPct < 50, "the flat band counts against the call");
+    eq(Q.callStanding({ direction: "down", p0: 100, price: 98, bandPct: 1, dailyVolPct: 2, barsElapsed: 1, barsLeft: 0 }).oddsNowPct, 100);
+    eq(Q.callStanding({ direction: "move", p0: 100, price: 98, dailyVolPct: 2, barsElapsed: 1, barsLeft: 3 }), null);
   });
   test("decision maths: expected value, payoff, Kelly and a capped quarter-Kelly ceiling", () => {
     const Q = MD.quant, d = Q.decisionMath({ upPct: 60, upMovePct: 20, downMovePct: 10, capPct: 10 });
@@ -4293,7 +4318,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
 (function (G) {
   const MD = (G.MD = G.MD || {});
   const APPEND_ONLY = new Set(["tx", "forecasts", "evals", "reports", "picks", "betpicks", "betgrades"]);
-  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas", "aitakes", "briefs", "proppicks", "ailessons", "marketdays", "brain", "dayplans", "daytrades", "pickhide", "marketcalls", "pickchecks", "decisions"];
+  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas", "aitakes", "briefs", "proppicks", "ailessons", "marketdays", "brain", "dayplans", "daytrades", "pickhide", "marketcalls", "pickchecks", "decisions", "callwatch"];
   const newId = () => Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
   const clone = (o) => JSON.parse(JSON.stringify(o));
 
@@ -5260,6 +5285,12 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
     // Keep every AI's track record current: score due forecasts quietly while the page is open.
     const autoScore = () => { if (app.demo || !D.available() || document.hidden || !MD.ai) return; MD.ai.scoreDue(app, { max: 12 }).then(r => { if (r.scored) { app.emit("data:evals"); if (app.settings.notify.toasts) U.toast("Scored " + r.scored + " due forecast" + (r.scored > 1 ? "s" : ""), "See Deep Research → Forecast journal for the AI scorecard."); } }).catch(() => {}); };
     setTimeout(autoScore, 20000); setInterval(autoScore, 30 * 60e3);
+    // Every two hours, price the open AI calls and tell the inbox once when one turns clearly for or against its call.
+    const autoCalls = () => {
+      if (app.demo || !D.available() || document.hidden || !MD.ai || app.settings.callWatch === false || Date.now() - (app.ls.get("callmon.at", 0) || 0) < 2 * 3600e3) return;
+      app.ls.set("callmon.at", Date.now()); MD.ai.monitorCalls(app, { max: 20 }).then(r => { if (r.sent.length && app.settings.notify.toasts) U.toast(r.sent.length + " open AI call" + (r.sent.length > 1 ? "s" : "") + " moved clearly", "See Alerts & Research Inbox."); }).catch(() => {});
+    };
+    setTimeout(autoCalls, 70000); setInterval(autoCalls, 30 * 60e3);
     // Once a session has been studied, the Market Brain studies each new session after the close.
     const autoBrain = () => { if (MD.brain) MD.brain.autoStudy(app).catch(() => {}); };
     setTimeout(autoBrain, 45000); setInterval(autoBrain, 30 * 60e3);
@@ -7941,6 +7972,58 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     return sec;
   }
 
+  /* ---------- open-call monitor ---------- */
+  // Every open up/down call with a horizon over two days, priced now: the move since the call, that move against the
+  // asset's own volatility for the time elapsed, and the chance it still finishes on the called side (geometry only).
+  let lastOpen = null;
+  async function openCalls(app, opts = {}) {
+    const done = new Set(app.store.cached("evals").map(e => e.forecastId)), now = Date.now();
+    const open = app.store.cached("forecasts").filter(f => f.asset && Number(f.priceAtCreation) > 0 && (f.direction === "up" || f.direction === "down") && !done.has(f.id) && f.dueAt > now && (f.horizonDays || 0) > 2)
+      .sort((a, b) => a.dueAt - b.dueAt).slice(0, opts.max || 20);
+    const assets = new Map(open.map(f => [f.asset.id || f.assetId, f.asset]));
+    const priced = new Map(await Promise.all([...assets].map(async ([id, a]) => {
+      try {
+        const q = await D.quoteFor(a); let vol = null;
+        try { const s = await D.historyCached(a, "1Y"), r = C.returnsFrom(s.points.slice(-61).map(p => p.close ?? p.value)); vol = r.length > 10 ? C.stdev(r) * 100 : null; } catch {}
+        return [id, { price: Number(q.price), vol, source: q.source }];
+      } catch (e) { return [id, { error: U.errorText(e) }]; }
+    })));
+    const rows = open.map(f => {
+      const q = priced.get(f.asset.id || f.assetId) || {}; if (!(q.price > 0)) return { f, error: q.error || "no price" };
+      const perDay = (f.asset.cls || String(f.asset.id).split(":")[0]) === "crypto" ? 1 : 252 / 365;
+      const st = q.vol ? MD.quant.callStanding({ direction: f.direction, p0: f.priceAtCreation, price: q.price, bandPct: f.flatBandPct ?? 1, dailyVolPct: q.vol, barsElapsed: (now - f.createdAt) / 864e5 * perDay, barsLeft: (f.dueAt - now) / 864e5 * perDay }) : null;
+      return { f, price: q.price, source: q.source, vol: q.vol, st, movePct: (q.price / Number(f.priceAtCreation) - 1) * 100 };
+    });
+    lastOpen = { at: now, rows };
+    return rows;
+  }
+  /* Tells the inbox once per call when one turns clearly against its call or clearly in its favour. */
+  async function monitorCalls(app, opts = {}) {
+    const rows = await openCalls(app, opts), seen = new Set(app.store.cached("callwatch").map(d => d.id)), sent = [];
+    for (const r of rows) {
+      if (!r.st) continue;
+      const f = r.f, o = r.st.oddsNowPct, kind = o <= 25 && r.st.zFor <= -1 ? "against" : o >= 85 && r.st.zFor >= 1.5 ? "working" : null;
+      if (!kind || seen.has(f.id + ":" + kind)) continue;
+      await app.store.create("callwatch", { id: f.id + ":" + kind, forecastId: f.id, kind, at: Date.now(), oddsNowPct: o, movePct: r.movePct });
+      const word = f.direction === "up" ? "higher" : "lower", label = SOURCE_LABEL[f.source] || f.source || "Forecast";
+      await app.store.create("inbox", { kind: "calls", assetId: f.asset.id, title: f.symbol + " (" + label + ") is " + (kind === "against" ? "going against the call" : "working"),
+        body: "Called " + word + " on " + U.fmtDate(f.createdAt) + (f.probability ? " at " + Math.round(f.probability * 100) + "%" : "") + "; " + (r.movePct >= 0 ? "+" : "") + r.movePct.toFixed(1) + "% since. On its volatility alone it now has a " + Math.round(o) + "% chance to finish " + word + " by " + U.fmtDate(f.dueAt) + ". Measured position, not new research. Source: " + (r.source || "latest quote") + ".",
+        materiality: kind === "against" ? 2 : 1, read: false, at: Date.now() }).catch(() => {});
+      sent.push({ symbol: f.symbol, kind });
+    }
+    return { rows, sent };
+  }
+  function openCallsTable(app, rows) {
+    const pc = (v) => v == null ? "—" : (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
+    return U.table([
+      { t: "Asset", v: (r) => h("a", { href: "#", onclick: (e) => { e.preventDefault(); app.openAsset(r.f.asset); } }, r.f.symbol) },
+      { t: "From", v: (r) => SOURCE_LABEL[r.f.source] || r.f.source || "—" },
+      { t: "Call", v: (r) => h("span", { style: "white-space:nowrap" }, (r.f.direction === "up" ? "▲ " : "▼ ") + (r.f.probability ? Math.round(r.f.probability * 100) + "%" : r.f.direction)) },
+      { t: "Since", v: (r) => r.error ? h("span", { class: "muted" }, r.error) : h("span", { class: (r.movePct >= 0) === (r.f.direction === "up") ? "pos" : "neg" }, pc(r.movePct)), n: true },
+      { t: "Odds now", v: (r) => r.st ? h("span", { class: r.st.oddsNowPct >= 50 ? "pos" : "neg", title: "Chance it finishes " + (r.f.direction === "up" ? "higher" : "lower") + " than the call price (beyond the flat band) by the due date, from its volatility alone" }, Math.round(r.st.oddsNowPct) + "%") : "—", n: true },
+      { t: "Due", v: (r) => h("span", { style: "white-space:nowrap" }, U.fmtDate(r.f.dueAt)) }], rows);
+  }
+
   /* ---------- dashboard: what the AI is tracking ---------- */
   function statusCard(box, app) {
     const fcs = app.store.cached("forecasts").filter(f => f.source && f.source !== "user"), evals = app.store.cached("evals"), now = Date.now();
@@ -7948,13 +8031,20 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     const by = {}; for (const f of open) (by[f.source] = by[f.source] || []).push(f);
     const week = fcs.map(f => ({ f, e: evals.find(v => v.forecastId === f.id) })).filter(x => x.e && x.e.evaluatedAt > now - 7 * 864e5);
     const L = latestLessons(app), call = MD.brain ? MD.brain.latestCall(app) : null;
+    const callsBox = h("div", { class: "stack", style: "gap:6px" }), watchBox = h("input", { type: "checkbox", checked: app.settings.callWatch !== false, onchange: () => app.saveSettings({ callWatch: watchBox.checked }) });
+    const showCalls = (rows) => { callsBox.replaceChildren(openCallsTable(app, rows), h("p", { class: "small muted" }, "Odds now: the chance each call still finishes on its side by the due date from the asset's 60-day volatility alone, ignoring the reasons behind it. Priced " + new Date(lastOpen.at).toLocaleTimeString() + ".")); };
+    callsBox.append(h("button", { class: "btn ghost sm", type: "button", onclick: async (e) => { e.target.disabled = true; e.target.textContent = "Pricing open calls…"; try { showCalls(await openCalls(app)); } catch (err) { callsBox.replaceChildren(h("p", { class: "small neg" }, U.errorText(err))); } } }, "Where do the open calls stand?"));
     if (!fcs.length && !call) { box.append(h("p", { class: "small muted" }, "Nothing yet. Recommendations, quick takes, AI decisions, day-trade plans and market calls are logged here and graded when they come due."), h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("picks") }, "Open Recommendations")); return; }
     box.append(h("div", { class: "stack", style: "gap:6px" },
       call ? h("p", { class: "small" }, h("strong", {}, "Market call " + call.target + ": "), "SPY " + (call.upPct >= 50 ? "▲ " + call.upPct + "% up" : "▼ " + (100 - call.upPct) + "% down")) : null,
       Object.keys(by).length ? U.table([{ t: "Open calls", v: (r) => SOURCE_LABEL[r[0]] || r[0] }, { t: "Count", v: (r) => String(r[1].length), n: true }, { t: "Next due", v: (r) => { const n = r[1].slice().sort((a, b) => a.dueAt - b.dueAt)[0]; return n.symbol + " · " + U.fmtDate(n.dueAt); } }], Object.entries(by)) : h("p", { class: "small muted" }, "No open calls."),
       week.length ? h("p", { class: "small" }, "Graded this week: " + week.filter(x => x.e.directionHit).length + " right, " + week.filter(x => !x.e.directionHit).length + " wrong" + " (" + [...new Set(week.map(x => SOURCE_LABEL[x.f.source] || x.f.source))].join(", ") + ").") : null,
       L ? h("p", { class: "small muted" }, "Latest lesson (" + U.fmtDate(L.createdAt) + "): " + (L.lessons[0] ? L.lessons[0].lesson : "")) : null,
-      h("button", { class: "btn ghost sm", type: "button", onclick: () => { app.ls.set("resTab", "journal"); app.go("research", {}); } }, "Open the AI scorecard")));
+      open.some(f => (f.horizonDays || 0) > 2 && (f.direction === "up" || f.direction === "down")) ? callsBox : null,
+      h("div", { class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center" },
+        h("button", { class: "btn ghost sm", type: "button", onclick: () => { app.ls.set("resTab", "journal"); app.go("research", {}); } }, "Open the AI scorecard"),
+        h("label", { class: "small muted", title: "Every two hours while the page is open, price the open calls and tell the inbox once when one turns clearly against its call (25% or less to finish right) or clearly in its favour (85% or more)." }, watchBox, " Watch open calls"))));
+    if (lastOpen && Date.now() - lastOpen.at < 3600e3) showCalls(lastOpen.rows);
   }
 
   /* ---------- review pass ---------- */
@@ -8010,7 +8100,7 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>

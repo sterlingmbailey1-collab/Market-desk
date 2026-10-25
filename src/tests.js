@@ -302,6 +302,18 @@
     const late = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 1, minutesLeft: 10 }); ok(late.pNeither > 0.9, "ten quiet minutes rarely reach either level");
     eq(Q.barrierOdds({ entry: 100, stop: 101, target: 102, dailyVolPct: 2, minutesLeft: 60 }), null);
   });
+  test("open-call standing: odds to finish on the called side from here, and the move in volatility units", () => {
+    const Q = MD.quant;
+    near(Q.callStanding({ direction: "up", p0: 100, price: 100, bandPct: 0, dailyVolPct: 2, barsElapsed: 5, barsLeft: 10 }).oddsNowPct, 50, 1e-6);
+    const up = Q.callStanding({ direction: "up", p0: 100, price: 110, bandPct: 0, dailyVolPct: 2, barsElapsed: 4, barsLeft: 25 });
+    near(up.oddsNowPct, 100 * MD.core.normCdf(Math.log(1.1) / 0.1), 1e-9); near(up.movePct, 10, 1e-9); near(up.zFor, Math.log(1.1) / 0.04, 1e-9);
+    const dn = Q.callStanding({ direction: "down", p0: 100, price: 100 / 1.1, bandPct: 0, dailyVolPct: 2, barsElapsed: 4, barsLeft: 25 });
+    near(dn.oddsNowPct, up.oddsNowPct, 1e-9); near(dn.zFor, up.zFor, 1e-9);
+    const against = Q.callStanding({ direction: "up", p0: 100, price: 90, bandPct: 1, dailyVolPct: 2, barsElapsed: 4, barsLeft: 4 }); ok(against.oddsNowPct < 1 && against.zFor < -2.5, JSON.stringify(against));
+    ok(Q.callStanding({ direction: "up", p0: 100, price: 100, bandPct: 1, dailyVolPct: 2, barsElapsed: 1, barsLeft: 10 }).oddsNowPct < 50, "the flat band counts against the call");
+    eq(Q.callStanding({ direction: "down", p0: 100, price: 98, bandPct: 1, dailyVolPct: 2, barsElapsed: 1, barsLeft: 0 }).oddsNowPct, 100);
+    eq(Q.callStanding({ direction: "move", p0: 100, price: 98, dailyVolPct: 2, barsElapsed: 1, barsLeft: 3 }), null);
+  });
   test("decision maths: expected value, payoff, Kelly and a capped quarter-Kelly ceiling", () => {
     const Q = MD.quant, d = Q.decisionMath({ upPct: 60, upMovePct: 20, downMovePct: 10, capPct: 10 });
     near(d.evPct, 8, 1e-9); near(d.payoff, 2, 1e-9); near(d.kellyPct, 40, 1e-9); near(d.ceilingPct, 10, 1e-9); near(d.breakEvenUpPct, 33.3, 1e-9);

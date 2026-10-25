@@ -281,6 +281,19 @@
     for (let i = 0; i < paths; i++) { let x = 0; for (let k = 0; k < n; k++) { x += sd * C.gauss(r); if (x >= up) { hitT++; break; } if (x <= dn) { hitS++; break; } } }
     return { pTarget: hitT / paths, pStop: hitS / paths, pNeither: (paths - hitT - hitS) / paths, minutes: n, rr: Math.abs(t - e) / Math.abs(e - s) };
   }
+  /* Where an open up/down call stands: the move since it was made, that move in daily-volatility units for the bars
+     elapsed (positive = in the call's favour), and the chance it finishes beyond its flat band on the called side,
+     from a driftless walk over the bars left. Geometry only: it knows nothing about the reasons behind the call. */
+  function callStanding({ direction, p0, price, bandPct = 1, dailyVolPct, barsElapsed, barsLeft }) {
+    const a = Number(p0), b = Number(price), v = Number(dailyVolPct) / 100;
+    if (!(a > 0 && b > 0 && v > 0) || (direction !== "up" && direction !== "down")) return null;
+    const x = Math.log(b / a), dir = direction === "up" ? 1 : -1, band = Math.min(0.99, Math.max(0, Number(bandPct) || 0) / 100);
+    const need = Math.log(1 + dir * band), zFor = barsElapsed > 0 ? dir * x / (v * Math.sqrt(barsElapsed)) : 0;
+    let p;
+    if (!(barsLeft > 0)) p = dir > 0 ? (x > need ? 1 : 0) : (x < need ? 1 : 0);
+    else { const s = v * Math.sqrt(barsLeft); p = dir > 0 ? 1 - C.normCdf((need - x) / s) : C.normCdf((need - x) / s); }
+    return { movePct: (b / a - 1) * 100, zFor, oddsNowPct: p * 100 };
+  }
   // Expectancy and other stats of logged day trades {side, entry, exit, shares, stop?, fees?}.
   function tradeStats(trades) {
     const rows = trades.filter(t => t.entry > 0 && t.exit > 0 && t.shares > 0).map(t => { const dir = t.side === "short" ? -1 : 1, pnl = dir * (t.exit - t.entry) * t.shares - (Number(t.fees) || 0), risk = t.stop > 0 ? Math.abs(t.entry - t.stop) * t.shares : null; return Object.assign({}, t, { pnl, r: risk ? pnl / risk : null }); });
@@ -363,6 +376,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

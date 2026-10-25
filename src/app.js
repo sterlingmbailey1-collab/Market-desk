@@ -535,6 +535,12 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
     // Keep every AI's track record current: score due forecasts quietly while the page is open.
     const autoScore = () => { if (app.demo || !D.available() || document.hidden || !MD.ai) return; MD.ai.scoreDue(app, { max: 12 }).then(r => { if (r.scored) { app.emit("data:evals"); if (app.settings.notify.toasts) U.toast("Scored " + r.scored + " due forecast" + (r.scored > 1 ? "s" : ""), "See Deep Research → Forecast journal for the AI scorecard."); } }).catch(() => {}); };
     setTimeout(autoScore, 20000); setInterval(autoScore, 30 * 60e3);
+    // Every two hours, price the open AI calls and tell the inbox once when one turns clearly for or against its call.
+    const autoCalls = () => {
+      if (app.demo || !D.available() || document.hidden || !MD.ai || app.settings.callWatch === false || Date.now() - (app.ls.get("callmon.at", 0) || 0) < 2 * 3600e3) return;
+      app.ls.set("callmon.at", Date.now()); MD.ai.monitorCalls(app, { max: 20 }).then(r => { if (r.sent.length && app.settings.notify.toasts) U.toast(r.sent.length + " open AI call" + (r.sent.length > 1 ? "s" : "") + " moved clearly", "See Alerts & Research Inbox."); }).catch(() => {});
+    };
+    setTimeout(autoCalls, 70000); setInterval(autoCalls, 30 * 60e3);
     // Once a session has been studied, the Market Brain studies each new session after the close.
     const autoBrain = () => { if (MD.brain) MD.brain.autoStudy(app).catch(() => {}); };
     setTimeout(autoBrain, 45000); setInterval(autoBrain, 30 * 60e3);

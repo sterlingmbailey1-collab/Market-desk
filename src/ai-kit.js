@@ -349,6 +349,58 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     return sec;
   }
 
+  /* ---------- open-call monitor ---------- */
+  // Every open up/down call with a horizon over two days, priced now: the move since the call, that move against the
+  // asset's own volatility for the time elapsed, and the chance it still finishes on the called side (geometry only).
+  let lastOpen = null;
+  async function openCalls(app, opts = {}) {
+    const done = new Set(app.store.cached("evals").map(e => e.forecastId)), now = Date.now();
+    const open = app.store.cached("forecasts").filter(f => f.asset && Number(f.priceAtCreation) > 0 && (f.direction === "up" || f.direction === "down") && !done.has(f.id) && f.dueAt > now && (f.horizonDays || 0) > 2)
+      .sort((a, b) => a.dueAt - b.dueAt).slice(0, opts.max || 20);
+    const assets = new Map(open.map(f => [f.asset.id || f.assetId, f.asset]));
+    const priced = new Map(await Promise.all([...assets].map(async ([id, a]) => {
+      try {
+        const q = await D.quoteFor(a); let vol = null;
+        try { const s = await D.historyCached(a, "1Y"), r = C.returnsFrom(s.points.slice(-61).map(p => p.close ?? p.value)); vol = r.length > 10 ? C.stdev(r) * 100 : null; } catch {}
+        return [id, { price: Number(q.price), vol, source: q.source }];
+      } catch (e) { return [id, { error: U.errorText(e) }]; }
+    })));
+    const rows = open.map(f => {
+      const q = priced.get(f.asset.id || f.assetId) || {}; if (!(q.price > 0)) return { f, error: q.error || "no price" };
+      const perDay = (f.asset.cls || String(f.asset.id).split(":")[0]) === "crypto" ? 1 : 252 / 365;
+      const st = q.vol ? MD.quant.callStanding({ direction: f.direction, p0: f.priceAtCreation, price: q.price, bandPct: f.flatBandPct ?? 1, dailyVolPct: q.vol, barsElapsed: (now - f.createdAt) / 864e5 * perDay, barsLeft: (f.dueAt - now) / 864e5 * perDay }) : null;
+      return { f, price: q.price, source: q.source, vol: q.vol, st, movePct: (q.price / Number(f.priceAtCreation) - 1) * 100 };
+    });
+    lastOpen = { at: now, rows };
+    return rows;
+  }
+  /* Tells the inbox once per call when one turns clearly against its call or clearly in its favour. */
+  async function monitorCalls(app, opts = {}) {
+    const rows = await openCalls(app, opts), seen = new Set(app.store.cached("callwatch").map(d => d.id)), sent = [];
+    for (const r of rows) {
+      if (!r.st) continue;
+      const f = r.f, o = r.st.oddsNowPct, kind = o <= 25 && r.st.zFor <= -1 ? "against" : o >= 85 && r.st.zFor >= 1.5 ? "working" : null;
+      if (!kind || seen.has(f.id + ":" + kind)) continue;
+      await app.store.create("callwatch", { id: f.id + ":" + kind, forecastId: f.id, kind, at: Date.now(), oddsNowPct: o, movePct: r.movePct });
+      const word = f.direction === "up" ? "higher" : "lower", label = SOURCE_LABEL[f.source] || f.source || "Forecast";
+      await app.store.create("inbox", { kind: "calls", assetId: f.asset.id, title: f.symbol + " (" + label + ") is " + (kind === "against" ? "going against the call" : "working"),
+        body: "Called " + word + " on " + U.fmtDate(f.createdAt) + (f.probability ? " at " + Math.round(f.probability * 100) + "%" : "") + "; " + (r.movePct >= 0 ? "+" : "") + r.movePct.toFixed(1) + "% since. On its volatility alone it now has a " + Math.round(o) + "% chance to finish " + word + " by " + U.fmtDate(f.dueAt) + ". Measured position, not new research. Source: " + (r.source || "latest quote") + ".",
+        materiality: kind === "against" ? 2 : 1, read: false, at: Date.now() }).catch(() => {});
+      sent.push({ symbol: f.symbol, kind });
+    }
+    return { rows, sent };
+  }
+  function openCallsTable(app, rows) {
+    const pc = (v) => v == null ? "—" : (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
+    return U.table([
+      { t: "Asset", v: (r) => h("a", { href: "#", onclick: (e) => { e.preventDefault(); app.openAsset(r.f.asset); } }, r.f.symbol) },
+      { t: "From", v: (r) => SOURCE_LABEL[r.f.source] || r.f.source || "—" },
+      { t: "Call", v: (r) => h("span", { style: "white-space:nowrap" }, (r.f.direction === "up" ? "▲ " : "▼ ") + (r.f.probability ? Math.round(r.f.probability * 100) + "%" : r.f.direction)) },
+      { t: "Since", v: (r) => r.error ? h("span", { class: "muted" }, r.error) : h("span", { class: (r.movePct >= 0) === (r.f.direction === "up") ? "pos" : "neg" }, pc(r.movePct)), n: true },
+      { t: "Odds now", v: (r) => r.st ? h("span", { class: r.st.oddsNowPct >= 50 ? "pos" : "neg", title: "Chance it finishes " + (r.f.direction === "up" ? "higher" : "lower") + " than the call price (beyond the flat band) by the due date, from its volatility alone" }, Math.round(r.st.oddsNowPct) + "%") : "—", n: true },
+      { t: "Due", v: (r) => h("span", { style: "white-space:nowrap" }, U.fmtDate(r.f.dueAt)) }], rows);
+  }
+
   /* ---------- dashboard: what the AI is tracking ---------- */
   function statusCard(box, app) {
     const fcs = app.store.cached("forecasts").filter(f => f.source && f.source !== "user"), evals = app.store.cached("evals"), now = Date.now();
@@ -356,13 +408,20 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     const by = {}; for (const f of open) (by[f.source] = by[f.source] || []).push(f);
     const week = fcs.map(f => ({ f, e: evals.find(v => v.forecastId === f.id) })).filter(x => x.e && x.e.evaluatedAt > now - 7 * 864e5);
     const L = latestLessons(app), call = MD.brain ? MD.brain.latestCall(app) : null;
+    const callsBox = h("div", { class: "stack", style: "gap:6px" }), watchBox = h("input", { type: "checkbox", checked: app.settings.callWatch !== false, onchange: () => app.saveSettings({ callWatch: watchBox.checked }) });
+    const showCalls = (rows) => { callsBox.replaceChildren(openCallsTable(app, rows), h("p", { class: "small muted" }, "Odds now: the chance each call still finishes on its side by the due date from the asset's 60-day volatility alone, ignoring the reasons behind it. Priced " + new Date(lastOpen.at).toLocaleTimeString() + ".")); };
+    callsBox.append(h("button", { class: "btn ghost sm", type: "button", onclick: async (e) => { e.target.disabled = true; e.target.textContent = "Pricing open calls…"; try { showCalls(await openCalls(app)); } catch (err) { callsBox.replaceChildren(h("p", { class: "small neg" }, U.errorText(err))); } } }, "Where do the open calls stand?"));
     if (!fcs.length && !call) { box.append(h("p", { class: "small muted" }, "Nothing yet. Recommendations, quick takes, AI decisions, day-trade plans and market calls are logged here and graded when they come due."), h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("picks") }, "Open Recommendations")); return; }
     box.append(h("div", { class: "stack", style: "gap:6px" },
       call ? h("p", { class: "small" }, h("strong", {}, "Market call " + call.target + ": "), "SPY " + (call.upPct >= 50 ? "▲ " + call.upPct + "% up" : "▼ " + (100 - call.upPct) + "% down")) : null,
       Object.keys(by).length ? U.table([{ t: "Open calls", v: (r) => SOURCE_LABEL[r[0]] || r[0] }, { t: "Count", v: (r) => String(r[1].length), n: true }, { t: "Next due", v: (r) => { const n = r[1].slice().sort((a, b) => a.dueAt - b.dueAt)[0]; return n.symbol + " · " + U.fmtDate(n.dueAt); } }], Object.entries(by)) : h("p", { class: "small muted" }, "No open calls."),
       week.length ? h("p", { class: "small" }, "Graded this week: " + week.filter(x => x.e.directionHit).length + " right, " + week.filter(x => !x.e.directionHit).length + " wrong" + " (" + [...new Set(week.map(x => SOURCE_LABEL[x.f.source] || x.f.source))].join(", ") + ").") : null,
       L ? h("p", { class: "small muted" }, "Latest lesson (" + U.fmtDate(L.createdAt) + "): " + (L.lessons[0] ? L.lessons[0].lesson : "")) : null,
-      h("button", { class: "btn ghost sm", type: "button", onclick: () => { app.ls.set("resTab", "journal"); app.go("research", {}); } }, "Open the AI scorecard")));
+      open.some(f => (f.horizonDays || 0) > 2 && (f.direction === "up" || f.direction === "down")) ? callsBox : null,
+      h("div", { class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center" },
+        h("button", { class: "btn ghost sm", type: "button", onclick: () => { app.ls.set("resTab", "journal"); app.go("research", {}); } }, "Open the AI scorecard"),
+        h("label", { class: "small muted", title: "Every two hours while the page is open, price the open calls and tell the inbox once when one turns clearly against its call (25% or less to finish right) or clearly in its favour (85% or more)." }, watchBox, " Watch open calls"))));
+    if (lastOpen && Date.now() - lastOpen.at < 3600e3) showCalls(lastOpen.rows);
   }
 
   /* ---------- review pass ---------- */
@@ -418,5 +477,5 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

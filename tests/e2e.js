@@ -611,7 +611,17 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.evaluate(() => MD.app.go("dashboard", null, { fromNav: true })); await page.waitForTimeout(1500);
   check("dashboard: Betting today card with open bets and AI record", /Betting today/i.test(await page.locator("#content").innerText()) && /AI record/i.test(await page.locator("#content").innerText()));
   const aiStat = await page.locator("#content").innerText();
+  await page.click("button:has-text('Where do the open calls stand?')"); await page.waitForTimeout(4000);
+  const ocTxt = await page.locator("#content").innerText();
+  check("open calls priced: move since the call and odds to finish on its side, per call", /Odds now/i.test(ocTxt) && /Since/i.test(ocTxt) && /60-day volatility alone/i.test(ocTxt) && /\d+%\s+\w{3} \d+, 20\d\d/.test(ocTxt), ocTxt.slice(0, 900));
   await page.screenshot({ path: path.join(shots, "e2e-dashboard-ai.png"), fullPage: true });
+  const mon = await page.evaluate(async () => {
+    const app = MD.app; await app.store.create("forecasts", { assetId: "stock:AAPL", asset: { id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" }, symbol: "AAPL", source: "ai-picks", horizonDays: 30, dueAt: Date.now() + 30 * 864e5, priceAtCreation: 400, currency: "USD", direction: "up", probability: 0.62, flatBandPct: 1, createdAt: Date.now() - 10 * 864e5 });
+    const before = app.store.cached("inbox").length, a = await MD.ai.monitorCalls(app), b = await MD.ai.monitorCalls(app);
+    const items = app.store.cached("inbox").filter(i => i.kind === "calls");
+    return { sent1: a.sent, sent2: b.sent.length, added: app.store.cached("inbox").length - before, title: (items.find(i => /AAPL/.test(i.title)) || {}).title, body: (items.find(i => /AAPL/.test(i.title)) || {}).body };
+  });
+  check("open-call monitor: a call far against it notifies the inbox once, with the odds now", mon.sent1.some(x => x.symbol === "AAPL" && x.kind === "against") && mon.sent2 === 0 && /AAPL \(Recommendations\) is going against the call/.test(mon.title || "") && /chance to finish higher/.test(mon.body || ""), JSON.stringify(mon));
   check("dashboard: what the AI is tracking (open calls by source, next due, scorecard link)", /What the AI is tracking/i.test(aiStat) && /Open calls/i.test(aiStat) && /Next due/i.test(aiStat) && await page.locator("button:has-text('Open the AI scorecard')").count() === 1, aiStat.slice(0, 400));
 
   // ---- Opportunities AI: scan review, comparison scorecard, idea finder
