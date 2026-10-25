@@ -20,4 +20,16 @@ const ml = B.parseSportsLine(fs.readFileSync(__dirname + "/real/sl-laliga-ml.md"
 ok(ml.games.length === 2 && ml.games[1].home.name === "Athletic Club" && Math.abs(ml.games[1].markets.ml.books.FanDuel.home.dec - O.amToDec(-180)) < 1e-9, "real SportsLine moneyline (Athletic -180 at FanDuel)");
 ok(ml.games[0].timeLabel === "10:15AM", "'1 Expert Pick' insights row still gives the time");
 ok(Math.abs(ml.games[1].markets.ml.open.away.dec - O.amToDec(470)) < 1e-9, "opening price from consensus column");
+const inj = B.parseInjuries(fs.readFileSync(__dirname + "/real/espn-nba-injuries.md", "utf8"));
+ok(inj.length === 7 && inj[0].team === "Atlanta Hawks" && inj[0].name === "Mouhamed Gueye" && inj[0].status === "Out", "real ESPN injuries: team headers and rows (" + inj.length + ")");
+ok(B.injuriesFor(inj, "Mavericks").length === 2 && B.injuriesFor(inj, "Hornets").length === 2 && B.injuriesFor(inj, "Celtics")[0].comment.includes("mononucleosis"), "real ESPN injuries by team nickname");
+const nflSb = B.parseScoreboard(fs.readFileSync(__dirname + "/real/espn-nfl-scoreboard.md", "utf8"), B.sportOf("nfl"));
+ok(nflSb.length === 4, "real ESPN NFL scoreboard: 4 games (" + nflSb.length + ")");
+ok(nflSb[0].status === "final" && nflSb[0].score.join("-") === "24-30" && nflSb[0].away.name === "Patriots" && nflSb[0].away.split === "1-3" && nflSb[0].date === "2026-10-22", "final with score, road split, date");
+ok(nflSb[1].status === "scheduled" && nflSb[1].venue === "Stade de France Saint-Denis, France" && nflSb[1].espnSpread === "PIT -3" && nflSb[1].espnTotal === 43.5, "scheduled game: venue, ESPN spread and total");
+ok(nflSb[3].tempF === 63 && nflSb[3].venue === "MetLife Stadium East Rutherford, NJ" && nflSb[2].tempF == null, "temperature only where the page shows it");
+const nbaSb = B.parseScoreboard(fs.readFileSync(__dirname + "/real/espn-nba-scoreboard.md", "utf8"), B.sportOf("nba"));
+ok(nbaSb.length === 2 && nbaSb[0].status === "live" && nbaSb[1].status === "final" && nbaSb[1].score.join("-") === "110-115", "real NBA scoreboard: live vs final");
+const eplSb = B.parseScoreboard(fs.readFileSync(__dirname + "/real/espn-epl-scoreboard.md", "utf8"), B.sportOf("epl"));
+ok(eplSb.length === 2 && eplSb[1].teams[0].name === "Aston Villa" && eplSb[1].score.join("-") === "2-1" && eplSb[0].teams[0].record === "4-1-2" && eplSb[0].venue === "Stamford Bridge London, England", "real EPL scoreboard: W-D-L records, scores, venue (no goal-scorer lines taken as teams)");
 console.log(fail ? fail + " failed" : "all passed"); process.exit(fail ? 1 : 0);

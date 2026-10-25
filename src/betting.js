@@ -47,6 +47,7 @@
   }
   function statusOf(g, now = Date.now()) {
     if (g.final) return "final";
+    if (g.espn && g.espn.status === "live") return "in progress";
     if (!g.start) return "listed";
     if (g.startHasTime === false) return now > g.start + 36 * 3600e3 ? "past" : "upcoming";
     const len = g.soccer ? 2.1 : g.sport === "mlb" ? 3.2 : g.sport === "nhl" ? 2.7 : 3.3;
@@ -240,6 +241,144 @@
     return { title: pick(r, "title"), subtitle: pick(r, "subtitle"), panels: pick(r, "panels") || [], link: pick(r, "link") || null };
   }
 
+  /* ---------- ESPN: injury reports and scoreboards ---------- */
+  // Scoreboards give dates, records (incl. home/away splits), venues, game-time temperature, live
+  // status and final scores; injury pages give each team's out/questionable list.
+  const ESPN_US = { nfl: "nfl", ncaaf: "college-football", nba: "nba", ncaab: "mens-college-basketball", wnba: "wnba", mlb: "mlb", nhl: "nhl" };
+  const ESPN_SOCCER = { epl: "eng.1", laliga: "esp.1", seriea: "ita.1", bundesliga: "ger.1", ligue1: "fra.1" };
+  const INJURY_PAGES = new Set(["nfl", "nba", "wnba", "mlb", "nhl"]);
+  const DAILY = new Set(["nba", "ncaab", "wnba", "mlb", "nhl"]);
+  const etYmd = (t = Date.now()) => { const d = new Date(t + nyOffsetMs(t)); return d.toISOString().slice(0, 10); };
+  function scoreboardUrl(sport, ymd) {
+    if (ESPN_SOCCER[sport.id]) return "https://www.espn.com/soccer/scoreboard/_/league/" + ESPN_SOCCER[sport.id];
+    const p = ESPN_US[sport.id]; if (!p) return null;
+    return "https://www.espn.com/" + p + "/scoreboard" + (ymd && DAILY.has(sport.id) ? "/_/date/" + ymd.replace(/-/g, "") : "");
+  }
+  const injuriesUrl = (sport) => INJURY_PAGES.has(sport.id) ? "https://www.espn.com/" + ESPN_US[sport.id] + "/injuries" : null;
+  const normName = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  // "New York Jets" ↔ "Jets", "Chicago White Sox" ↔ "White Sox" (but not "Red Sox"), else the fuzzy score.
+  function teamMatch(a, b) {
+    const x = normName(a), y = normName(b); if (!x || !y) return false;
+    return x === y || x.endsWith(" " + y) || y.endsWith(" " + x) || teamScore(a, b) >= 0.5;
+  }
+  function parseInjuries(md) {
+    const lines = String(md || "").split("\n").map(s => s.trim()), out = [];
+    let team = null;
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i]; if (!t) continue;
+      if (t.startsWith("|")) {
+        if (!team) continue;
+        const c = cellsOf(t);
+        if (/^name$/i.test(c[0]) || /^:?-{2,}/.test(c[0]) || c.length < 4) continue;
+        out.push({ team, name: c[0], pos: c[1] || "", returns: c[2] || "", status: c[3] || "", comment: c[4] || "" });
+        continue;
+      }
+      if (/^#/.test(t)) continue;
+      let j = i + 1; while (j < lines.length && !lines[j]) j++;
+      if (j < lines.length && /^\|\s*NAME\s*\|/i.test(lines[j])) team = t.replace(/\s+/g, " ");
+    }
+    return out;
+  }
+  const SEVERE = /^(out|doubtful|injured reserve|ir|suspension|suspended)/i;
+  function injuriesFor(list, teamName) {
+    return list.filter(p => teamMatch(p.team, teamName)).map(p => Object.assign({}, p, { severe: SEVERE.test(p.status) }))
+      .sort((a, b) => (b.severe - a.severe) || a.name.localeCompare(b.name));
+  }
+  const REC = /^\((\d+-\d+(?:-\d+)?)(?:\s+(\d+-\d+(?:-\d+)?)\s+(Home|Away))?\)$/;
+  const MONTHS_LONG = { january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7, september: 8, october: 9, november: 10, december: 11 };
+  function parseScoreboard(md, sport) {
+    const lines = String(md || "").split("\n").map(s => s.trim());
+    const games = []; let date = null, pend = [], last = null;
+    const soccer = !!(sport && sport.soccer);
+    for (let i = 0; i < lines.length; i++) {
+      const t = lines[i]; if (!t) continue;
+      const dh = t.match(/^#{2,4}\s+[A-Z][a-z]+day,\s+([A-Z][a-z]+)\s+(\d{1,2}),\s+(\d{4})$/);
+      if (dh && MONTHS_LONG[dh[1].toLowerCase()] != null) { date = new Date(Date.UTC(+dh[3], MONTHS_LONG[dh[1].toLowerCase()], +dh[2])).toISOString().slice(0, 10); pend = []; continue; }
+      const m = t.match(/^- (.+)$/);
+      if (m) {
+        let j = i + 1; while (j < lines.length && !lines[j]) j++;
+        const rm = j < lines.length ? lines[j].match(REC) : null;
+        if (rm) {
+          const team = { name: m[1].trim(), record: rm[1], split: rm[2] || null, splitKind: rm[3] || null, periods: null, total: null };
+          let k = j + 1;
+          for (; k < lines.length; k++) {
+            const s = lines[k]; if (!s) continue;
+            if (/^\d+(\s+\d+)+$/.test(s) && !team.periods && team.total == null) { team.periods = s.split(/\s+/).map(Number); continue; }
+            if (/^\d+$/.test(s) && team.total == null) { team.total = +s; continue; }
+            break;
+          }
+          pend.push(team); i = k - 1;
+          if (pend.length === 2) {
+            const [a, b] = pend; pend = [];
+            const g = { sport: sport && sport.id, date, teams: [a, b], away: soccer ? null : a, home: soccer ? null : b, score: a.total != null && b.total != null ? [a.total, b.total] : null, live: false, venue: null, tempF: null, espnSpread: null, espnTotal: null };
+            games.push(g); last = g;
+          }
+          continue;
+        }
+        if (last) {
+          const sp = t.match(/^- Spread:\s*(.+)$/); if (sp) { last.espnSpread = sp[1].trim(); continue; }
+          const tt = t.match(/^- Total:\s*([\d.]+)/); if (tt) { last.espnTotal = +tt[1]; continue; }
+        }
+        continue;
+      }
+      if (!last) continue;
+      if (/^#*\s*Last Play\b/i.test(t) || /^(Halftime|End of the .+|Delayed|In Progress)$/i.test(t)) { last.live = true; continue; }
+      if (!last.venue && t.length < 90 && !/^#/.test(t) && !/[.!?…]$/.test(t) && /\s[A-Z][\w.'-]*(?: [A-Z][\w.'-]*)*,\s+(?:[A-Z]{2}|[A-Z][a-z]+(?: [A-Z][a-z]+)*)$/.test(t)) { last.venue = t; continue; }
+      if (last.venue && last.tempF == null && !last.score && /^\d{2,3}$/.test(t)) { last.tempF = +t; continue; }
+    }
+    const today = etYmd();
+    for (const g of games) g.status = g.score ? (g.live ? "live" : soccer && g.date && g.date >= today ? "final or live" : "final") : "scheduled";
+    return games;
+  }
+  const espnCache = new Map();
+  function espnFetch(url, ttl) {
+    const hit = espnCache.get(url); if (hit && Date.now() - hit.at < ttl) return hit.p;
+    const p = D.fetchRaw(url, 120000, ttl); espnCache.set(url, { at: Date.now(), p }); p.catch(() => espnCache.delete(url));
+    return p;
+  }
+  async function scoreboard(sportId, ymd) {
+    const sport = sportOf(sportId), url = scoreboardUrl(sport, ymd); if (!url) return { url: null, games: [] };
+    return { url, games: parseScoreboard(await espnFetch(url, 5 * 60e3), sport) };
+  }
+  async function injuries(sportId) {
+    const sport = sportOf(sportId), url = injuriesUrl(sport); if (!url) return { url: null, list: [] };
+    return { url, list: parseInjuries(await espnFetch(url, 15 * 60e3)) };
+  }
+  // Pair an ESPN scoreboard game with an odds-page game by both team names.
+  function findEspn(g, sbGames) {
+    return sbGames.find(e => (teamMatch(e.teams[0].name, g.away.name) && teamMatch(e.teams[1].name, g.home.name)) || (teamMatch(e.teams[0].name, g.home.name) && teamMatch(e.teams[1].name, g.away.name))) || null;
+  }
+  function attachEspn(g, e) {
+    if (!e) return;
+    const aIsAway = teamMatch(e.teams[0].name, g.away.name);
+    const away = aIsAway ? e.teams[0] : e.teams[1], home = aIsAway ? e.teams[1] : e.teams[0];
+    g.espn = { date: e.date, status: e.status, venue: e.venue, tempF: e.tempF, spread: e.espnSpread, total: e.espnTotal, away: { record: away.record, split: away.split, splitKind: away.splitKind, score: away.total }, home: { record: home.record, split: home.split, splitKind: home.splitKind, score: home.total } };
+    if (e.status === "final") g.final = true;
+    if (!g.start && e.date) { const [y, mo, d] = e.date.split("-").map(Number); g.start = easternToUtc(y, mo - 1, d, 12, 0); g.startHasTime = false; g.dateLabel = g.dateLabel || e.date; }
+  }
+
+  /* ---------- grading a bet from final scores ---------- */
+  // leg: {market, side, line, home, away, soccer}; e: an ESPN scoreboard game with a final score.
+  // Returns {result: won|lost|push|half-won|half-lost, mult} where mult is the return per unit staked.
+  function gradeLeg(leg, e) {
+    if (!e || !e.score || e.status !== "final") return null;
+    const aIsHome = teamMatch(e.teams[0].name, leg.home) || teamMatch(e.teams[1].name, leg.away);
+    const hs = aIsHome ? e.score[0] : e.score[1], as = aIsHome ? e.score[1] : e.score[0];
+    const settle = (x) => x > 1e-9 ? "won" : x < -1e-9 ? "lost" : "push";
+    const one = (x) => ({ won: leg.dec, lost: 0, push: 1 })[settle(x)];
+    let mult;
+    if (leg.market === "ml") {
+      const w = hs > as ? "home" : as > hs ? "away" : "draw";
+      mult = leg.side === w ? leg.dec : w === "draw" && !leg.soccer ? 1 : 0;
+    } else {
+      const val = leg.market === "total" ? (leg.side === "over" ? hs + as - leg.line : leg.line - (hs + as)) : (leg.side === "home" ? hs - as : as - hs) + leg.line;
+      const q = Math.abs(leg.line * 4 - Math.round(leg.line * 4)) < 1e-9 && Math.round(leg.line * 4) % 2 !== 0;
+      mult = q ? (one(val - 0.25) + one(val + 0.25)) / 2 : one(val);
+    }
+    const result = mult === 0 ? "lost" : mult === 1 ? "push" : mult >= leg.dec - 1e-9 ? "won" : mult > 1 ? "half-won" : "half-lost";
+    return { result, mult, score: { home: hs, away: as } };
+  }
+
   /* ---------- loading a league ---------- */
   const cache = new Map();
   const TTL = 5 * 60e3;
@@ -247,6 +386,8 @@
   async function loadUS(sport) {
     const url = "https://www.vegasinsider.com/" + sport.vi + "/odds/las-vegas/";
     let games = [], books = [], srcs = [], viErr = null;
+    // ESPN's scoreboard and injury report load alongside the odds; neither is required.
+    const extras = Promise.all([scoreboard(sport.id).catch(e => ({ error: e, games: [] })), injuries(sport.id).catch(e => ({ error: e, list: [] }))]);
     try {
       const body = await D.fetchRaw(D.bust(url), 120000, 0);
       const r = parseVegasInsider(body, sport); games = r.games; books = r.books;
@@ -262,8 +403,15 @@
       if (merged.length) games = merged;
       else if (viErr) throw viErr;
     }
-    for (const g of games) g.sources = srcs;
-    return { sport, games, books, sources: srcs };
+    const [sb, inj] = await extras;
+    if (sb.url && !sb.error) srcs.push(source("ESPN scoreboard", sb.url, null, "Records, venues, scores"));
+    if (inj.url && !inj.error) srcs.push(source("ESPN injury report", inj.url, null, "Injuries"));
+    for (const g of games) {
+      attachEspn(g, findEspn(g, sb.games || []));
+      g.injuries = inj.url && !inj.error ? { away: injuriesFor(inj.list, g.away.name), home: injuriesFor(inj.list, g.home.name), url: inj.url } : null;
+      g.sources = srcs;
+    }
+    return { sport, games, books, sources: srcs, scoreboard: sb.games || [], errors: [sb.error ? "ESPN scoreboard: " + (sb.error.message || "failed") : null, inj.error ? "ESPN injuries: " + (inj.error.message || "failed") : null].filter(Boolean) };
   }
   async function loadSoccer(sport) {
     const base = "https://www.sportsline.com/" + sport.sl + "/odds/";
@@ -309,9 +457,11 @@
       const q = {}; if (hTeam.ask) q.home = { dec: 1 / hTeam.ask, line: null }; if (aTeam.ask) q.away = { dec: 1 / aTeam.ask, line: null }; if (tie && tie.ask) q.draw = { dec: 1 / tie.ask, line: null };
       mk.books.Kalshi = q;
     }
-    for (const g of games) { g.sources = srcs; if (g.markets.ml) g.markets.ml.sides = ["home", "draw", "away"]; }
+    const sb = await scoreboard(sport.id).catch(e => ({ error: e, games: [] }));
+    if (sb.url && !sb.error) srcs.push(source("ESPN scoreboard", sb.url, null, "Records, scores"));
+    for (const g of games) { attachEspn(g, findEspn(g, sb.games || [])); g.sources = srcs; if (g.markets.ml) g.markets.ml.sides = ["home", "draw", "away"]; }
     if (!games.length && errors.length) throw new D.DataError("fetch_failed", errors.join(" · "), "sportsline");
-    return { sport, games, books: books.concat(events.length ? ["Kalshi"] : []), sources: srcs, errors };
+    return { sport, games, books: books.concat(events.length ? ["Kalshi"] : []), sources: srcs, errors, scoreboard: sb.games || [] };
   }
   function swapSides(g) {
     [g.home, g.away] = [g.away, g.home];
@@ -433,5 +583,5 @@
     return { game: g.away.name + " at " + g.home.name, home: g.home.name, away: g.away.name, start: g.start ? new Date(g.start).toISOString() : null, startKnown: !!g.startHasTime, status: g.status, markets: mk, model: g.model || null, kalshi: g.kalshi ? { home: g.kalshi.home, away: g.kalshi.away, tie: g.kalshi.tie } : null, sources: (g.sources || []).map(s => ({ name: s.name, url: s.url })) };
   }
 
-  MD.bet = { SPORTS, sportOf, load, analyze, snapshot, statusOf, statzFixtures, statzLeaders, parseVegasInsider, parseSportsLine, parseKalshi, parseCell, parseWhen, teamScore, matchGame, mergeGames, bookName, cacheClear: () => cache.clear() };
+  MD.bet = { scoreboard, injuries, parseScoreboard, parseInjuries, injuriesFor, findEspn, teamMatch, gradeLeg, etYmd, scoreboardUrl, SPORTS, sportOf, load, analyze, snapshot, statusOf, statzFixtures, statzLeaders, parseVegasInsider, parseSportsLine, parseKalshi, parseCell, parseWhen, teamScore, matchGame, mergeGames, bookName, cacheClear: () => cache.clear() };
 })(typeof window !== "undefined" ? window : globalThis);

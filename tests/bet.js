@@ -5,7 +5,7 @@ const F = globalThis.__betFixtures;
 const calls = [];
 globalThis.MD.data = {
   connector: (server) => ({ async call(tool, input) { calls.push([server, tool, input]); if (tool === "get_upcoming_fixtures") return F.statz(input.competition); if (tool === "get_match_leaders") return F.leaders(input.fixture_id); throw new Error("no"); } }),
-  async fetchRaw(url) { calls.push(["exa", url]); if (/vegasinsider\.com\/(\w[\w-]*)\//.test(url)) return F.vi(url.match(/vegasinsider\.com\/([\w-]+)\//)[1]); let m = url.match(/sportsline\.com\/([\w-]+)\/odds\/(money-line\/|over-under\/)?/); if (m) return F.sl(m[1], m[2] === "money-line/" ? "ml" : m[2] === "over-under/" ? "total" : "spread"); m = url.match(/series_ticker=(\w+)/); if (m) return F.kalshi(m[1]); throw new Error("unmocked " + url); },
+  async fetchRaw(url) { calls.push(["exa", url]); let e = url.match(/espn\.com\/(.+?)\/(scoreboard|injuries)/); if (e) return e[2] === "injuries" ? F.espnInjuries(e[1]) : F.espnScoreboard(url.includes("soccer") ? "soccer" : e[1]); if (/vegasinsider\.com\/(\w[\w-]*)\//.test(url)) return F.vi(url.match(/vegasinsider\.com\/([\w-]+)\//)[1]); let m = url.match(/sportsline\.com\/([\w-]+)\/odds\/(money-line\/|over-under\/)?/); if (m) return F.sl(m[1], m[2] === "money-line/" ? "ml" : m[2] === "over-under/" ? "total" : "spread"); m = url.match(/series_ticker=(\w+)/); if (m) return F.kalshi(m[1]); throw new Error("unmocked " + url); },
   bust: (u) => u + "?_=1", DataError: class extends Error { constructor(c, m) { super(m); this.code = c; } }
 };
 require("../src/betting.js");
@@ -59,6 +59,23 @@ let fail = 0; const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); i
   const e = await B.load("epl", true); F.statz = orig;
   const cov = e.games[0];
   ok(cov.home.name === "Coventry" && Math.abs(cov.markets.ml.books.FanDuel.home.dec - O.amToDec(240)) < 1e-9 && Math.abs(cov.markets.spread.books.FanDuel.home.line - 0.25) < 1e-9, "when Statz lists the teams the other way round, sides and lines swap together");
+  // ESPN enrichment and grading
+  const nfl2 = await B.load("nfl", true);
+  const pit = nfl2.games.find(g => g.away.name === "Steelers"), mia = nfl2.games.find(g => g.away.name === "Dolphins"), ne = nfl2.games.find(g => g.away.name === "Patriots");
+  ok(pit.espn && pit.espn.away.record === "4-2" && pit.espn.away.split === "2-1" && pit.espn.venue === "Caesars Superdome New Orleans, LA", "ESPN records, road split and venue attached");
+  ok(mia.espn.tempF === 63 && mia.injuries.away.length === 2 && mia.injuries.away[0].severe && mia.injuries.away[0].name === "Q. Back", "game-time temperature and the away team's injuries (Out first)");
+  ok(pit.injuries.away.length === 1 && mia.injuries.home.length === 1 && pit.injuries.home.length === 0, "injuries matched by nickname (New York Jets ↔ Jets, not Steelers ↔ Jets)");
+  ok(ne.final && ne.espn.home.score === 30 && ne.status === "final", "final score from ESPN marks the game final");
+  ok(pit.start && pit.startHasTime === false, "date from ESPN when the odds page has none");
+  ok(nfl2.sources.some(x => x.name === "ESPN injury report"), "ESPN listed as a source");
+  const fin = nfl2.scoreboard.find(x => x.status === "final");
+  const leg = (market, side, line, dec) => ({ market, side, line, dec, home: "Bears", away: "Patriots", soccer: false });
+  ok(B.gradeLeg(leg("ml", "home", null, 1.5), fin).result === "won" && B.gradeLeg(leg("ml", "away", null, 2.6), fin).result === "lost", "moneyline graded from the final (Bears 30–24)");
+  ok(B.gradeLeg(leg("spread", "home", -6, 1.91), fin).result === "push" && B.gradeLeg(leg("spread", "away", 6.5, 1.91), fin).result === "won" && B.gradeLeg(leg("spread", "home", -6.5, 1.91), fin).result === "lost", "spread: push on the number, cover and miss");
+  ok(B.gradeLeg(leg("total", "over", 53.5, 1.91), fin).result === "won" && B.gradeLeg(leg("total", "under", 54, 1.91), fin).result === "push", "totals (54 points)");
+  const q = B.gradeLeg(leg("spread", "home", -6.25, 2.0), fin); ok(q.result === "half-lost" && q.mult === 0.5, "quarter line: half push, half loss");
+  ok(B.gradeLeg(leg("ml", "home", null, 1.5), nfl2.scoreboard.find(x => x.status === "scheduled")) === null, "no grade before the game ends");
+  ok(B.teamMatch("New York Jets", "Jets") && !B.teamMatch("Chicago White Sox", "Red Sox") && B.teamMatch("Chicago White Sox", "White Sox"), "nickname matching");
   ok(B.teamScore("Paris FC", "PSG") < B.teamScore("PSG", "Paris Saint-Germain"), "PSG ≠ Paris FC");
   ok(B.teamScore("Manchester City", "Man City") === 1, "alias Man City");
   console.log(fail ? fail + " failed" : "all passed"); process.exit(fail ? 1 : 0);
