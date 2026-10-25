@@ -312,6 +312,17 @@
     const td = Q.ruleToday(R0, { TLT: -1.4, SPY: 0.2, XLK: -0.6 }); ok(td.causeHappened && td.effectFollowed); near(td.effectPct, -0.8, 1e-9);
     ok(!Q.ruleToday(R0, { TLT: 0.3, SPY: 0, XLK: 0 }).causeHappened); eq(Q.ruleToday(R0, { TLT: -2 }), null);
   });
+  test("intraday setup signals: opening-range breakout, VWAP reclaim, gaps, day extremes, volume", () => {
+    const Q = MD.quant, t0 = 1000;
+    const minute = [10, 10.2, 10.1, 9.9, 10.05, 10.1, 10.3, 10.6, 10.7].map((c, i) => ({ time: t0 + i * 300, close: c }));
+    const bars = minute.map(p => ({ time: p.time, close: p.close })), vw = [10, 10.05, 10.1, 10.12, 10.1, 10.12, 10.15, 10.2, 10.25].map((v, i) => ({ time: t0 + i * 300, value: v }));
+    const s = Q.intradaySignals({ minute, last: 10.7, or15: { high: 10.2, low: 9.9, complete: true }, openSec: t0, bars, vwapSeries: vw, vwapUpper: 10.5, high: 10.7, low: 9.9, priorHigh: 10.4, priorLow: 9.5, preHigh: 10.25, preLow: 9.8, gapPct: 2, prevClose: 9.8, open: 10, rvol: 2.5 });
+    const names = s.map(x => x.name);
+    ["Opening-range breakout", "VWAP reclaim", "Stretched above VWAP", "At the high of the day", "Above the prior day's high", "Above the pre-market high", "Gap up holding", "Heavy volume"].forEach(n => ok(names.includes(n), "missing " + n + " in " + names.join(", ")));
+    eq(s.find(x => x.name === "Opening-range breakout").at, t0 + 6 * 300); eq(s.find(x => x.name === "Above the prior day's high").at, t0 + 7 * 300);
+    const g = Q.intradaySignals({ last: 9.9, gapPct: 2, prevClose: 9.8, open: 10, low: 9.75, high: 10.1 }); ok(g.some(x => x.name === "Gap filled"));
+    const d = Q.intradaySignals({ last: 9.82, gapPct: -1.5, prevClose: 10, open: 9.85, low: 9.8, high: 9.9, rvol: 0.4 }); ok(d.some(x => x.name === "Gap down holding") && d.some(x => x.name === "Light volume") && !d.some(x => x.name === "At the high of the day"));
+  });
   test("New York session clock and NYSE holidays", () => {
     const Q = MD.quant;
     const a = Q.session(new Date("2026-10-26T14:00:00Z")); eq(a.phase, "open"); near(a.fraction, 30 / 390, 1e-9); eq(a.minutesToClose, 360);

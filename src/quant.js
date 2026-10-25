@@ -254,6 +254,45 @@
     return { n: rows.length, rows, net: gw - gl, winRatePct: wins.length / rows.length * 100, avgWin: wins.length ? gw / wins.length : 0, avgLoss: losses.length ? gl / losses.length : 0, profitFactor: gl > 0 ? gw / gl : null, expectancy: (gw - gl) / rows.length, avgR: rs.length ? C.mean(rs.map(r => r.r)) : null, largestLoss: losses.length ? Math.min(...losses.map(r => r.pnl)) : 0 };
   }
 
+  /* Measured intraday setups from regular-session minute prices ({time, close}, oldest first), 5-minute bars with
+     their VWAP, and the day's levels. Each signal says what happened and since when; none is a recommendation. */
+  function intradaySignals(x) {
+    const out = [], m = x.minute || [], last = x.last, add = (name, side, detail, at) => out.push({ name, side, detail, at: at || null });
+    if (!(last > 0)) return out;
+    const f2 = (v) => v == null ? "—" : (Math.abs(v) >= 1 ? v.toFixed(2) : v.toPrecision(4));
+    const cross = (level, dir, from) => { let t = null; for (let i = Math.max(1, from || 1); i < m.length; i++) { const a = m[i - 1].close, b = m[i].close; if (dir > 0 ? a <= level && b > level : a >= level && b < level) t = m[i].time; } return t; };
+    if (x.or15 && x.or15.complete) {
+      const from = m.findIndex(p => p.time >= (x.openSec || 0) + 15 * 60);
+      if (last > x.or15.high) add("Opening-range breakout", "long", "Above the 15-minute high " + f2(x.or15.high), cross(x.or15.high, 1, from));
+      else if (last < x.or15.low) add("Opening-range breakdown", "short", "Below the 15-minute low " + f2(x.or15.low), cross(x.or15.low, -1, from));
+      else add("Inside the opening range", "neutral", f2(x.or15.low) + " – " + f2(x.or15.high));
+    }
+    const b = x.bars || [], vw = x.vwapSeries || [];
+    if (b.length >= 3 && vw.length === b.length) {
+      const rel = b.map((bar, i) => bar.close - vw[i].value), n = rel.length;
+      let lastCross = -1; for (let i = 1; i < n; i++) if (Math.sign(rel[i]) !== Math.sign(rel[i - 1]) && rel[i] !== 0) lastCross = i;
+      if (lastCross >= n - 6 && lastCross > 0) add(rel[n - 1] > 0 ? "VWAP reclaim" : "VWAP rejection", rel[n - 1] > 0 ? "long" : "short", (rel[n - 1] > 0 ? "Crossed back above" : "Crossed back below") + " VWAP " + f2(vw[n - 1].value), b[lastCross].time);
+      else if (n >= 12 && rel.slice(-12).every(r => r > 0)) add("Holding above VWAP", "long", "Every bar of the last hour closed above VWAP");
+      else if (n >= 12 && rel.slice(-12).every(r => r < 0)) add("Below VWAP all hour", "short", "Every bar of the last hour closed below VWAP");
+      if (x.vwapUpper && last > x.vwapUpper) add("Stretched above VWAP", "neutral", "Above the +1σ band " + f2(x.vwapUpper) + "; extended moves often pull back");
+      else if (x.vwapLower && last < x.vwapLower) add("Stretched below VWAP", "neutral", "Below the −1σ band " + f2(x.vwapLower) + "; extended moves often bounce");
+    }
+    if (x.high && last >= x.high * 0.999) add("At the high of the day", "long", "Within 0.1% of " + f2(x.high));
+    else if (x.low && last <= x.low * 1.001) add("At the low of the day", "short", "Within 0.1% of " + f2(x.low));
+    if (x.priorHigh && last > x.priorHigh) add("Above the prior day's high", "long", f2(x.priorHigh), cross(x.priorHigh, 1));
+    else if (x.priorLow && last < x.priorLow) add("Below the prior day's low", "short", f2(x.priorLow), cross(x.priorLow, -1));
+    if (x.preHigh && m.length && last > x.preHigh) add("Above the pre-market high", "long", f2(x.preHigh), cross(x.preHigh, 1));
+    else if (x.preLow && m.length && last < x.preLow) add("Below the pre-market low", "short", f2(x.preLow), cross(x.preLow, -1));
+    if (x.gapPct != null && Math.abs(x.gapPct) >= 0.3 && x.prevClose) {
+      const filled = x.gapPct > 0 ? x.low != null && x.low <= x.prevClose : x.high != null && x.high >= x.prevClose;
+      if (filled) add("Gap filled", "neutral", "Traded back to the previous close " + f2(x.prevClose));
+      else { const left = (last - x.prevClose) / (x.open - x.prevClose); if (x.open && left < 0.5 && left > 0) add("Gap filling", "neutral", Math.round((1 - left) * 100) + "% of the gap retraced"); else add(x.gapPct > 0 ? "Gap up holding" : "Gap down holding", x.gapPct > 0 ? "long" : "short", (x.gapPct > 0 ? "+" : "") + x.gapPct.toFixed(1) + "% gap not filled"); }
+    }
+    if (x.rvol != null && x.rvol >= 2) add("Heavy volume", "neutral", "Relative volume " + x.rvol.toFixed(1) + "×");
+    else if (x.rvol != null && x.rvol < 0.6) add("Light volume", "neutral", "Relative volume " + x.rvol.toFixed(1) + "×; moves are less reliable");
+    return out;
+  }
+
   /* ---------- New York session clock ---------- */
   // NYSE full closures and 1 p.m. early closes (the exchange's published calendar).
   const HOLIDAYS = new Set(["2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07", "2026-11-26", "2026-12-25",
@@ -289,6 +328,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

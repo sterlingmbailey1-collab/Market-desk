@@ -85,11 +85,57 @@
     if (L.vwap) { add("VWAP", L.vwap.value, "vwap"); add("VWAP +1σ", L.vwap.upper, "vwap"); add("VWAP −1σ", L.vwap.lower, "vwap"); }
     if (L.pivots) for (const k of ["R2", "R1", "P", "S1", "S2"]) add("Pivot " + k, L.pivots[k], "pivot");
     L.levels = lv.sort((x, y) => y.price - x.price);
+    L.signals = Q.intradaySignals({ minute: L.minute, last: L.last, or15: L.or15, openSec: L.openSec, bars: L.bars, vwapSeries: L.vwapSeries, vwapUpper: L.vwap && L.vwap.upper, vwapLower: L.vwap && L.vwap.lower, high: hi, low: lo, priorHigh: L.prior && L.prior.high, priorLow: L.prior && L.prior.low, preHigh: L.pre && L.pre.high, preLow: L.pre && L.pre.low, gapPct: L.gapIndicated ? null : L.gapPct, prevClose: L.previousClose, open: L.open, rvol: L.rvol });
     return L;
+  }
+  // Signal chips: green for long-side setups, red for short-side, grey for context.
+  function signalChips(signals, tzShift) {
+    if (!signals || !signals.length) return h("span", { class: "tiny muted" }, "No setups measured yet");
+    return h("div", { class: "row sigchips", style: "gap:4px;flex-wrap:wrap" }, signals.map(s => h("span", { class: "pill " + (s.side === "long" ? "ok" : s.side === "short" ? "bad" : ""), title: s.detail + (s.at ? " · since " + new Date((s.at + (tzShift || 0)) * 1000).toISOString().slice(11, 16) : "") }, s.name)));
+  }
+  /* The watch board: a light measure of several symbols at once (Nasdaq minute prices, the prior day and average
+     volume), refreshed every minute while US markets trade. */
+  async function boardRow(app, sym) {
+    const a = await MD.ai.findAsset(sym); if (a.cls !== "stock" && a.cls !== "etf") throw new Error(sym + ": the board covers US stocks and ETFs.");
+    const [it, daily, prof] = await Promise.all([D.stocks.intraday(a.symbol, a.cls), D.historyFor(a, "1M").catch(() => null), D.stocks.profile(a.symbol, a.cls).catch(() => null)]);
+    const lastPt = it.points[it.points.length - 1], sessionDate = lastPt ? Q.nyParts(new Date(lastPt.time * 1000)).ymd : Q.session().date;
+    const prior = daily ? daily.points.filter(p => iso(p.time) < sessionDate) : [], pd = prior[prior.length - 1] || null;
+    const minute = it.points.filter(p => p.et >= 570 && p.et < 960).map(p => ({ time: p.time, close: p.value })), clock = Q.session();
+    const last = it.last || (lastPt && lastPt.value), reg = it.regular, prev = it.previousClose || (pd && pd.close);
+    const gapPct = reg && prev ? (reg.first / prev - 1) * 100 : it.pre && prev ? (it.pre.last / prev - 1) * 100 : null;
+    const or15 = it.openSec && minute.length ? Q.openingRange(minute, it.openSec, 15) : null;
+    const rvol = Q.rvol(it.volume, prof && prof.avgVolume, sessionDate === clock.date ? clock.fraction : 1);
+    const signals = Q.intradaySignals({ minute, last, or15, openSec: it.openSec, high: reg && reg.high, low: reg && reg.low, priorHigh: pd && pd.high, priorLow: pd && pd.low, preHigh: it.pre && it.pre.high, preLow: it.pre && it.pre.low, gapPct: reg ? gapPct : null, prevClose: prev, open: reg && reg.first, rvol });
+    return { symbol: a.symbol, asset: a, last, chgPct: prev && last ? (last / prev - 1) * 100 : null, gapPct, gapIndicated: !reg, high: reg && reg.high, low: reg && reg.low, posPct: reg && reg.high > reg.low ? (last - reg.low) / (reg.high - reg.low) * 100 : null, rvol, signals, sessionDate };
+  }
+  function boardView(app, load) {
+    const box = h("div", { class: "stack" }), tbl = h("div", {}), stamp = h("span", { class: "tiny muted" });
+    const get = () => app.ls.get("day.board", ["SPY", "QQQ"]), set = (xs) => app.ls.set("day.board", xs.slice(0, 10));
+    const input = h("input", { type: "text", placeholder: "Add a ticker", "aria-label": "Add to board", style: "max-width:150px" });
+    const addBtn = h("button", { class: "btn ghost sm", type: "button", onclick: () => { const v = input.value.trim().toUpperCase(); if (!v) return; if (!get().includes(v)) set(get().concat(v)); input.value = ""; refresh(true); } }, "Add");
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") addBtn.click(); });
+    let seen = null;
+    async function refresh(quiet) {
+      const syms = get(); stamp.textContent = "Updating…";
+      const rows = await Promise.all(syms.map(s => boardRow(app, s).catch(e => ({ symbol: s, error: U.errorText(e) }))));
+      // A signal that wasn't there at the last refresh pops a notice.
+      if (seen && !quiet && app.settings.notify && app.settings.notify.toasts !== false) for (const r of rows) { if (!r.signals) continue; const fresh = r.signals.filter(x => x.side !== "neutral" && !(seen.get(r.symbol) || []).includes(x.name)); if (fresh.length) U.toast(r.symbol + ": " + fresh.map(x => x.name).join(", "), fresh.map(x => x.detail).join(" · ")); }
+      seen = new Map(rows.filter(r => r.signals).map(r => [r.symbol, r.signals.map(x => x.name)]));
+      tbl.replaceChildren(U.table([{ t: "Symbol", v: (r) => h("strong", {}, r.symbol) }, { t: "Last", v: (r) => r.error ? h("span", { class: "tiny warn-t" }, r.error) : px(r.last), n: true }, { t: "Change", v: (r) => r.chgPct == null ? "—" : U.chg(r.chgPct), n: true },
+        { t: "Gap", v: (r) => r.gapPct == null ? "—" : h("span", { class: r.gapPct > 0 ? "up" : "down", title: r.gapIndicated ? "Indicated by pre-market" : "Open vs previous close" }, pc(r.gapPct) + (r.gapIndicated ? "*" : "")), n: true },
+        { t: "Day range", v: (r) => r.posPct == null ? "—" : h("span", { class: "row", style: "gap:6px;align-items:center;justify-content:flex-end" }, h("span", { class: "meter", style: "width:60px" }, h("i", { style: "width:" + Math.max(0, Math.min(100, r.posPct)).toFixed(0) + "%" })), h("span", { class: "tiny num" }, Math.round(r.posPct) + "%")), n: true },
+        { t: "RVOL", v: (r) => r.rvol == null ? "—" : r.rvol.toFixed(1) + "×", n: true }, { t: "Signals", v: (r) => r.signals ? signalChips(r.signals.filter(x => x.name !== "Inside the opening range"), D.tzOffsetSec("America/New_York")) : "—" },
+        { t: "", v: (r) => h("button", { class: "btn ghost sm", type: "button", "aria-label": "Remove " + r.symbol, onclick: (e) => { e.stopPropagation(); set(get().filter(x => x !== r.symbol)); refresh(true); } }, "×") }], rows, { onRow: (r) => r.asset && load(r.asset) }));
+      stamp.textContent = "Updated " + new Date().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) + " · every minute while US markets trade · * gap indicated by pre-market";
+    }
+    box.append(h("div", { class: "row", style: "gap:6px;flex-wrap:wrap;align-items:center" }, input, addBtn, app.store.cached("watch").length ? h("button", { class: "btn ghost sm", type: "button", onclick: () => { const w = app.store.cached("watch").filter(x => ["stock", "etf"].includes(x.cls)).map(x => x.symbol); set([...new Set(get().concat(w))]); refresh(true); } }, "Add my watchlist") : null), tbl, stamp);
+    refresh(true);
+    const timer = setInterval(() => { if (!document.body.contains(box)) { clearInterval(timer); return; } if (!document.hidden && ["pre", "open", "after"].includes(Q.session().phase)) refresh(false); }, 60000);
+    return box;
   }
   // The measured picture without chart series, for prompts and tools.
   function forAI(L) {
-    return { symbol: L.symbol, name: L.name, class: L.cls, session: L.sessionLabel, clock: { phase: L.clock.phase, minutesToClose: L.clock.minutesToClose, minutesToOpen: L.clock.minutesToOpen }, last: L.last, previousClose: L.previousClose, changePct: r2(L.changePct),
+    return { signals: (L.signals || []).map(s => s.name + ": " + s.detail), symbol: L.symbol, name: L.name, class: L.cls, session: L.sessionLabel, clock: { phase: L.clock.phase, minutesToClose: L.clock.minutesToClose, minutesToOpen: L.clock.minutesToOpen }, last: L.last, previousClose: L.previousClose, changePct: r2(L.changePct),
       gapPct: r2(L.gapPct), gapIsIndicatedFromPremarket: !!L.gapIndicated, preMarket: L.pre, open: L.open, sessionHigh: L.high, sessionLow: L.low, priorDay: L.prior, atr14: r2(L.atr), atrPct: r2(L.atrPct), rangeUsedOfAtrPct: r2(L.rangeUsedPct),
       vwap: L.vwap, vsVwapPct: r2(L.vsVwapPct), barsAboveVwapPct: r2(L.barsAboveVwapPct), openingRange15: L.or15, openingRange30: L.or30, relativeVolume: r2(L.rvol), volumeToday: L.volumeToday, avgVolume: L.avgVolume,
       gapHistory: L.gapStats, closedAboveOpenPctLastYear: r2(L.closeAboveOpenPct), pivots: L.pivots, levels: L.levels.map(x => ({ label: x.label, price: x.price, distancePct: r2(x.distancePct) })), sector: L.sector || null, notes: L.notes, sources: L.sources };
@@ -190,6 +236,8 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
       watch.length ? h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" }, h("span", { class: "label" }, "Your watchlist"), watch.map(w => h("button", { class: "chip", type: "button", onclick: () => load(w.asset || { id: w.assetId, cls: w.cls, symbol: w.symbol, name: w.name, cgId: w.cgId }) }, w.symbol))) : null)));
     paintScan(status);
 
+    root.append(U.section("Watch board", boardView(app, (a) => load(a))));
+
     // Desk
     const input = h("input", { type: "text", placeholder: "Ticker or coin (e.g. NVDA, SPY, BTC)", "aria-label": "Symbol", style: "max-width:240px" });
     const loadBtn = h("button", { class: "btn", type: "button", onclick: async () => { const v = input.value.trim(); if (!v) return; try { load(await MD.ai.findAsset(v.toUpperCase().length <= 6 ? v.toUpperCase() : v)); } catch (e) { U.toast("Not found", U.errorText(e), true); } } }, "Load");
@@ -222,9 +270,11 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
           kpi("Opening range (15 min)", L.or15 ? px(L.or15.low) + " – " + px(L.or15.high) : "—", L.or15 && !L.or15.complete ? "still forming" : L.or30 ? "30 min: " + px(L.or30.low) + " – " + px(L.or30.high) : null),
           kpi("Pre-market", L.pre ? px(L.pre.low) + " – " + px(L.pre.high) : "—", L.pre ? "last " + px(L.pre.last) : L.cls === "crypto" ? "not applicable" : "no pre-market trades"),
           kpi("Closed above open", L.closeAboveOpenPct == null ? "—" : L.closeAboveOpenPct.toFixed(0) + "% of days", "last 12 months")),
+        h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, "Setups measured now"), signalChips(L.signals, L.shift)),
         L.gapStats && L.gapStats.n ? h("p", { class: "small" }, h("strong", {}, "Gaps like today's: "), "of " + L.gapStats.n + " past " + (L.gapPct > 0 ? "gap-ups" : "gap-downs") + " of " + L.gapStats.thresholdPct + "% or more in the last year, " + L.gapStats.fillPct + "% filled the same day and " + L.gapStats.closeAboveOpenPct + "% closed above the open (average open-to-close " + pc(L.gapStats.avgOpenToClosePct) + ").") : null,
         chartBox,
-        h("details", { open: true }, h("summary", { class: "label", style: "cursor:pointer" }, "Key levels (" + L.levels.length + ")"), U.table([{ t: "Level", v: "label" }, { t: "Price", v: (r) => px(r.price), n: true }, { t: "Distance", v: (r) => r.distancePct == null ? "—" : h("span", { class: r.distancePct > 0 ? "up" : r.distancePct < 0 ? "down" : "" }, pc(r.distancePct)), n: true }], L.levels)),
+        h("details", { open: true }, h("summary", { class: "label", style: "cursor:pointer" }, "Key levels (" + L.levels.length + ")"), U.table([{ t: "Level", v: "label" }, { t: "Price", v: (r) => px(r.price), n: true }, { t: "Distance", v: (r) => r.distancePct == null ? "—" : h("span", { class: r.distancePct > 0 ? "up" : r.distancePct < 0 ? "down" : "" }, pc(r.distancePct)), n: true },
+          { t: "Alert", v: (r) => h("button", { class: "btn ghost sm levelalert", type: "button", "aria-label": "Alert at " + r.label, onclick: () => MD.common.alertModal(asset, { price: L.last, currency: "USD" }, { kind: r.price >= L.last ? "above" : "below", threshold: +r.price.toPrecision(6), note: "Day trading: " + (r.price >= L.last ? "breaks above " : "breaks below ") + r.label }) }, "🔔") }], L.levels)),
         L.notes.length ? h("p", { class: "small warn-t" }, L.notes.join(" ")) : null,
         h("p", { class: "tiny muted" }, "Sources: " + L.sources.join(" · ") + ". Times in " + L.tz + ". Pivots are classic floor pivots from the prior day; relative volume uses a typical intraday volume curve."),
         U.section("Position size", sizerBox), U.section("AI plan for the session", planBox));
