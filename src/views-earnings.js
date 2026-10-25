@@ -71,5 +71,24 @@ Reply with ONLY JSON: {"setup": "2-3 sentences", "watch": ["3-5 metrics or topic
     A().list("What will decide the reaction", r.watch), A().reviewBadge(r.review), A().sources(r.sources),
     h("p", { class: "tiny muted" }, "Scenario probabilities are Claude's, normalised to 100%, from the measured history and the sources retrieved; checked by a second review. Not advice."));
 
-  MD.earnings = { measure, panel, reaction };
+  /* Insiders and dividends tab: Nasdaq Form 4 activity and dividend history (Nasdaq-listed only; Zacks yield otherwise). */
+  function insidersPanel(el, app, a) {
+    U.async(el, async () => {
+      const [ins, div, z] = await Promise.all([D.stocks.insiders(a.symbol).catch(e => ({ error: e })), D.stocks.dividends(a.symbol).catch(() => null), D.zacks.metrics(a.symbol).catch(() => null)]);
+      return { ins, div, z };
+    }, ({ ins, div, z }) => {
+      const c = (k, p) => ins.counts && ins.counts[k] ? ins.counts[k][p] : null, sh = (k, p) => ins.shares && ins.shares[k] ? ins.shares[k][p] : null;
+      const buys3 = c("Number of Open Market Buys", "m3"), sells3 = c("Number of Sells", "m3"), net12 = sh("Net Activity", "m12");
+      el.append(h("div", { class: "kpis k4" },
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Insider buys (open market)"), h("span", { class: "v " + (buys3 > 0 ? "up" : "") }, ins.error ? "—" : String(buys3 ?? "—")), h("span", { class: "s" }, "3 months · " + (c("Number of Open Market Buys", "m12") ?? "—") + " in 12 months")),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Insider sells"), h("span", { class: "v" }, ins.error ? "—" : String(sells3 ?? "—")), h("span", { class: "s" }, "3 months · " + (c("Number of Sells", "m12") ?? "—") + " in 12 months")),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Net shares, 12 months"), h("span", { class: "v " + (net12 > 0 ? "up" : net12 < 0 ? "down" : "") }, net12 != null ? C.fmtNum(net12, 0) : "—"), h("span", { class: "s" }, "bought minus sold by insiders")),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Dividend yield"), h("span", { class: "v" }, div && div.yield ? div.yield : z && z.v("div_yield") ? z.v("div_yield") + "%" : "None"), h("span", { class: "s" }, div && div.annual ? "$" + div.annual + " a year · ex-date " + (div.exDate ? U.fmtDate(div.exDate) : "—") : z && z.v("div_yield") ? "from Zacks" : "no dividend reported"))),
+        ins.error ? U.errorBox(ins.error) : U.table([{ t: "Date", v: (x) => U.fmtDate(x.date) }, { t: "Insider", v: (x) => h("span", { class: "who" }, h("b", {}, x.insider), h("span", { class: "tiny muted" }, x.relation || "")) }, { t: "Transaction", v: (x) => h("span", { class: "verdict sm " + (x.openMarketBuy ? "positive" : /Sell/i.test(x.type) ? "negative" : "neutral") }, x.type) }, { t: "Shares", v: (x) => x.shares != null ? C.fmtNum(x.shares, 0) : "—", n: true }, { t: "Price", v: (x) => x.price != null ? "$" + x.price.toFixed(2) : "—", n: true }, { t: "Held after", v: (x) => x.held != null ? C.fmtNum(x.held, 0) : "—", n: true }], ins.rows.slice(0, 15)),
+        div && div.rows.length ? h("details", {}, h("summary", { class: "label", style: "cursor:pointer" }, "Dividend history (" + div.rows.length + " payments)"), U.table([{ t: "Ex-date", v: (x) => U.fmtDate(x.exDate) }, { t: "Amount", v: (x) => x.amount != null ? "$" + x.amount.toFixed(4).replace(/0+$/, "").replace(/\.$/, "") : "—", n: true }, { t: "Type", v: "type" }, { t: "Paid", v: (x) => U.fmtDate(x.paid) }], div.rows.slice(0, 16))) : h("p", { class: "small muted" }, div && div.message ? div.message + "." : "No dividend history from Nasdaq."),
+        U.status({ status: "Delayed", source: "Nasdaq insider activity (Form 4) and dividend history" + (z ? "; yield from Zacks" : ""), note: "Most insider selling is scheduled (10b5-1) or for taxes; open-market buys are rarer and more telling." }));
+    }, { loading: "Loading insider trades and dividends…" });
+  }
+
+  MD.earnings = { measure, panel, reaction, insidersPanel };
 })(typeof window !== "undefined" ? window : globalThis);

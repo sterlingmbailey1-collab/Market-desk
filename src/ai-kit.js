@@ -71,6 +71,9 @@
         const om = await D.stocks.optionMoves(sym, q.price);
         return rnd({ ticker: sym, price: q.price, asOf: om.asOf, source: om.source, moves: om.moves.slice(0, 5).map(m => ({ expiry: m.expiry, days: m.days, movePct: m.movePct })) });
       } },
+    insider_activity: { description: "Company insiders' Form 4 trades for a US stock from Nasdaq: open-market buys and sells over 3 and 12 months, net shares, and the latest transactions (most insider selling is scheduled or tax-related; open-market buys are the rarer, more telling signal).", props: { ticker: { type: "string" } }, req: ["ticker"],
+      label: (i) => "Insider activity for " + i.ticker,
+      async run(app, S, i) { const sym = String(i.ticker || "").toUpperCase(); const r = await D.stocks.insiders(sym); S.add(r.url, "Nasdaq insider activity " + sym, "data"); return rnd({ ticker: sym, url: r.url, counts: r.counts, shares: r.shares, latest: r.rows.slice(0, 10).map(x => ({ insider: x.insider, relation: x.relation, date: x.date, type: x.type, shares: x.shares, price: x.price })) }); } },
     smart_money: { description: "Which tracked members of Congress (disclosed trades) and superinvestors (latest 13F) hold or recently traded a US ticker, from data the Smart Money tab has already loaded. Disclosures lag by weeks and say nothing about why a trade was made.", props: { ticker: { type: "string" } }, req: ["ticker"],
       label: (i) => "Smart money in " + i.ticker,
       async run(app, S, i) { const sym = String(i.ticker || "").toUpperCase(); const who = MD.smartView ? MD.smartView.whoOwns(app, sym) : []; return { ticker: sym, holdersOrTraders: who.map(w => ({ name: w.name, kind: w.kind === "pol" ? "member of Congress" : "13F investor", detail: w.note })), note: who.length ? "From disclosures loaded on the Smart Money tab." : "None of the tracked people hold or recently traded it (or the Smart Money tab hasn't loaded yet)." }; } },

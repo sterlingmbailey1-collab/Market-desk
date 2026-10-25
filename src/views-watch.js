@@ -45,6 +45,7 @@
         const [hs, q] = await Promise.all([D.historyFor(a, "1Y"), a.cls === "crypto" ? Promise.resolve(null) : app.quote(a).catch(() => null)]);
         const smart = a.cls !== "crypto" && MD.smartView ? MD.smartView.whoOwns(app, a.symbol) : [];
         const { out, t, r } = signalsFor(a, hs, q, smart);
+        if (a.cls === "stock") { try { const ins = await D.stocks.insiders(a.symbol); const b = ins.counts["Number of Open Market Buys"]; if (b && b.m3 > 0) out.push({ kind: "insider-buying", sev: b.m3 >= 3 ? "high" : "medium", text: b.m3 + " insider open-market buy" + (b.m3 > 1 ? "s" : "") + " in 3 months" }); } catch {} }
         rows.push({ a, signals: out, score: out.reduce((s, x) => s + SEV[x.sev], 0) + (a.held ? 0.5 : 0), t, r, last: t ? t.last : null, source: hs.source });
       } catch (e) { rows.push({ a, err: U.errorText(e), signals: [], score: -1 }); }
       onProgress && onProgress(++done, list.length);

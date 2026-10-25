@@ -37,7 +37,7 @@
     return runner(app, "AI review of these results", async (S, signal) => {
       const rows = getRows().slice(0, 8); if (!rows.length) throw new Error("Run a scan first.");
       const facts = rows.map(r => ({ symbol: r.a.symbol, name: r.a.name, class: r.a.cls, return3mPct: r1(r.s.r3m), return1yPct: r1(r.s.r1y), volPct: r1(r.s.vol), maxDrawdownPct: r1(r.s.mdd), fromHighPct: r1(r.s.fromHigh), above200DayAvg: r.s.above200, sharpe: isFinite(r.s.sharpe) ? r1(r.s.sharpe) : null, fcfMarginPct: r1(r.s.fcfMargin) }));
-      const tools = await limitsTools(app, S, ["stock_snapshot", "zacks_view", "search_news", "crypto_news", "smart_money", "my_portfolio", "search_web"]);
+      const tools = await limitsTools(app, S, ["stock_snapshot", "zacks_view", "search_news", "crypto_news", "smart_money", "insider_activity", "my_portfolio", "search_web"]);
       const prompt = `Today is ${today()}. The investor screened their own universe by "${presetLabel}". Review the top results below (measured by the app from one year of daily closes) as opportunities for roughly a 6–12 month holding.
 ${tools ? "Use 4 to 10 tool calls: stock_snapshot and zacks_view for the most interesting names, search_news (or crypto_news) for anything that could explain the numbers, smart_money where relevant, and my_portfolio once to judge fit and concentration. Cite only URLs the tools returned." : "Tools are unavailable; say news wasn't checked."}
 Judge each honestly: a screen rank is not a reason to buy. "Pass" and "Watch" are valid. Never invent figures.

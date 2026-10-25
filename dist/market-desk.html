@@ -1930,6 +1930,24 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
       const s = (r && r.data && r.data.summaryData) || {};
       return Object.values(s).filter(x => x && x.label && x.value && x.value !== "N/A").map(x => ({ label: x.label.replace(/:$/, ""), value: x.label === "Market Cap" ? "USD " + C.fmtNum(num(x.value) / 1e9, 2) + "B" : x.value }));
     },
+    // Insider (Form 4) activity: 3- and 12-month buy/sell counts and shares, plus the latest transactions.
+    async insiders(sym) {
+      const r = await fetchJSON(`https://api.nasdaq.com/api/company/${encodeURIComponent(sym)}/insider-trades?limit=25&type=ALL&sortColumn=lastDate&sortOrder=DESC`, 60000, 3600000);
+      const d = (r && r.data) || {};
+      const grid = (t) => Object.fromEntries(arr(t && t.rows).map(x => [x.insiderTrade, { m3: num(String(x.months3).replace(/[()]/g, "")) * (/\(/.test(x.months3) ? -1 : 1), m12: num(String(x.months12).replace(/[()]/g, "")) * (/\(/.test(x.months12) ? -1 : 1) }]));
+      const rows = arr(d.transactionTable && d.transactionTable.table && d.transactionTable.table.rows).map(x => { const m = String(x.lastDate || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return { insider: x.insider, relation: x.relation, date: m ? m[3] + "-" + m[1].padStart(2, "0") + "-" + m[2].padStart(2, "0") : null, type: x.transactionType, owner: x.ownType, shares: num(x.sharesTraded), price: num(x.lastPrice), held: num(x.sharesHeld), openMarketBuy: /^Buy$|Open Market Buy|Purchase/i.test(x.transactionType || "") && !/Option|Non Open/i.test(x.transactionType || "") }; });
+      if (!rows.length && !d.numberOfTrades) throw new DataError("not_found", "Nasdaq has no insider data for " + sym + ".", "nasdaq");
+      return { counts: grid(d.numberOfTrades), shares: grid(d.numberOfSharesTraded), rows, total: num(d.transactionTable && d.transactionTable.totalRecords), url: "https://www.nasdaq.com/market-activity/stocks/" + String(sym).toLowerCase() + "/insider-activity" };
+    },
+    // Dividend history (Nasdaq covers Nasdaq-listed symbols only).
+    async dividends(sym) {
+      const r = await fetchJSON(`https://api.nasdaq.com/api/quote/${encodeURIComponent(sym)}/dividends?assetclass=stocks`, 40000, 3600000);
+      const d = (r && r.data) || {};
+      const iso = (s) => { const m = String(s || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? m[3] + "-" + m[1].padStart(2, "0") + "-" + m[2].padStart(2, "0") : null; };
+      const rows = arr(d.dividends && d.dividends.rows).map(x => ({ exDate: iso(x.exOrEffDate), type: x.type, amount: num(x.amount), declared: iso(x.declarationDate), paid: iso(x.paymentDate) })).filter(x => x.exDate);
+      const v = (k) => d[k] && d[k] !== "N/A" ? (/Date$/.test(k) ? iso(d[k]) : d[k]) : null;
+      return { available: !!rows.length || !!v("yield"), message: r && r.message, yield: v("yield"), annual: v("annualizedDividend"), payoutRatio: v("payoutRatio"), exDate: v("exDividendDate"), payDate: v("dividendPaymentDate"), rows };
+    },
     // Last four reported quarters: date reported, EPS, consensus and surprise.
     async earningsSurprise(sym) {
       const r = await fetchJSON(`https://api.nasdaq.com/api/company/${encodeURIComponent(sym)}/earnings-surprise`, 20000, 3600000);
@@ -5693,12 +5711,13 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
     const tab = app.ls.get("stockTab", "summary");
     const renderTab = (k) => {
       app.ls.set("stockTab", k);
-      tabEl.replaceChildren(U.tabs([["summary", "Summary"], ["news", "News"], ["earnings", "Earnings"], ["financials", "Financial statements"], ["options", "Options-implied moves"], ["research", "Research history"]], k, renderTab), overview);
+      tabEl.replaceChildren(U.tabs([["summary", "Summary"], ["news", "News"], ["earnings", "Earnings"], ["insiders", "Insiders & dividends"], ["financials", "Financial statements"], ["options", "Options-implied moves"], ["research", "Research history"]], k, renderTab), overview);
       if (k === "summary") U.async(overview, () => D.stocks.summary(a.symbol, a.cls), (rows) => { overview.append(U.kv(rows.map(r => [r.label, r.value])), U.status({ status: "Delayed", source: "Nasdaq company summary", note: "Figures as published by Nasdaq." }), h("div", { class: "explain" }, "Market cap = share price × shares outstanding. The 1-year target is the average analyst price target reported by Nasdaq, not a prediction by this app.")); });
       else if (k === "news") U.async(overview, () => D.bigdataNews("Latest news about " + ((quote && quote.name) || a.name || a.symbol) + " (" + a.symbol + ")", 8), (r) => {
         overview.append(X.newsList(r.items, { empty: "Bigdata.com found no recent news for " + a.symbol + "." }), h("p", { class: "tiny muted" }, "News from ", h("a", { href: "https://bigdata.com", target: "_blank", rel: "noopener noreferrer" }, "Bigdata.com"), ". Headlines are what the publishers reported; check the original before acting."));
       }, { loading: "Searching Bigdata.com news…" });
       else if (k === "earnings") MD.earnings.panel(overview, app, a);
+      else if (k === "insiders") MD.earnings.insidersPanel(overview, app, a);
       else if (k === "financials") U.async(overview, () => D.stocks.financials(a.symbol), (f) => {
         const t = app.ls.get("finTab", "income");
         const show = (x) => { app.ls.set("finTab", x); const tb = f[x]; overview.replaceChildren(U.tabs([["income", "Income statement"], ["balance", "Balance sheet"], ["cash", "Cash flow"], ["ratios", "Ratios"]], x, show), tb ? U.table(tb.headers.map((hd, i) => ({ t: hd, v: i, n: i > 0 })), tb.rows) : h("div", { class: "empty" }, "Not provided."), U.status({ status: "Historical", source: "Nasdaq (annual, " + f.unitNote + ")" })); };
@@ -7012,6 +7031,9 @@ Reply with ONLY JSON: {"strongestCounter": "...", "pricedIn": "...", "fragileAss
         const om = await D.stocks.optionMoves(sym, q.price);
         return rnd({ ticker: sym, price: q.price, asOf: om.asOf, source: om.source, moves: om.moves.slice(0, 5).map(m => ({ expiry: m.expiry, days: m.days, movePct: m.movePct })) });
       } },
+    insider_activity: { description: "Company insiders' Form 4 trades for a US stock from Nasdaq: open-market buys and sells over 3 and 12 months, net shares, and the latest transactions (most insider selling is scheduled or tax-related; open-market buys are the rarer, more telling signal).", props: { ticker: { type: "string" } }, req: ["ticker"],
+      label: (i) => "Insider activity for " + i.ticker,
+      async run(app, S, i) { const sym = String(i.ticker || "").toUpperCase(); const r = await D.stocks.insiders(sym); S.add(r.url, "Nasdaq insider activity " + sym, "data"); return rnd({ ticker: sym, url: r.url, counts: r.counts, shares: r.shares, latest: r.rows.slice(0, 10).map(x => ({ insider: x.insider, relation: x.relation, date: x.date, type: x.type, shares: x.shares, price: x.price })) }); } },
     smart_money: { description: "Which tracked members of Congress (disclosed trades) and superinvestors (latest 13F) hold or recently traded a US ticker, from data the Smart Money tab has already loaded. Disclosures lag by weeks and say nothing about why a trade was made.", props: { ticker: { type: "string" } }, req: ["ticker"],
       label: (i) => "Smart money in " + i.ticker,
       async run(app, S, i) { const sym = String(i.ticker || "").toUpperCase(); const who = MD.smartView ? MD.smartView.whoOwns(app, sym) : []; return { ticker: sym, holdersOrTraders: who.map(w => ({ name: w.name, kind: w.kind === "pol" ? "member of Congress" : "13F investor", detail: w.note })), note: who.length ? "From disclosures loaded on the Smart Money tab." : "None of the tracked people hold or recently traded it (or the Smart Money tab hasn't loaded yet)." }; } },
@@ -7201,7 +7223,7 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
     return runner(app, "AI review of these results", async (S, signal) => {
       const rows = getRows().slice(0, 8); if (!rows.length) throw new Error("Run a scan first.");
       const facts = rows.map(r => ({ symbol: r.a.symbol, name: r.a.name, class: r.a.cls, return3mPct: r1(r.s.r3m), return1yPct: r1(r.s.r1y), volPct: r1(r.s.vol), maxDrawdownPct: r1(r.s.mdd), fromHighPct: r1(r.s.fromHigh), above200DayAvg: r.s.above200, sharpe: isFinite(r.s.sharpe) ? r1(r.s.sharpe) : null, fcfMarginPct: r1(r.s.fcfMargin) }));
-      const tools = await limitsTools(app, S, ["stock_snapshot", "zacks_view", "search_news", "crypto_news", "smart_money", "my_portfolio", "search_web"]);
+      const tools = await limitsTools(app, S, ["stock_snapshot", "zacks_view", "search_news", "crypto_news", "smart_money", "insider_activity", "my_portfolio", "search_web"]);
       const prompt = `Today is ${today()}. The investor screened their own universe by "${presetLabel}". Review the top results below (measured by the app from one year of daily closes) as opportunities for roughly a 6–12 month holding.
 ${tools ? "Use 4 to 10 tool calls: stock_snapshot and zacks_view for the most interesting names, search_news (or crypto_news) for anything that could explain the numbers, smart_money where relevant, and my_portfolio once to judge fit and concentration. Cite only URLs the tools returned." : "Tools are unavailable; say news wasn't checked."}
 Judge each honestly: a screen rank is not a reason to buy. "Pass" and "Watch" are valid. Never invent figures.
@@ -7376,6 +7398,7 @@ Reply with ONLY JSON: {"summary": "2-3 sentences on the theme and how to approac
         const [hs, q] = await Promise.all([D.historyFor(a, "1Y"), a.cls === "crypto" ? Promise.resolve(null) : app.quote(a).catch(() => null)]);
         const smart = a.cls !== "crypto" && MD.smartView ? MD.smartView.whoOwns(app, a.symbol) : [];
         const { out, t, r } = signalsFor(a, hs, q, smart);
+        if (a.cls === "stock") { try { const ins = await D.stocks.insiders(a.symbol); const b = ins.counts["Number of Open Market Buys"]; if (b && b.m3 > 0) out.push({ kind: "insider-buying", sev: b.m3 >= 3 ? "high" : "medium", text: b.m3 + " insider open-market buy" + (b.m3 > 1 ? "s" : "") + " in 3 months" }); } catch {} }
         rows.push({ a, signals: out, score: out.reduce((s, x) => s + SEV[x.sev], 0) + (a.held ? 0.5 : 0), t, r, last: t ? t.last : null, source: hs.source });
       } catch (e) { rows.push({ a, err: U.errorText(e), signals: [], score: -1 }); }
       onProgress && onProgress(++done, list.length);
@@ -7519,7 +7542,26 @@ Reply with ONLY JSON: {"setup": "2-3 sentences", "watch": ["3-5 metrics or topic
     A().list("What will decide the reaction", r.watch), A().reviewBadge(r.review), A().sources(r.sources),
     h("p", { class: "tiny muted" }, "Scenario probabilities are Claude's, normalised to 100%, from the measured history and the sources retrieved; checked by a second review. Not advice."));
 
-  MD.earnings = { measure, panel, reaction };
+  /* Insiders and dividends tab: Nasdaq Form 4 activity and dividend history (Nasdaq-listed only; Zacks yield otherwise). */
+  function insidersPanel(el, app, a) {
+    U.async(el, async () => {
+      const [ins, div, z] = await Promise.all([D.stocks.insiders(a.symbol).catch(e => ({ error: e })), D.stocks.dividends(a.symbol).catch(() => null), D.zacks.metrics(a.symbol).catch(() => null)]);
+      return { ins, div, z };
+    }, ({ ins, div, z }) => {
+      const c = (k, p) => ins.counts && ins.counts[k] ? ins.counts[k][p] : null, sh = (k, p) => ins.shares && ins.shares[k] ? ins.shares[k][p] : null;
+      const buys3 = c("Number of Open Market Buys", "m3"), sells3 = c("Number of Sells", "m3"), net12 = sh("Net Activity", "m12");
+      el.append(h("div", { class: "kpis k4" },
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Insider buys (open market)"), h("span", { class: "v " + (buys3 > 0 ? "up" : "") }, ins.error ? "—" : String(buys3 ?? "—")), h("span", { class: "s" }, "3 months · " + (c("Number of Open Market Buys", "m12") ?? "—") + " in 12 months")),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Insider sells"), h("span", { class: "v" }, ins.error ? "—" : String(sells3 ?? "—")), h("span", { class: "s" }, "3 months · " + (c("Number of Sells", "m12") ?? "—") + " in 12 months")),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Net shares, 12 months"), h("span", { class: "v " + (net12 > 0 ? "up" : net12 < 0 ? "down" : "") }, net12 != null ? C.fmtNum(net12, 0) : "—"), h("span", { class: "s" }, "bought minus sold by insiders")),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Dividend yield"), h("span", { class: "v" }, div && div.yield ? div.yield : z && z.v("div_yield") ? z.v("div_yield") + "%" : "None"), h("span", { class: "s" }, div && div.annual ? "$" + div.annual + " a year · ex-date " + (div.exDate ? U.fmtDate(div.exDate) : "—") : z && z.v("div_yield") ? "from Zacks" : "no dividend reported"))),
+        ins.error ? U.errorBox(ins.error) : U.table([{ t: "Date", v: (x) => U.fmtDate(x.date) }, { t: "Insider", v: (x) => h("span", { class: "who" }, h("b", {}, x.insider), h("span", { class: "tiny muted" }, x.relation || "")) }, { t: "Transaction", v: (x) => h("span", { class: "verdict sm " + (x.openMarketBuy ? "positive" : /Sell/i.test(x.type) ? "negative" : "neutral") }, x.type) }, { t: "Shares", v: (x) => x.shares != null ? C.fmtNum(x.shares, 0) : "—", n: true }, { t: "Price", v: (x) => x.price != null ? "$" + x.price.toFixed(2) : "—", n: true }, { t: "Held after", v: (x) => x.held != null ? C.fmtNum(x.held, 0) : "—", n: true }], ins.rows.slice(0, 15)),
+        div && div.rows.length ? h("details", {}, h("summary", { class: "label", style: "cursor:pointer" }, "Dividend history (" + div.rows.length + " payments)"), U.table([{ t: "Ex-date", v: (x) => U.fmtDate(x.exDate) }, { t: "Amount", v: (x) => x.amount != null ? "$" + x.amount.toFixed(4).replace(/0+$/, "").replace(/\.$/, "") : "—", n: true }, { t: "Type", v: "type" }, { t: "Paid", v: (x) => U.fmtDate(x.paid) }], div.rows.slice(0, 16))) : h("p", { class: "small muted" }, div && div.message ? div.message + "." : "No dividend history from Nasdaq."),
+        U.status({ status: "Delayed", source: "Nasdaq insider activity (Form 4) and dividend history" + (z ? "; yield from Zacks" : ""), note: "Most insider selling is scheduled (10b5-1) or for taxes; open-market buys are rarer and more telling." }));
+    }, { loading: "Loading insider trades and dividends…" });
+  }
+
+  MD.earnings = { measure, panel, reaction, insidersPanel };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -7712,7 +7754,7 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
   async function run(app, asset, S, signal) {
     const isStock = asset.cls === "stock" || asset.cls === "etf", sym = asset.symbol;
     const lim = await app.caps.sample.limits().catch(() => null);
-    const names = isStock ? ["stock_snapshot", "zacks_view", "search_news", "options_move", "smart_money", "price_range", "my_portfolio", "search_web"] : ["stock_snapshot", "crypto_news", "search_news", "price_range", "my_portfolio", "search_web"];
+    const names = isStock ? ["stock_snapshot", "zacks_view", "search_news", "options_move", "smart_money", "insider_activity", "price_range", "my_portfolio", "search_web"] : ["stock_snapshot", "crypto_news", "search_news", "price_range", "my_portfolio", "search_web"];
     const tools = lim && lim.tools ? A().tools(app, S, names) : undefined;
     const ls = S.step("run", "Measuring levels from price history");
     let lv = null; try { const hs = await D.historyFor(asset, "1Y"); lv = levelsFrom(hs.points); } catch {}

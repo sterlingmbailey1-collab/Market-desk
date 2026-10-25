@@ -70,7 +70,7 @@
   async function run(app, asset, S, signal) {
     const isStock = asset.cls === "stock" || asset.cls === "etf", sym = asset.symbol;
     const lim = await app.caps.sample.limits().catch(() => null);
-    const names = isStock ? ["stock_snapshot", "zacks_view", "search_news", "options_move", "smart_money", "price_range", "my_portfolio", "search_web"] : ["stock_snapshot", "crypto_news", "search_news", "price_range", "my_portfolio", "search_web"];
+    const names = isStock ? ["stock_snapshot", "zacks_view", "search_news", "options_move", "smart_money", "insider_activity", "price_range", "my_portfolio", "search_web"] : ["stock_snapshot", "crypto_news", "search_news", "price_range", "my_portfolio", "search_web"];
     const tools = lim && lim.tools ? A().tools(app, S, names) : undefined;
     const ls = S.step("run", "Measuring levels from price history");
     let lv = null; try { const hs = await D.historyFor(asset, "1Y"); lv = levelsFrom(hs.points); } catch {}

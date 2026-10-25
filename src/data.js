@@ -227,6 +227,24 @@
       const s = (r && r.data && r.data.summaryData) || {};
       return Object.values(s).filter(x => x && x.label && x.value && x.value !== "N/A").map(x => ({ label: x.label.replace(/:$/, ""), value: x.label === "Market Cap" ? "USD " + C.fmtNum(num(x.value) / 1e9, 2) + "B" : x.value }));
     },
+    // Insider (Form 4) activity: 3- and 12-month buy/sell counts and shares, plus the latest transactions.
+    async insiders(sym) {
+      const r = await fetchJSON(`https://api.nasdaq.com/api/company/${encodeURIComponent(sym)}/insider-trades?limit=25&type=ALL&sortColumn=lastDate&sortOrder=DESC`, 60000, 3600000);
+      const d = (r && r.data) || {};
+      const grid = (t) => Object.fromEntries(arr(t && t.rows).map(x => [x.insiderTrade, { m3: num(String(x.months3).replace(/[()]/g, "")) * (/\(/.test(x.months3) ? -1 : 1), m12: num(String(x.months12).replace(/[()]/g, "")) * (/\(/.test(x.months12) ? -1 : 1) }]));
+      const rows = arr(d.transactionTable && d.transactionTable.table && d.transactionTable.table.rows).map(x => { const m = String(x.lastDate || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return { insider: x.insider, relation: x.relation, date: m ? m[3] + "-" + m[1].padStart(2, "0") + "-" + m[2].padStart(2, "0") : null, type: x.transactionType, owner: x.ownType, shares: num(x.sharesTraded), price: num(x.lastPrice), held: num(x.sharesHeld), openMarketBuy: /^Buy$|Open Market Buy|Purchase/i.test(x.transactionType || "") && !/Option|Non Open/i.test(x.transactionType || "") }; });
+      if (!rows.length && !d.numberOfTrades) throw new DataError("not_found", "Nasdaq has no insider data for " + sym + ".", "nasdaq");
+      return { counts: grid(d.numberOfTrades), shares: grid(d.numberOfSharesTraded), rows, total: num(d.transactionTable && d.transactionTable.totalRecords), url: "https://www.nasdaq.com/market-activity/stocks/" + String(sym).toLowerCase() + "/insider-activity" };
+    },
+    // Dividend history (Nasdaq covers Nasdaq-listed symbols only).
+    async dividends(sym) {
+      const r = await fetchJSON(`https://api.nasdaq.com/api/quote/${encodeURIComponent(sym)}/dividends?assetclass=stocks`, 40000, 3600000);
+      const d = (r && r.data) || {};
+      const iso = (s) => { const m = String(s || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? m[3] + "-" + m[1].padStart(2, "0") + "-" + m[2].padStart(2, "0") : null; };
+      const rows = arr(d.dividends && d.dividends.rows).map(x => ({ exDate: iso(x.exOrEffDate), type: x.type, amount: num(x.amount), declared: iso(x.declarationDate), paid: iso(x.paymentDate) })).filter(x => x.exDate);
+      const v = (k) => d[k] && d[k] !== "N/A" ? (/Date$/.test(k) ? iso(d[k]) : d[k]) : null;
+      return { available: !!rows.length || !!v("yield"), message: r && r.message, yield: v("yield"), annual: v("annualizedDividend"), payoutRatio: v("payoutRatio"), exDate: v("exDividendDate"), payDate: v("dividendPaymentDate"), rows };
+    },
     // Last four reported quarters: date reported, EPS, consensus and surprise.
     async earningsSurprise(sym) {
       const r = await fetchJSON(`https://api.nasdaq.com/api/company/${encodeURIComponent(sym)}/earnings-surprise`, 20000, 3600000);

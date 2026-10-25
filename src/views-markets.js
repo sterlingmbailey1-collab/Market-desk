@@ -129,12 +129,13 @@
     const tab = app.ls.get("stockTab", "summary");
     const renderTab = (k) => {
       app.ls.set("stockTab", k);
-      tabEl.replaceChildren(U.tabs([["summary", "Summary"], ["news", "News"], ["earnings", "Earnings"], ["financials", "Financial statements"], ["options", "Options-implied moves"], ["research", "Research history"]], k, renderTab), overview);
+      tabEl.replaceChildren(U.tabs([["summary", "Summary"], ["news", "News"], ["earnings", "Earnings"], ["insiders", "Insiders & dividends"], ["financials", "Financial statements"], ["options", "Options-implied moves"], ["research", "Research history"]], k, renderTab), overview);
       if (k === "summary") U.async(overview, () => D.stocks.summary(a.symbol, a.cls), (rows) => { overview.append(U.kv(rows.map(r => [r.label, r.value])), U.status({ status: "Delayed", source: "Nasdaq company summary", note: "Figures as published by Nasdaq." }), h("div", { class: "explain" }, "Market cap = share price × shares outstanding. The 1-year target is the average analyst price target reported by Nasdaq, not a prediction by this app.")); });
       else if (k === "news") U.async(overview, () => D.bigdataNews("Latest news about " + ((quote && quote.name) || a.name || a.symbol) + " (" + a.symbol + ")", 8), (r) => {
         overview.append(X.newsList(r.items, { empty: "Bigdata.com found no recent news for " + a.symbol + "." }), h("p", { class: "tiny muted" }, "News from ", h("a", { href: "https://bigdata.com", target: "_blank", rel: "noopener noreferrer" }, "Bigdata.com"), ". Headlines are what the publishers reported; check the original before acting."));
       }, { loading: "Searching Bigdata.com news…" });
       else if (k === "earnings") MD.earnings.panel(overview, app, a);
+      else if (k === "insiders") MD.earnings.insidersPanel(overview, app, a);
       else if (k === "financials") U.async(overview, () => D.stocks.financials(a.symbol), (f) => {
         const t = app.ls.get("finTab", "income");
         const show = (x) => { app.ls.set("finTab", x); const tb = f[x]; overview.replaceChildren(U.tabs([["income", "Income statement"], ["balance", "Balance sheet"], ["cash", "Cash flow"], ["ratios", "Ratios"]], x, show), tb ? U.table(tb.headers.map((hd, i) => ({ t: hd, v: i, n: i > 0 })), tb.rows) : h("div", { class: "empty" }, "Not provided."), U.status({ status: "Historical", source: "Nasdaq (annual, " + f.unitNote + ")" })); };
