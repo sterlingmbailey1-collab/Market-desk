@@ -173,6 +173,7 @@ Start from the base rates: a typical name closes above its current price about h
 ${calib}
 ${MD.ai.contextNote(app)}
 ${MD.ai.assetNote(app, L.asset)}
+${guardNote(app)}
 Measured: ${JSON.stringify(forAI(L))}
 Market right now: ${JSON.stringify(mkt)}
 Reply with ONLY JSON:
@@ -368,8 +369,10 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
       if (!r) { out.replaceChildren(h("p", { class: "small muted" }, "Enter the account size, risk per trade, entry and stop.")); return; }
       if (r.error) { out.replaceChildren(h("p", { class: "small warn-t" }, r.error)); return; }
       const stopAtr = L.atr ? Math.abs(f.entry.value - f.stop.value) / L.atr * 100 : null;
+      const g = guardFor(app), guard = g.stop ? h("div", { class: "banner err" }, h("p", {}, "Your daily rules say stop for today (" + g.reasons.join(", ") + ")."))
+        : g.lossLeft != null && r.dollarsAtRisk > g.lossLeft ? h("div", { class: "banner warn" }, h("p", {}, "This trade risks " + U.money(r.dollarsAtRisk, "USD") + " but only " + U.money(g.lossLeft, "USD") + " is left before today's loss limit; " + Math.floor(g.lossLeft / r.perShareRisk) + " shares would keep you inside it.")) : null;
       const odds = f.target.value && L.dailyVolPct ? Q.barrierOdds({ entry: f.entry.value, stop: f.stop.value, target: f.target.value, side: f.side.value, dailyVolPct: L.dailyVolPct, minutesLeft: L.minutesLeft || 390 }) : null;
-      out.replaceChildren(h("div", { class: "kpis k4" }, kpi("Shares", String(r.shares), r.cappedBySize ? "capped by max position size" : "from risk per trade"), kpi("At risk", U.money(r.dollarsAtRisk, "USD"), C.fmtNum(r.perShareRisk, 2) + " a share"), kpi("Position", U.money(r.positionValue, "USD"), r.positionPct.toFixed(0) + "% of the account"), kpi("Reward : risk", r.rewardRisk == null ? "—" : r.rewardRisk.toFixed(2) + " R", r.targetOnWrongSide ? "target is on the wrong side" : r.dollarsAtTarget ? U.money(r.dollarsAtTarget, "USD") + " at target" : null)),
+      out.replaceChildren(guard || "", h("div", { class: "kpis k4" }, kpi("Shares", String(r.shares), r.cappedBySize ? "capped by max position size" : "from risk per trade"), kpi("At risk", U.money(r.dollarsAtRisk, "USD"), C.fmtNum(r.perShareRisk, 2) + " a share"), kpi("Position", U.money(r.positionValue, "USD"), r.positionPct.toFixed(0) + "% of the account"), kpi("Reward : risk", r.rewardRisk == null ? "—" : r.rewardRisk.toFixed(2) + " R", r.targetOnWrongSide ? "target is on the wrong side" : r.dollarsAtTarget ? U.money(r.dollarsAtTarget, "USD") + " at target" : null)),
         h("p", { class: "small muted" }, "1R / 2R / 3R targets: " + r.targets.map(t => px(t.price)).join(" / ") + (stopAtr != null ? ". The stop is " + stopAtr.toFixed(0) + "% of a normal day's range (ATR)" + (stopAtr < 10 ? ", tight enough that ordinary noise may hit it" : "") + "." : ".") + " Fees and slippage not included."),
         odds ? h("p", { class: "small" }, h("strong", {}, "Geometry alone: "), Math.round(odds.pTarget * 100) + "% chance the target comes before the stop" + (L.minutesLeft ? " by the close" : " in a full session") + ", " + Math.round(odds.pStop * 100) + "% stop first, " + Math.round(odds.pNeither * 100) + "% neither; expectancy " + (() => { const x = odds.pTarget * odds.rr - odds.pStop; return (x > 0 ? "+" : "") + x.toFixed(2); })() + " R. ", h("span", { class: "muted" }, "A random walk with " + (L.dailyVolPct ? L.dailyVolPct.toFixed(1) + "%" : "—") + " daily volatility over " + odds.minutes + " minutes: no trend or news, so a setup needs an edge beyond this to be worth taking.")) : null);
     };
@@ -418,12 +421,34 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
       h("p", { class: "tiny muted" }, "A call is right when the session closes on the side of the price-at-plan that the plan favoured. The record is given to every new plan so its odds stay calibrated."));
   }
 
+  /* Your own daily rules (loss limit, trade cap, losing streak) against today's logged trades. Read-only: the desk
+     never places or blocks trades. */
+  const localDate = () => new Date().toLocaleDateString("en-CA");
+  function guardFor(app) { const get = (k, d) => app.ls.get("day." + k, d); return Q.riskGuard({ trades: app.store.cached("daytrades"), date: localDate(), account: get("account", 25000), maxLossPct: get("maxloss", 2), maxTrades: get("maxtrades", 6), maxLosingStreak: get("maxstreak", 3) }); }
+  function guardNote(app) {
+    const g = guardFor(app); if (!g.trades) return "";
+    return "The trader's own risk rules today: P&L " + g.pnl.toFixed(0) + " USD over " + g.trades + " trades, losing streak " + g.streak + (g.lossLeft != null ? ", " + g.lossLeft.toFixed(0) + " USD left before their daily loss limit" : "") + (g.tradesLeft != null ? ", " + g.tradesLeft + " trades left" : "") + "." + (g.stop ? " Their rules say to STOP for today (" + g.reasons.join(", ") + "): say plainly that the disciplined plan is to sit out, and keep any setup for a later session." : "");
+  }
+  function guardPanel(app, onChange) {
+    const get = (k, d) => app.ls.get("day." + k, d), g = guardFor(app);
+    const inp = (k, d, step) => { const el = h("input", { type: "number", min: 0, step, value: get(k, d) }); el.addEventListener("change", () => { app.ls.set("day." + k, Number(el.value) || 0); onChange(); }); return el; };
+    return h("div", { class: "stack", id: "risk-guard" },
+      g.stop ? h("div", { class: "banner err" }, h("p", {}, h("strong", {}, "Your rules say stop for today: "), g.reasons.join(", ") + ".")) : null,
+      h("div", { class: "kpis k4" },
+        kpi("Today's P&L", U.money(g.pnl, "USD"), g.trades + " trade" + (g.trades === 1 ? "" : "s") + " logged for " + g.date, g.pnl > 0 ? "up" : g.pnl < 0 ? "down" : ""),
+        kpi("Loss left today", g.limit == null ? "—" : U.money(g.lossLeft, "USD"), g.limit == null ? "no daily limit set" : "of a " + U.money(g.limit, "USD") + " daily limit", g.limit != null && g.lossLeft < g.limit * 0.34 ? "down" : ""),
+        kpi("Trades left", g.tradesLeft == null ? "no cap" : String(g.tradesLeft), "cap " + (get("maxtrades", 6) || "none")),
+        kpi("Losing streak", String(g.streak), get("maxstreak", 3) ? "stop after " + get("maxstreak", 3) + " in a row" : "no streak rule", g.streak >= 2 ? "down" : "")),
+      h("div", { class: "form" }, U.field("Max daily loss (% of account)", inp("maxloss", 2, "0.25")), U.field("Max trades a day", inp("maxtrades", 6, "1")), U.field("Stop after losses in a row", inp("maxstreak", 3, "1"))),
+      h("p", { class: "tiny muted" }, "From the trades you log below for today (your local date) and the account size in the position sizer; 0 turns a rule off. Gains don't raise the loss limit. The desk never places or blocks trades: these are your own rules, kept in view."));
+  }
+
   function journalView(app) {
     const box = h("div", { class: "stack" });
     const paint = () => {
       const trades = app.store.cached("daytrades").slice().sort((a, b) => String(b.date + b.time).localeCompare(String(a.date + a.time)));
       const st = Q.tradeStats(trades);
-      const f = { date: h("input", { type: "date", value: new Date().toISOString().slice(0, 10) }), time: h("input", { type: "time", value: "09:45" }), symbol: h("input", { type: "text", placeholder: "NVDA", style: "max-width:110px" }), side: h("select", {}, h("option", { value: "long" }, "Long"), h("option", { value: "short" }, "Short")),
+      const f = { date: h("input", { type: "date", value: localDate() }), time: h("input", { type: "time", value: "09:45" }), symbol: h("input", { type: "text", placeholder: "NVDA", style: "max-width:110px" }), side: h("select", {}, h("option", { value: "long" }, "Long"), h("option", { value: "short" }, "Short")),
         shares: h("input", { type: "number", min: 0, step: "1" }), entry: h("input", { type: "number", step: "0.01" }), exit: h("input", { type: "number", step: "0.01" }), stop: h("input", { type: "number", step: "0.01" }), held: h("input", { type: "number", min: 0, step: "1", placeholder: "min" }),
         setup: h("select", {}, SETUPS.map(s => h("option", { value: s }, s))), fees: h("input", { type: "number", min: 0, step: "0.01", value: 0 }), notes: h("input", { type: "text", placeholder: "What you saw, why you exited" }) };
       const add = h("button", { class: "btn", type: "button", onclick: async () => {
@@ -439,6 +464,8 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
         cbtn.disabled = st.n < 5;
       } }, "AI coach: what's working and what isn't");
       box.replaceChildren(
+        h("h3", { class: "label" }, "Today's risk limits"), guardPanel(app, paint),
+        h("h3", { class: "label" }, "Log a trade"),
         h("div", { class: "form" }, U.field("Date", f.date), U.field("Time (ET)", f.time), U.field("Symbol", f.symbol), U.field("Side", f.side), U.field("Shares", f.shares), U.field("Entry", f.entry), U.field("Exit", f.exit), U.field("Stop (for R)", f.stop), U.field("Held (min)", f.held), U.field("Setup", f.setup), U.field("Fees", f.fees), U.field("Notes", f.notes), h("div", { class: "field" }, add)),
         st.n ? h("div", { class: "kpis k4" }, kpi("Net P&L", U.money(st.net, "USD"), st.n + " trades", st.net >= 0 ? "up" : "down"), kpi("Win rate", st.winRatePct.toFixed(0) + "%", "avg win " + U.money(st.avgWin, "USD") + " · avg loss " + U.money(st.avgLoss, "USD")), kpi("Profit factor", st.profitFactor == null ? "—" : st.profitFactor.toFixed(2), "gross wins ÷ gross losses"), kpi("Expectancy", U.money(st.expectancy, "USD") + " / trade", st.avgR != null ? "average " + st.avgR.toFixed(2) + " R" : "add stops to see R")) : null,
         st.n ? U.dataTable([{ t: "Date", v: (t) => t.date + " " + (t.time || ""), sort: (t) => t.date + (t.time || "") }, { t: "Symbol", v: "symbol" }, { t: "Side", v: "side" }, { t: "Setup", v: (t) => t.setup || "—" }, { t: "Shares", v: (t) => String(t.shares), n: true }, { t: "Entry → exit", v: (t) => px(t.entry) + " → " + px(t.exit), n: true }, { t: "P&L", v: (t) => h("span", { class: t.pnl >= 0 ? "up" : "down" }, U.money(t.pnl, "USD")), sort: (t) => t.pnl, n: true }, { t: "R", v: (t) => t.r == null ? "—" : t.r.toFixed(2), sort: (t) => t.r, n: true },
@@ -449,5 +476,5 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
     return box;
   }
 
-  MD.day = { earningsWeek, levels, forAI, plan, coach, probBar, SETUPS };
+  MD.day = { guardFor, guardNote, earningsWeek, levels, forAI, plan, coach, probBar, SETUPS };
 })(typeof window !== "undefined" ? window : globalThis);

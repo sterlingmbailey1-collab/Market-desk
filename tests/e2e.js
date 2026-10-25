@@ -280,14 +280,21 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("AI tools return measured data: backtests, base rates, move split, market memory, earnings, economic calendar", tr.backtest_rule && tr.backtest_rule.days > 100 && /TLT below -1%/.test(tr.backtest_rule.rule) && tr.base_rates && tr.base_rates.model.upPct >= 25 && tr.base_rates.model.upPct <= 75 && tr.base_rates.conditions.length >= 1 && tr.explain_move && tr.explain_move.week && Array.isArray(tr.explain_move.week.parts) && tr.market_memory && tr.market_memory.sessionsStudied === 2 && tr.market_memory.patterns.length >= 1 && tr.earnings_info && !tr.earnings_info.error && tr.economic_calendar && tr.economic_calendar.events.length === 1, JSON.stringify(Object.fromEntries(Object.entries(tr).map(([k, v]) => [k, v && v.error ? v.error : "ok"]))));
   const jr = page.locator("h2.sec", { hasText: "Your trade journal" }).locator("xpath=ancestor::section[1]");
   await jr.locator("input[placeholder='NVDA']").fill("MSFT");
-  await jr.locator("input[type=number]").nth(0).fill("10"); await jr.locator("input[type=number]").nth(1).fill("400"); await jr.locator("input[type=number]").nth(2).fill("404"); await jr.locator("input[type=number]").nth(3).fill("398");
+  const jf = jr.locator("div.form").nth(1);
+  await jf.locator("input[type=number]").nth(0).fill("10"); await jf.locator("input[type=number]").nth(1).fill("400"); await jf.locator("input[type=number]").nth(2).fill("404"); await jf.locator("input[type=number]").nth(3).fill("398");
   await jr.locator("button:has-text('Add trade')").click(); await page.waitForTimeout(600);
   await page.evaluate(async () => { for (const [sym, side, en, ex, st, set] of [["NVDA", "long", 200, 196, 198, "Reversal"], ["TSLA", "short", 300, 305, 303, "Reversal"], ["AAPL", "long", 250, 255, 248, "Opening range breakout"], ["AMD", "long", 150, 149, 148, "Reversal"]]) await MD.app.store.create("daytrades", { date: "2026-10-2" + (sym.length), time: "09:40", symbol: sym, side, shares: 20, entry: en, exit: ex, stop: st, setup: set, fees: 0 }); MD.app.rerender(); }); await page.waitForTimeout(2500);
   const jTxt = await jr.innerText();
   check("trade journal: P&L, win rate, profit factor, expectancy and R", /Net P&L/i.test(jTxt) && /Win rate\s*40%/i.test(jTxt) && /Profit factor/i.test(jTxt) && /Expectancy/i.test(jTxt) && (await jr.locator("tbody tr").count()) === 5, jTxt.slice(0, 500));
   await jr.locator("button:has-text('AI coach')").click(); await page.waitForTimeout(2500);
   check("AI coach finds leaks in the journal", /Reversal trades lose/.test(await jr.innerText()) && /Skip reversals before 10:30 ET/.test(await jr.innerText()));
+  check("today's risk limits: P&L, loss left, trades left and losing streak from the journal", /Today's risk limits/i.test(jTxt) && /Loss left today/i.test(jTxt) && /Trades left/i.test(jTxt) && /Losing streak/i.test(jTxt) && /\+?40\.00/.test(jTxt), jTxt.slice(0, 600));
   await page.screenshot({ path: path.join(shots, "e2e-daytrade.png"), fullPage: true });
+  const guard = await page.evaluate(async () => { const d = new Date().toLocaleDateString("en-CA"); for (const [t, ex] of [["10:01", 95], ["10:20", 96], ["10:45", 97]]) await MD.app.store.create("daytrades", { date: d, time: t, symbol: "XYZ", side: "long", shares: 50, entry: 100, exit: ex }); const g = MD.day.guardFor(MD.app); return { g, note: MD.day.guardNote(MD.app) }; });
+  await page.evaluate(() => MD.app.rerender()); await page.waitForTimeout(3000);
+  const gTxt = await page.locator("#content").innerText();
+  await page.screenshot({ path: path.join(shots, "e2e-daytrade-guard.png"), fullPage: true });
+  check("risk guard: three losses in a row past the daily limit say stop, in the journal, the sizer and the AI plan's prompt", guard.g.stop && guard.g.streak === 3 && guard.g.reasons.includes("3 losses in a row") && /STOP for today/.test(guard.note) && /Your rules say stop for today/i.test(gTxt) && (/Your daily rules say stop for today/i.test(gTxt) || !(await page.locator("#sec-sizer, h2.sec:has-text('Position size')").count())), JSON.stringify(guard));
 
   // ---- Why it's moving (asset page)
   await page.evaluate(() => MD.app.openAsset({ id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" })); await page.waitForTimeout(2500);

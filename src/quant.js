@@ -294,6 +294,19 @@
     else { const s = v * Math.sqrt(barsLeft); p = dir > 0 ? 1 - C.normCdf((need - x) / s) : C.normCdf((need - x) / s); }
     return { movePct: (b / a - 1) * 100, zFor, oddsNowPct: p * 100 };
   }
+  /* Today's risk limits from the trade journal: P&L, trades and losing streak so far today, what is left before the
+     daily loss limit and the trade cap (gains don't raise the limit), and whether the rules say to stop for the day. */
+  function riskGuard({ trades, date, account, maxLossPct, maxTrades, maxLosingStreak }) {
+    const st = tradeStats((trades || []).filter(t => t.date === date)), rows = (st.rows || []).slice().sort((a, b) => String(a.time || "").localeCompare(String(b.time || "")));
+    const pnl = st.n ? st.net : 0, limit = Number(account) > 0 && Number(maxLossPct) > 0 ? Number(account) * Number(maxLossPct) / 100 : null;
+    let streak = 0; for (let i = rows.length - 1; i >= 0 && rows[i].pnl < 0; i--) streak++;
+    const lossLeft = limit == null ? null : Math.max(0, limit + Math.min(0, pnl)), tradesLeft = Number(maxTrades) > 0 ? Math.max(0, Number(maxTrades) - rows.length) : null;
+    const reasons = [];
+    if (limit != null && lossLeft <= 0) reasons.push("daily loss limit reached");
+    if (tradesLeft === 0) reasons.push("trade cap reached");
+    if (Number(maxLosingStreak) > 0 && streak >= Number(maxLosingStreak)) reasons.push(streak + " losses in a row");
+    return { date, trades: rows.length, pnl, limit, lossLeft, tradesLeft, streak, stop: reasons.length > 0, reasons };
+  }
   // Expectancy and other stats of logged day trades {side, entry, exit, shares, stop?, fees?}.
   function tradeStats(trades) {
     const rows = trades.filter(t => t.entry > 0 && t.exit > 0 && t.shares > 0).map(t => { const dir = t.side === "short" ? -1 : 1, pnl = dir * (t.exit - t.entry) * t.shares - (Number(t.fees) || 0), risk = t.stop > 0 ? Math.abs(t.entry - t.stop) * t.shares : null; return Object.assign({}, t, { pnl, r: risk ? pnl / risk : null }); });
@@ -376,6 +389,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

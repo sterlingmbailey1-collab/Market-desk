@@ -302,6 +302,14 @@
     const late = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 1, minutesLeft: 10 }); ok(late.pNeither > 0.9, "ten quiet minutes rarely reach either level");
     eq(Q.barrierOdds({ entry: 100, stop: 101, target: 102, dailyVolPct: 2, minutesLeft: 60 }), null);
   });
+  test("day-trade risk guard: loss left, trades left, losing streak and the stop rule", () => {
+    const Q = MD.quant, d = "2026-10-26", T = (time, entry, exit) => ({ date: d, time, symbol: "X", side: "long", shares: 100, entry, exit });
+    const g = Q.riskGuard({ trades: [T("09:40", 10, 11), T("10:05", 10, 9.5), T("10:30", 10, 9.7), { date: "2026-10-23", time: "10:00", symbol: "X", side: "long", shares: 100, entry: 10, exit: 5 }], date: d, account: 10000, maxLossPct: 2, maxTrades: 4, maxLosingStreak: 3 });
+    near(g.pnl, 20, 1e-9); eq(g.trades, 3); eq(g.tradesLeft, 1); eq(g.streak, 2); near(g.lossLeft, 200, 1e-9); eq(g.stop, false);
+    const bad = Q.riskGuard({ trades: [T("09:40", 10, 9), T("10:05", 10, 9.5)], date: d, account: 10000, maxLossPct: 1, maxTrades: 0, maxLosingStreak: 2 });
+    near(bad.pnl, -150, 1e-9); near(bad.lossLeft, 0, 1e-9); eq(bad.tradesLeft, null); ok(bad.stop && bad.reasons.includes("daily loss limit reached") && bad.reasons.includes("2 losses in a row"), JSON.stringify(bad.reasons));
+    const none = Q.riskGuard({ trades: [], date: d, account: 10000, maxLossPct: 2, maxTrades: 5 }); eq(none.pnl, 0); near(none.lossLeft, 200, 1e-9); eq(none.stop, false);
+  });
   test("open-call standing: odds to finish on the called side from here, and the move in volatility units", () => {
     const Q = MD.quant;
     near(Q.callStanding({ direction: "up", p0: 100, price: 100, bandPct: 0, dailyVolPct: 2, barsElapsed: 5, barsLeft: 10 }).oddsNowPct, 50, 1e-6);
