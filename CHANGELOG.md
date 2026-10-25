@@ -1,5 +1,22 @@
 # Changelog
 
+## Version 18 (2026-10-25)
+- **Target-before-stop odds** in day trading: from the stock's measured volatility and the minutes left in the
+  session, the sizer shows the chance price reaches the target before the stop on geometry alone (a driftless random
+  walk), and each AI setup carries the same figure next to Claude's own odds.
+- **AI read of the watch board**: "which setup is cleanest now?" ranks the symbols on the board from the measured
+  signals, relative volume and levels.
+- **Learned blend weights**: how much each probability leans on Claude versus the measured history is now learned
+  from the record. Once a feature has 10+ graded calls, each side is weighted by its Brier score (shrunk toward the
+  65/35 default). The scorecard shows the current split.
+- **Automatic lessons**: after 10+ new graded calls the Market Brain's after-close run has Claude re-study what went
+  right and wrong, and the lessons reach every forecasting prompt.
+- **Set check** on Recommendations: warns when most picks sit in one sector, overlap what you already hold, or all
+  lean the same way.
+- **Alerts from an AI decision**: one click sets alerts at the decision's stop level and take-profit.
+- **What the AI is tracking** (dashboard card): open AI calls by source with the next one due, this week's graded
+  results, the latest market call and the latest lesson.
+
 ## Version 17 (2026-10-25)
 - **AI decision** on every stock and crypto page: buy, add slowly, hold, trim, sell, avoid or wait, for your risk
   profile and holding period and your current position. The page measures the asset's odds over your horizon; Claude

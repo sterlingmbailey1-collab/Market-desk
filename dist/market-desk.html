@@ -4741,7 +4741,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     assumptions: { stockExitPct: 0.05, cryptoExitPct: 0.5, metalSpreadPct: 3, cardFeePct: 13, cardShipping: 5, fxSpreadMajorPct: 0.1, fxSpreadOtherPct: 1, riskFreePct: 4, inflationPct: 2.5 },
     betting: { oddsFormat: "american", bankroll: 1000, unit: 10, kelly: 0.25, minEdge: 1 },
     profile: { risk: "mid", horizon: "mid", goals: "", avoid: "", income: false },
-    customCurrencies: [], dashboard: ["brief", "brain", "changes", "portfolio", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], brainAuto: true, universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
+    customCurrencies: [], dashboard: ["brief", "brain", "aistatus", "changes", "portfolio", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], brainAuto: true, universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
   };
   const ls = { get(k, d) { try { const v = localStorage.getItem("mdp." + k); return v ? JSON.parse(v) : d; } catch { return d; } }, set(k, v) { try { localStorage.setItem("mdp." + k, JSON.stringify(v)); } catch {} } };
 
@@ -4760,9 +4760,9 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     app.settings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), s || {});
     for (const k of ["quiet", "notify", "assumptions", "betting", "profile"]) app.settings[k] = Object.assign({}, DEFAULT_SETTINGS[k], (s || {})[k] || {});
     // Dashboards saved before a card existed get it once, before Data health.
-    for (const card of ["betting", "smart", "brief", "brain"]) {
+    for (const card of ["betting", "smart", "brief", "brain", "aistatus"]) {
       if (app.settings.dashSeen && app.settings.dashSeen.includes(card)) continue;
-      if (!app.settings.dashboard.includes(card)) { const i = card === "brief" ? 0 : card === "brain" ? Math.min(1, app.settings.dashboard.length) : app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
+      if (!app.settings.dashboard.includes(card)) { const i = card === "brief" ? 0 : card === "brain" ? Math.min(1, app.settings.dashboard.length) : card === "aistatus" ? Math.min(2, app.settings.dashboard.length) : app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
       app.settings.dashSeen = (app.settings.dashSeen || []).concat(card);
     }
     applySettings();
@@ -6904,7 +6904,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
   }
 
   /* ================= Dashboard ================= */
-  const WIDGETS = { brief: "AI morning brief", brain: "Market Brain", aiscore: "AI scorecard", changes: "What changed today", portfolio: "Portfolio", fx: "Currency exposure", watch: "Watchlist", alerts: "Alerts & inbox", catalysts: "Upcoming catalysts", smart: "Smart Money", betting: "Betting today", data: "Data health" };
+  const WIDGETS = { brief: "AI morning brief", brain: "Market Brain", aistatus: "What the AI is tracking", aiscore: "AI scorecard", changes: "What changed today", portfolio: "Portfolio", fx: "Currency exposure", watch: "Watchlist", alerts: "Alerts & inbox", catalysts: "Upcoming catalysts", smart: "Smart Money", betting: "Betting today", data: "Data health" };
   V.dashboard = function (root, app) {
     const R = app.settings.reportingCurrency;
     root.append(head("Dashboard", new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) + " · reporting in " + R, [h("button", { class: "btn ghost sm", type: "button", onclick: () => customize(app) }, "Customize")]));
@@ -6918,7 +6918,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       const sec = U.section(WIDGETS[w] || w, box);
       if (w === "changes") sec.style.gridColumn = "1 / -1";
       grid.append(sec);
-      ({ changes: wChanges, portfolio: wPortfolio, fx: wFx, watch: wWatch, alerts: wAlerts, catalysts: wCatalysts, smart: (b) => MD.smartView.dashboardCard(b, app), brain: (b) => MD.brain.dashboardCard(b, app), brief: (b) => MD.aiTake.brief(b, app), aiscore: (b) => b.append(MD.ai.scorecard(app)), betting: (b) => MD.betting.dashboardCard(b, app), data: wData }[w] || (() => {}))(box, app, pvP, R, sec);
+      ({ changes: wChanges, portfolio: wPortfolio, fx: wFx, watch: wWatch, alerts: wAlerts, catalysts: wCatalysts, smart: (b) => MD.smartView.dashboardCard(b, app), brain: (b) => MD.brain.dashboardCard(b, app), aistatus: (b) => MD.ai.statusCard(b, app), brief: (b) => MD.aiTake.brief(b, app), aiscore: (b) => b.append(MD.ai.scorecard(app)), betting: (b) => MD.betting.dashboardCard(b, app), data: wData }[w] || (() => {}))(box, app, pvP, R, sec);
     }
     return app.on("explainToday", () => { const b = root.querySelector("[data-explain]"); if (b) b.click(); });
   };
@@ -7941,6 +7941,22 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     return sec;
   }
 
+  /* ---------- dashboard: what the AI is tracking ---------- */
+  function statusCard(box, app) {
+    const fcs = app.store.cached("forecasts").filter(f => f.source && f.source !== "user"), evals = app.store.cached("evals"), now = Date.now();
+    const open = fcs.filter(f => !evals.some(e => e.forecastId === f.id) && f.dueAt > now - 3 * 864e5);
+    const by = {}; for (const f of open) (by[f.source] = by[f.source] || []).push(f);
+    const week = fcs.map(f => ({ f, e: evals.find(v => v.forecastId === f.id) })).filter(x => x.e && x.e.evaluatedAt > now - 7 * 864e5);
+    const L = latestLessons(app), call = MD.brain ? MD.brain.latestCall(app) : null;
+    if (!fcs.length && !call) { box.append(h("p", { class: "small muted" }, "Nothing yet. Recommendations, quick takes, AI decisions, day-trade plans and market calls are logged here and graded when they come due."), h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("picks") }, "Open Recommendations")); return; }
+    box.append(h("div", { class: "stack", style: "gap:6px" },
+      call ? h("p", { class: "small" }, h("strong", {}, "Market call " + call.target + ": "), "SPY " + (call.upPct >= 50 ? "▲ " + call.upPct + "% up" : "▼ " + (100 - call.upPct) + "% down")) : null,
+      Object.keys(by).length ? U.table([{ t: "Open calls", v: (r) => SOURCE_LABEL[r[0]] || r[0] }, { t: "Count", v: (r) => String(r[1].length), n: true }, { t: "Next due", v: (r) => { const n = r[1].slice().sort((a, b) => a.dueAt - b.dueAt)[0]; return n.symbol + " · " + U.fmtDate(n.dueAt); } }], Object.entries(by)) : h("p", { class: "small muted" }, "No open calls."),
+      week.length ? h("p", { class: "small" }, "Graded this week: " + week.filter(x => x.e.directionHit).length + " right, " + week.filter(x => !x.e.directionHit).length + " wrong" + " (" + [...new Set(week.map(x => SOURCE_LABEL[x.f.source] || x.f.source))].join(", ") + ").") : null,
+      L ? h("p", { class: "small muted" }, "Latest lesson (" + U.fmtDate(L.createdAt) + "): " + (L.lessons[0] ? L.lessons[0].lesson : "")) : null,
+      h("button", { class: "btn ghost sm", type: "button", onclick: () => { app.ls.set("resTab", "journal"); app.go("research", {}); } }, "Open the AI scorecard")));
+  }
+
   /* ---------- review pass ---------- */
   /* A skeptical second reader checks each item of a draft against the measured data and the sources
      actually retrieved: unsupported claims, ignored risks, overconfidence. Returns per-item verdicts. */
@@ -7994,7 +8010,7 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>

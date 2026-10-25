@@ -349,6 +349,22 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     return sec;
   }
 
+  /* ---------- dashboard: what the AI is tracking ---------- */
+  function statusCard(box, app) {
+    const fcs = app.store.cached("forecasts").filter(f => f.source && f.source !== "user"), evals = app.store.cached("evals"), now = Date.now();
+    const open = fcs.filter(f => !evals.some(e => e.forecastId === f.id) && f.dueAt > now - 3 * 864e5);
+    const by = {}; for (const f of open) (by[f.source] = by[f.source] || []).push(f);
+    const week = fcs.map(f => ({ f, e: evals.find(v => v.forecastId === f.id) })).filter(x => x.e && x.e.evaluatedAt > now - 7 * 864e5);
+    const L = latestLessons(app), call = MD.brain ? MD.brain.latestCall(app) : null;
+    if (!fcs.length && !call) { box.append(h("p", { class: "small muted" }, "Nothing yet. Recommendations, quick takes, AI decisions, day-trade plans and market calls are logged here and graded when they come due."), h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("picks") }, "Open Recommendations")); return; }
+    box.append(h("div", { class: "stack", style: "gap:6px" },
+      call ? h("p", { class: "small" }, h("strong", {}, "Market call " + call.target + ": "), "SPY " + (call.upPct >= 50 ? "▲ " + call.upPct + "% up" : "▼ " + (100 - call.upPct) + "% down")) : null,
+      Object.keys(by).length ? U.table([{ t: "Open calls", v: (r) => SOURCE_LABEL[r[0]] || r[0] }, { t: "Count", v: (r) => String(r[1].length), n: true }, { t: "Next due", v: (r) => { const n = r[1].slice().sort((a, b) => a.dueAt - b.dueAt)[0]; return n.symbol + " · " + U.fmtDate(n.dueAt); } }], Object.entries(by)) : h("p", { class: "small muted" }, "No open calls."),
+      week.length ? h("p", { class: "small" }, "Graded this week: " + week.filter(x => x.e.directionHit).length + " right, " + week.filter(x => !x.e.directionHit).length + " wrong" + " (" + [...new Set(week.map(x => SOURCE_LABEL[x.f.source] || x.f.source))].join(", ") + ").") : null,
+      L ? h("p", { class: "small muted" }, "Latest lesson (" + U.fmtDate(L.createdAt) + "): " + (L.lessons[0] ? L.lessons[0].lesson : "")) : null,
+      h("button", { class: "btn ghost sm", type: "button", onclick: () => { app.ls.set("resTab", "journal"); app.go("research", {}); } }, "Open the AI scorecard")));
+  }
+
   /* ---------- review pass ---------- */
   /* A skeptical second reader checks each item of a draft against the measured data and the sources
      actually retrieved: unsupported claims, ignored risks, overconfidence. Returns per-item verdicts. */
@@ -402,5 +418,5 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

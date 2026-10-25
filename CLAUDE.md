@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 17; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 18; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading and a Sports Betting tab.
@@ -76,6 +76,8 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   them into every forecasting prompt. Collections added in v10–v14: follows, smcache, smai, ideas, aitakes, briefs,
   proppicks, ailessons, marketdays, brain (the playbook doc), dayplans, daytrades, pickhide, marketcalls, pickchecks, decisions.
   `MD.ai.assetNote(app, asset)` = the desk's past calls on one asset (add it to any asset-specific prompt).
+  `MD.ai.blendFor(app, source)` = learned Claude/history weights (inverse Brier, 10+ graded calls); `MD.ai.statusCard` is the
+  dashboard's "What the AI is tracking" card (widget id `aistatus`).
   `D.historyCached(asset, tf)` caches daily histories for 6 h in localStorage (size-capped); use it for analysis, not charts.
   Playbook patterns may carry `rule` (MD.quant.cleanRule shape) and `backtest`; same-day rules are scored by the page
   (`testSrc[date] = "measured"`). `MD.ai.calibrateUp(app, source, upPct)` corrects probabilities once a source has

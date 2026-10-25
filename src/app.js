@@ -16,7 +16,7 @@
     assumptions: { stockExitPct: 0.05, cryptoExitPct: 0.5, metalSpreadPct: 3, cardFeePct: 13, cardShipping: 5, fxSpreadMajorPct: 0.1, fxSpreadOtherPct: 1, riskFreePct: 4, inflationPct: 2.5 },
     betting: { oddsFormat: "american", bankroll: 1000, unit: 10, kelly: 0.25, minEdge: 1 },
     profile: { risk: "mid", horizon: "mid", goals: "", avoid: "", income: false },
-    customCurrencies: [], dashboard: ["brief", "brain", "changes", "portfolio", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], brainAuto: true, universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
+    customCurrencies: [], dashboard: ["brief", "brain", "aistatus", "changes", "portfolio", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], brainAuto: true, universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
   };
   const ls = { get(k, d) { try { const v = localStorage.getItem("mdp." + k); return v ? JSON.parse(v) : d; } catch { return d; } }, set(k, v) { try { localStorage.setItem("mdp." + k, JSON.stringify(v)); } catch {} } };
 
@@ -35,9 +35,9 @@
     app.settings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), s || {});
     for (const k of ["quiet", "notify", "assumptions", "betting", "profile"]) app.settings[k] = Object.assign({}, DEFAULT_SETTINGS[k], (s || {})[k] || {});
     // Dashboards saved before a card existed get it once, before Data health.
-    for (const card of ["betting", "smart", "brief", "brain"]) {
+    for (const card of ["betting", "smart", "brief", "brain", "aistatus"]) {
       if (app.settings.dashSeen && app.settings.dashSeen.includes(card)) continue;
-      if (!app.settings.dashboard.includes(card)) { const i = card === "brief" ? 0 : card === "brain" ? Math.min(1, app.settings.dashboard.length) : app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
+      if (!app.settings.dashboard.includes(card)) { const i = card === "brief" ? 0 : card === "brain" ? Math.min(1, app.settings.dashboard.length) : card === "aistatus" ? Math.min(2, app.settings.dashboard.length) : app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
       app.settings.dashSeen = (app.settings.dashSeen || []).concat(card);
     }
     applySettings();

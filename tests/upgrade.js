@@ -23,6 +23,7 @@ const T = __dirname, V = path.join(__dirname, "..", "vendor"), page_ = path.reso
     ["starts with settings saved by an older version", !/failed to start/i.test(txt) && await p.locator(".nav a").count() === 21],
     ["older dashboard gains the Betting today card", /Betting today/i.test(txt)],
     ["older dashboard gains the Smart Money card", /Smart Money/i.test(await p.locator("#content").innerText()) && /Open Smart Money/i.test(txt)],
+    ["older dashboard gains the Market Brain and AI tracking cards", /Open Market Brain/i.test(txt) && /What the AI is tracking/i.test(txt)],
     ["no uncaught errors", errs.length === 0]
   ];
   let fail = 0; for (const [n, ok] of results) { console.log((ok ? "PASS " : "FAIL ") + n); if (!ok) fail++; }

@@ -610,6 +610,9 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.evaluate(() => { window.__mock.failVI = false; MD.app.ls.set("bet.sport", "nfl"); });
   await page.evaluate(() => MD.app.go("dashboard", null, { fromNav: true })); await page.waitForTimeout(1500);
   check("dashboard: Betting today card with open bets and AI record", /Betting today/i.test(await page.locator("#content").innerText()) && /AI record/i.test(await page.locator("#content").innerText()));
+  const aiStat = await page.locator("#content").innerText();
+  await page.screenshot({ path: path.join(shots, "e2e-dashboard-ai.png"), fullPage: true });
+  check("dashboard: what the AI is tracking (open calls by source, next due, scorecard link)", /What the AI is tracking/i.test(aiStat) && /Open calls/i.test(aiStat) && /Next due/i.test(aiStat) && await page.locator("button:has-text('Open the AI scorecard')").count() === 1, aiStat.slice(0, 400));
 
   // ---- Opportunities AI: scan review, comparison scorecard, idea finder
   await page.evaluate(() => { MD.app.ls.set("oppTab", "scan"); MD.app.go("opportunities", null, { fromNav: true }); }); await page.waitForTimeout(800);
