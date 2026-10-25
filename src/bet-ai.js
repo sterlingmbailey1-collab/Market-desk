@@ -68,6 +68,13 @@
   const RULES = `Rules: never invent injuries, results, statistics or sources; cite only URLs your tools returned. Betting markets are efficient: start from the fair (no-vig) probabilities and move away from them only as far as concrete evidence justifies; a 2-4 point disagreement is a lot. Use the injury report (who is out matters far more than who is questionable), records and home/away splits, rest and travel, weather for outdoor games, and the model when given. Confidence (0-100) is how sure you are of YOUR probabilities, not how likely the favourite is: lower it when lineups or injuries are unclear. "No bet" is a valid best bet.`;
   const SHAPE = `{"probabilities": {"home": 0-100, "away": 0-100, "draw": 0-100 or null}, "predictedScore": {"home": number, "away": number}, "confidence": 0-100, "confidenceWhy": "1 sentence", "summary": "3-4 sentences on the most likely result and why", "keyFactors": [{"factor": "...", "favors": "home|away|draw|over|under|none", "impact": "high|medium|low", "source_url": "https://... or empty"}], "injuryImpact": "1-2 sentences", "form": "1-2 sentences", "upsetRisk": "1 sentence", "marketComparison": "how your view differs from the fair line", "spreadCoverAwayPct": 0-100 or null, "overPct": 0-100 or null, "bestBet": {"market": "ml|spread|total|none", "side": "home|away|draw|over|under|none", "reason": "..."}, "risks": ["..."], "dataGaps": ["..."]}`;
 
+  // The graded record of earlier AI picks, told to the next forecast so its probabilities stay calibrated.
+  function calibrationText(app) {
+    const r = record(app);
+    if (r.graded < 8) return "Your graded pick record: " + r.graded + " graded so far, too few to judge calibration; stay close to the fair line.";
+    return "Your graded pick record: " + r.graded + " graded, " + Math.round(r.hitRate * 100) + "% hit at an average stated " + Math.round(r.avgP * 100) + "%" + (r.roi != null ? ", ROI at best prices " + (r.roi * 100).toFixed(1) + "%" : "") + ". By stated probability: " + r.buckets.filter(x => x.n).map(x => x.label + " stated → " + Math.round(x.actual * 100) + "% actual (" + x.n + ")").join("; ") + ". Where actual fell short of stated, shade toward the fair line.";
+  }
+
   /* ---------- one game, in depth ---------- */
   async function forecastGame(app, g, sport, opts = {}) {
     const s = app.caps.sample; if (!s) throw Object.assign(new Error(SAMPLE_ERR.no_sample), { code: "no_sample" });
@@ -79,8 +86,20 @@
 Data read by the app (authoritative for prices, injuries and records): ${JSON.stringify(gameContext(g)).slice(0, 16000)}
 Research with the tools (2 to 5 searches): the latest injury and lineup news (starting quarterback/pitcher/goalie where relevant), recent form over the last 5 games, rest and travel, weather if outdoors, and motivation or schedule spot.
 ${RULES}
+${calibrationText(app)}
 Reply with ONLY JSON: ${SHAPE}`, { modelTier: "complex", tools, signal: opts.signal });
     const f = finishForecast(g, raw, "deep", ctx.sources, ctx.log);
+    // A skeptical second reader checks the forecast (and any best bet) against the data and the sources retrieved.
+    if (MD.ai) {
+      const S = MD.ai.session((e) => opts.onLog && opts.onLog(e)); S.sources = ctx.sources;
+      const rv = await MD.ai.review(app, { task: "A betting forecast for " + title(g), S, signal: opts.signal, facts: { game: gameContext(g), fairVsForecastGap: f.gap }, items: [{ id: "forecast", probabilities: f.probs, fair: f.fair, bestBet: f.bestBet, summary: f.summary, factors: f.factors.map(x => ({ factor: x.factor, verified: x.verified })), confidence: f.parts.ai }] }).catch(() => null);
+      const one = rv && rv.reviews[0];
+      if (one) {
+        f.review = one;
+        if (one.adjustedConfidence != null && one.adjustedConfidence < f.parts.ai) { f.parts.reviewed = one.adjustedConfidence; f.confidence = Math.round(0.5 * one.adjustedConfidence + 0.3 * f.parts.coverage + 0.2 * f.parts.agreement); }
+        if (one.verdict === "drop" && f.bestBet) { f.bestBetDropped = Object.assign({}, f.bestBet, { note: one.note || one.issues.join("; ") }); f.bestBet = null; }
+      }
+    }
     cache(app).set(g.id, f);
     await logPicks(app, [[g, f]]);
     return f;
@@ -95,6 +114,7 @@ Reply with ONLY JSON: ${SHAPE}`, { modelTier: "complex", tools, signal: opts.sig
     const raw = await s.json(`Today is ${new Date().toISOString().slice(0, 10)}. You are a careful sports betting analyst. For each ${r.sport.name} game below, forecast the most likely result from the data given (no browsing in this quick pass).
 Games: ${JSON.stringify(lite).slice(0, 30000)}
 ${RULES}
+${calibrationText(app)}
 Reply with ONLY JSON: {"games": [{"id": "the game id exactly as given", "probabilities": {"home": 0-100, "away": 0-100, "draw": 0-100 or null}, "predictedScore": {"home": number, "away": number}, "confidence": 0-100, "reason": "1-2 sentences", "spreadCoverAwayPct": 0-100 or null, "overPct": 0-100 or null}]}`, { modelTier: "default", signal: opts.signal });
     const out = [];
     for (const x of (raw && raw.games) || []) {

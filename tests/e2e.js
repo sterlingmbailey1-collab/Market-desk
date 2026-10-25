@@ -398,6 +398,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.click("#sec-ai button:has-text('Run the full AI forecast')"); await page.waitForTimeout(1500);
   const ai = await page.locator("#sec-ai").innerText();
   check("full AI forecast: pick, predicted score, confidence breakdown, factors, sources checked", /Jets 62%/.test(ai) && /Predicted 20–24/.test(ai) && /data coverage/i.test(ai) && /weren't retrieved/.test(ai) && /No bet/i.test(ai) && await page.locator("#sec-ai table tbody tr").count() >= 4, ai.slice(0, 400));
+  check("full AI forecast reviewed and told its graded record", /Review: holds up/i.test(ai) && await page.evaluate(() => window.__mock.samplePrompts.some(x => /skeptical independent reviewer/.test(x))), ai.slice(0, 200));
   await page.screenshot({ path: path.join(shots, "e2e-betting-game.png"), fullPage: true });
   await page.click(".backbar button"); await page.waitForTimeout(1800);
   check("price alert fires when the best price reaches the target (toast + inbox)", await page.evaluate(() => MD.app.store.cached("inbox").some(i => /Betting alert/.test(i.title))) && await page.evaluate(() => JSON.parse(localStorage.getItem("mdp.bet.alerts"))[0].hitAt > 0));
