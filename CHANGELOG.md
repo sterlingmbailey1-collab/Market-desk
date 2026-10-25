@@ -1,5 +1,24 @@
 # Changelog
 
+## Version 17 (2026-10-25)
+- **AI decision** on every stock and crypto page: buy, add slowly, hold, trim, sell, avoid or wait, for your risk
+  profile and holding period and your current position. The page measures the asset's odds over your horizon; Claude
+  researches (news, valuation, earnings, insiders, smart money, options); a reviewer checks it. The page then shows
+  the expected value, the break-even odds and a position-size ceiling (a quarter of the Kelly fraction, capped by your
+  risk setting), and flags any suggested size above what the odds support. The decision is graded at the horizon's end.
+- **AI memory** on asset pages: every past AI call on the asset (recommendations, quick takes, day plans, decisions,
+  research) with how it turned out, plus the Market Brain's notes on its moves. Every AI that looks at the asset again
+  is told this record.
+- **Scorecard: "if followed"**: what acting on each AI's up/down calls would have returned on average, next to the
+  S&P 500 over the same windows.
+- **Sector rotation** in the Market Brain: each sector's strength against the S&P 500 over 3 months and 1 month,
+  placed in four quadrants (leading, improving, weakening, lagging), shown on a chart and given to every AI.
+- **Earnings this week** on the Day Trading page: reports from your watchlist, holdings and the largest companies,
+  with the options-implied move against the stock's average past reaction ("priced more/less than usual"), beats,
+  and an AI read of the week.
+- **Faster, lighter analysis**: daily histories used by base rates, factor models, backtests and the market pulse are
+  kept in the browser for six hours (size-capped), so repeated studies don't re-fetch years of prices.
+
 ## Version 16 (2026-10-25)
 - **Day trading: setup signals.** The desk measures setups as they happen (opening-range breakout/breakdown, VWAP
   reclaim/rejection, holding above or below VWAP, stretched from VWAP, at the day's high/low, beyond the prior day's

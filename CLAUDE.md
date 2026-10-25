@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 16; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 17; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading and a Sports Betting tab.
@@ -74,7 +74,9 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   `profileNote()` adds the investor profile (`settings.profile`) to prompts. `learn()` has Claude study scored calls and save lessons
   (`ailessons`); `trackRecord()` attaches the latest lessons, filtered by feature, so `calibrationNote()` carries
   them into every forecasting prompt. Collections added in v10–v14: follows, smcache, smai, ideas, aitakes, briefs,
-  proppicks, ailessons, marketdays, brain (the playbook doc), dayplans, daytrades, pickhide, marketcalls, pickchecks.
+  proppicks, ailessons, marketdays, brain (the playbook doc), dayplans, daytrades, pickhide, marketcalls, pickchecks, decisions.
+  `MD.ai.assetNote(app, asset)` = the desk's past calls on one asset (add it to any asset-specific prompt).
+  `D.historyCached(asset, tf)` caches daily histories for 6 h in localStorage (size-capped); use it for analysis, not charts.
   Playbook patterns may carry `rule` (MD.quant.cleanRule shape) and `backtest`; same-day rules are scored by the page
   (`testSrc[date] = "measured"`). `MD.ai.calibrateUp(app, source, upPct)` corrects probabilities once a source has
   10+ scored calls; the review pass returns `probabilityPct` (the reviewer's own estimate) for items with a probability.
@@ -83,7 +85,7 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   questionText, cap, core)` whenever a request could carry more. `MD.ai.contextNote(app)` = investor profile + the
   Market Brain note; use it in every AI prompt (not profileNote alone).
 - **Forecast sources:** ai-picks, ai-take, ai-day (day-trade plans, horizonDays 1, graded from that session's close),
-  ai-market (daily SPY call, due at MD.quant.closeTimeUTC(target)),
+  ai-market (daily SPY call, due at MD.quant.closeTimeUTC(target)), ai-decide (asset decisions over the profile horizon),
   ai (Deep Research), user. Recommendations picks carry upPct/downPct; lean is derived from upPct (no "either").
 
 ## Source map (src/)
@@ -104,6 +106,7 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 | quant.js | Base rates + conditional odds and the shrunk direction model, OLS factor model and move attribution, VWAP, opening range, pivots, ATR, gap stats, RVOL, position sizing, trade stats, New York session clock + NYSE holidays |
 | ai-kit.js | Shared AI kit: tools, tool router, review pass, track-record calibration, lessons, confidence blending, UI helpers |
 | market-brain.js | Market Brain: pulse/regime/sensitivities, explainMove (factor attribution), session study, scored playbook, refine, note for prompts, auto-study, Why it's moving card |
+| ai-decide.js | AI decision card on asset pages (profile-fit decision, EV, quarter-Kelly ceiling, logged as ai-decide) |
 | views-daytrade.js | Day Trading page: levels(), AI plan (logged as ai-day), position sizer, trade journal + AI coach |
 | views-opps-ai.js | Opportunities AI: scan review, comparison scorecard, AI idea finder (tickers verified by the app) |
 | ai-take.js | AI quick take, bull vs bear debate (two analysts + judge) on stock/crypto pages; AI morning brief on the dashboard |
