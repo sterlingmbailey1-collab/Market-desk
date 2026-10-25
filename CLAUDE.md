@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 10).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 11).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors) and a Sports Betting tab.
@@ -23,8 +23,8 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 
 - e2e needs Playwright with Chromium (`npm i -D playwright@1.63.0 && npx playwright install chromium`).
   It serves `vendor/` copies of decimal.js and lightweight-charts in place of the CDN.
-- Known flake: "settings and ledger persist after reload" sometimes fails because headless Chromium hands a
-  reloaded `file://` page blank localStorage. Rerun; the real artifact stores data in the claude.ai account.
+- Headless Chromium sometimes hands a reloaded `file://` page blank localStorage. The reload test first asserts the
+  settings reached the mock account store, then restores the pre-reload snapshot if storage came back blank.
 - Publish with the Artifact tool: `file_path` = the built page, `url` = the artifact URL above, a short
   `label`, and the FULL capabilities set below (a non-empty `capabilities` replaces the stored set, so
   always restate every entry; omit `capabilities` entirely to keep it unchanged).
@@ -87,7 +87,12 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 | research.js | Deep Research engine |
 | ai-kit.js | Shared AI kit: tools, review pass, track-record calibration, confidence blending, UI helpers |
 | views-opps-ai.js | Opportunities AI: scan review, comparison scorecard, AI idea finder (tickers verified by the app) |
-| ai-take.js | AI quick take on stock/crypto pages; AI morning brief on the dashboard |
+| ai-take.js | AI quick take, bull vs bear debate (two analysts + judge) on stock/crypto pages; AI morning brief on the dashboard |
+| views-watch.js | Watchlist scanner (measured signals across watchlist + holdings) with AI triage |
+| views-earnings.js | Earnings tab: Nasdaq surprises, two-day reactions, consensus revisions, implied move, AI preview |
+| views-rebalance.js | Portfolio stress test and rebalancing helper (cap / equal / inverse-vol) with AI weighing |
+| props.js | Player props data: VegasInsider NBA points props, ESPN game logs, recency-weighted model, next game + injury |
+| views-props.js | Sports Betting → Player props view and AI prop picks |
 | smartmoney.js | Smart Money data: Capitol Trades / Dataroma / FMP parsers, trade returns vs SPY, copy-trade backtest, projection model |
 | views-smartmoney.js | Smart Money tab: leaderboard, member and investor pages, most bought, latest filings, follows |
 | template.html | CSS (theme tokens, light/dark) and the page skeleton |
@@ -105,9 +110,13 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 
 - US odds: `vegasinsider.com/{nfl|nba|mlb|nhl|college-football|college-basketball|wnba}/odds/las-vegas/`
   (three tables: spread, total, moneyline; two rows per game by rotation number).
-- Player props (not yet used): `vegasinsider.com/nfl/odds/player-props/` (anytime TD by book) and
-  `vegasinsider.com/nba/odds/player-props/` (points overs by book incl. PrizePicks, Sleeper). ESPN player game
-  logs (`espn.com/nba/player/gamelog/_/id/<id>/<slug>`) read cleanly.
+- Player props (used for NBA points): `vegasinsider.com/nba/odds/player-props/` (overs only, one column per book;
+  PrizePicks/Sleeper are pick'em sites, excluded from best price). ESPN game logs
+  `espn.com/nba/player/gamelog/_/id/<id>/<slug>` (this season) and `.../_/id/<id>/type/nba/year/<seasonEnd>` (last
+  season); the ESPN id comes from one Exa web search per player, cached in localStorage `md.espn.nba.ids`. The ESPN
+  search API is not readable through Exa. Ball Ranks answers "Too Many Requests" often. NFL anytime TD
+  (`vegasinsider.com/nfl/odds/player-props/`) is not used yet.
+- Nasdaq earnings: `api.nasdaq.com/api/company/<SYM>/earnings-surprise` and `/api/analyst/<SYM>/earnings-forecast`.
 - ESPN (used): `espn.com/{nfl|nba|wnba|mlb|nhl}/injuries`, `espn.com/{league}/scoreboard[/_/date/YYYYMMDD]`,
   `espn.com/soccer/scoreboard/_/league/{eng.1|esp.1|ita.1|ger.1|fra.1}` (soccer lists teams without home/away).
 - Smart Money (used): Capitol Trades member pages `capitoltrades.com/politicians/<bioguide>[?page=N]` (15 trades a
@@ -128,7 +137,8 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 1. Done (v8–v9): betting AI forecasts, slips, assistant, layout; start-up fix for frozen documents.
 2. Done (v10): Smart Money tab; deeper AI for Recommendations and Opportunities (tools, review pass, calibration,
    confidence breakdown, idea finder); AI quick take on asset pages; AI morning brief; advisor double-check.
-3. Player props: NBA points and NFL anytime TD by book, ESPN game logs, matchup, probability model, AI notes;
-   soccer goalscorers via Statz.
+3. Done (v11): NBA points props with ESPN game-log model and AI picks; AI scorecard with automatic scoring; bull vs
+   bear debate; watchlist scanner; earnings preview; portfolio stress test and rebalancing helper.
+   Next: NFL anytime TD and soccer goalscorer props, matchup/defence adjustments.
 4. Investing upgrades: signal scorecard, earnings preview, watchlist scanner, rebalancing helper, dividends,
    insider activity.
