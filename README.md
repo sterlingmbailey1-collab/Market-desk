@@ -3,7 +3,8 @@
 A multi-asset market desk that runs as a single page inside claude.ai: live prices and charts for stocks,
 ETFs, crypto, currencies and precious metals; trading-card prices and sold listings; prediction markets;
 a portfolio with currency-aware cost basis, risk analysis, stress test and rebalancing helper; Smart Money (Congress
-trades and superinvestor 13F portfolios ranked by measured return); AI research, an AI advisor, Ask AI on every page,
+trades and superinvestor 13F portfolios ranked by measured return); a Market Brain that studies each session and
+learns what moves what; a Day Trading page with intraday levels, VWAP, position sizing and graded AI plans; AI research, an AI advisor, Ask AI on every page,
 AI quick takes and bull-vs-bear debates, recommendations and an idea finder, all reviewed by a second AI pass and
 scored against their own track record; and a Sports Betting tab with odds by sportsbook, fair win chances, AI game
 forecasts, NBA and NFL player props, value and arbitrage finders, calculators, a bet slip and a bet tracker.

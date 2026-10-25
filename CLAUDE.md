@@ -1,10 +1,10 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 13; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 14; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
-AI idea finder), Smart Money (Congress trades and 13F superinvestors) and a Sports Betting tab.
+AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading and a Sports Betting tab.
 
 ## Build, test, publish
 
@@ -14,6 +14,7 @@ node tests/run.js                     # unit tests for core.js + odds.js (also r
 node tests/bet.js                     # betting parsers and analysis against tests/bet-fixtures.js
 node tests/real.js                    # parsers against real captured page text in tests/real/
 node tests/smart.js                   # Smart Money parsers (real Capitol Trades / Dataroma pages) and return maths
+node tests/quant-real.js              # intraday/market adapters against real Nasdaq and Twelve Data captures
 node tests/e2e.js dist/market-desk.html shots   # Playwright, mocked claude.ai runtime (tests/mock-runtime.js)
 node tests/upgrade.js dist/market-desk.html     # opens the page with settings saved by an older version
 ```
@@ -72,8 +73,14 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   `scoreDue()` scores due forecasts automatically (boot + every 30 min); `scorecard()` renders the calibration view;
   `profileNote()` adds the investor profile (`settings.profile`) to prompts. `learn()` has Claude study scored calls and save lessons
   (`ailessons`); `trackRecord()` attaches the latest lessons, filtered by feature, so `calibrationNote()` carries
-  them into every forecasting prompt. Collections added in v10–v13: follows, smcache, smai, ideas, aitakes, briefs,
-  proppicks, ailessons.
+  them into every forecasting prompt. Collections added in v10–v14: follows, smcache, smai, ideas, aitakes, briefs,
+  proppicks, ailessons, marketdays, brain (the playbook doc), dayplans, daytrades, pickhide.
+  v14 kit tools: market_pulse, explain_move, base_rates, intraday_levels, market_memory, movers, earnings_info,
+  economic_calendar. The runtime caps tools per request (limits().tools.maxCount, 20): use `MD.ai.selectTools(tools,
+  questionText, cap, core)` whenever a request could carry more. `MD.ai.contextNote(app)` = investor profile + the
+  Market Brain note; use it in every AI prompt (not profileNote alone).
+- **Forecast sources:** ai-picks, ai-take, ai-day (day-trade plans, horizonDays 1, graded from that session's close),
+  ai (Deep Research), user. Recommendations picks carry upPct/downPct; lean is derived from upPct (no "either").
 
 ## Source map (src/)
 
@@ -90,7 +97,10 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 | app.js | Shell: routes/nav/icons, settings, back-stack navigation, `openAsset`, `openGame` |
 | views-*.js | Pages (markets, cards, insights, decide, portfolio analysis, picks, betting, AI) |
 | research.js | Deep Research engine |
-| ai-kit.js | Shared AI kit: tools, review pass, track-record calibration, confidence blending, UI helpers |
+| quant.js | Base rates + conditional odds and the shrunk direction model, OLS factor model and move attribution, VWAP, opening range, pivots, ATR, gap stats, RVOL, position sizing, trade stats, New York session clock + NYSE holidays |
+| ai-kit.js | Shared AI kit: tools, tool router, review pass, track-record calibration, lessons, confidence blending, UI helpers |
+| market-brain.js | Market Brain: pulse/regime/sensitivities, explainMove (factor attribution), session study, scored playbook, refine, note for prompts, auto-study, Why it's moving card |
+| views-daytrade.js | Day Trading page: levels(), AI plan (logged as ai-day), position sizer, trade journal + AI coach |
 | views-opps-ai.js | Opportunities AI: scan review, comparison scorecard, AI idea finder (tickers verified by the app) |
 | ai-take.js | AI quick take, bull vs bear debate (two analysts + judge) on stock/crypto pages; AI morning brief on the dashboard |
 | ask-ai.js | Ask AI from any page: context-aware chat with the kit tools, profile and a double-check |
@@ -123,6 +133,11 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   search API is not readable through Exa. Ball Ranks answers "Too Many Requests" often. NFL anytime TD
   (`vegasinsider.com/nfl/odds/player-props/`) is not used yet.
 - Nasdaq earnings: `api.nasdaq.com/api/company/<SYM>/earnings-surprise` and `/api/analyst/<SYM>/earnings-forecast`.
+- Nasdaq minute chart `api.nasdaq.com/api/quote/<SYM>/chart?assetclass=stocks` (4:00 a.m.–8:00 p.m. ET, prices only,
+  previousClose and session volume). Its `x` is New York wall-clock time written as UTC: subtract tzOffsetSec(NY).
+  Movers: `api/marketmovers?assetclass=stocks&exchangestatus=currentMarket|preMarket|afterHours`. Summary
+  (`/summary`) gives Sector, Industry, AverageVolume, OneYrTarget. Twelve Data `get_time_series` 5min gives volume
+  (NY wall-clock datetimes). Direct requests from the container are blocked; real captures come through Exa.
 - Nasdaq insiders: `api.nasdaq.com/api/company/<SYM>/insider-trades?limit=25&type=ALL&sortColumn=lastDate&sortOrder=DESC`.
   Dividends: `api.nasdaq.com/api/quote/<SYM>/dividends?assetclass=stocks` (Nasdaq-listed symbols only).
 - NFL anytime TD: `vegasinsider.com/nfl/odds/player-props/` (price per book; one book's column often looks like a
@@ -152,5 +167,7 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
    portfolio stress test and rebalancing helper; smart-money model portfolio.
    Next: soccer goalscorer props (Statz), NBA matchup/defence adjustments, NFL game logs for a TD model, dividends for
    non-Nasdaq listings (Twelve Data /dividends needs the owner's Grow plan or higher).
-4. Investing upgrades: signal scorecard, earnings preview, watchlist scanner, rebalancing helper, dividends,
+4. Done (v14): Recommendations up/down odds from measured base rates + Claude, clearing picks; Market Brain; Day
+   Trading page; Why it's moving; new AI tools and the tool router.
+5. Investing upgrades: signal scorecard, earnings preview, watchlist scanner, rebalancing helper, dividends,
    insider activity.
