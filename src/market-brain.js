@@ -358,9 +358,13 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
   }
 
   /* ---------- what the rest of the desk is told ---------- */
+  function weeklyNote(app) {
+    const w = reviews(app)[0]; if (!w || Date.now() - w.at > 10 * 864e5) return "";
+    return " Weekly review (" + w.week + "): " + w.headline + (w.lessons.length ? " Lessons: " + w.lessons.slice(0, 3).join("; ") + "." : "") + (w.nextWeek.length ? " Next week: " + w.nextWeek.slice(0, 4).map(x => x.date + " " + x.event).join("; ") + "." : "");
+  }
   function note(app) {
     if (!app || !app.store) return "";
-    const days = latestPerDay(app); if (!days.length) return "";
+    const days = latestPerDay(app); if (!days.length) { const wn = weeklyNote(app); return wn ? ("Market Brain:" + wn).slice(0, 900) : ""; }
     const pb = playbook(app), last = days[0], rg = (pulseCache && pulseCache.regime) || (last.measured && last.measured.regime) || null;
     const ranked = pb.patterns.filter(p => p.status === "active").map(p => Object.assign({ st: stats(p) }, p));
     const proven = ranked.filter(p => p.st.tested >= 2).sort((a, b) => b.st.reliability * Math.log(1 + b.st.tested) - a.st.reliability * Math.log(1 + a.st.tested)).slice(0, 4);
@@ -377,7 +381,8 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
       (backed.length ? " Backtested over a year of daily moves: " + backed.map(p => "\"" + p.pattern + "\" held " + p.backtest.held + " of " + p.backtest.occurrences + " times (" + p.backtest.heldPct + "% vs " + p.backtest.baselinePct + "% on all days)").join("; ") + "." : "") +
       (fresh.length ? " Untested hypotheses: " + fresh.map(p => "\"" + p.pattern + "\"").join("; ") + "." : "") +
       (() => { const c = latestCall(app); return c ? " The desk's market call for " + c.target + ": SPY " + (c.upPct >= 50 ? "up" : "down") + " " + Math.max(c.upPct, 100 - c.upPct) + "% (" + c.summary.slice(0, 160) + ")." : ""; })() +
-      " Use this as context and check it against current data; patterns can break.").slice(0, 2000);
+      weeklyNote(app).slice(0, 600) +
+      " Use this as context and check it against current data; patterns can break.").slice(0, 2600);
   }
   // What the brain knows about one symbol, sector ETF or theme (for the market_memory tool and asset pages).
   function memory(app, query) {
@@ -389,24 +394,84 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
         .map(d => ({ date: d.sessionDate, headline: d.headline, drivers: (d.drivers || []).map(x => ({ driver: x.driver, category: x.category, effects: x.effects })), movers: (d.movers || []).filter(m => !q || hit(m.symbol)).slice(0, 5) })) };
   }
 
+  /* ---------- weekly review ---------- */
+  // The week a time falls in, by its Monday (UTC). A review written on the weekend covers the week just ended.
+  function weekKey(t = Date.now()) { const d = new Date(t), wd = (d.getUTCDay() + 6) % 7; return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - wd)).toISOString().slice(0, 10); }
+  function reviews(app) { return app.store.cached("weekly").slice().sort((a, b) => b.at - a.at); }
+  async function weeklyReview(app, opts = {}) {
+    const s = app.caps.sample; if (!s) throw Object.assign(new Error("Claude isn't available in this view."), { code: "no_sample" });
+    const S = MD.ai.session(opts.onLog), now = Date.now(), from = now - 7 * 864e5, ymd = (t) => new Date(t).toISOString().slice(0, 10);
+    let e = S.step("run", "Gathering the week: graded calls, studied sessions and the market's 5-day moves");
+    const evals = app.store.cached("evals"), graded = app.store.cached("forecasts").map(f => { const v = evals.find(x => x.forecastId === f.id); return v && v.evaluatedAt >= from ? { symbol: f.symbol, by: MD.ai.SOURCE_LABEL[f.source] || f.source || "you", call: f.direction, probabilityPct: f.probability ? Math.round(f.probability * 100) : null, madeOn: ymd(f.createdAt), returnPct: v.realizedReturnPct != null ? +Number(v.realizedReturnPct).toFixed(2) : null, right: !!v.directionHit, thesis: String(f.thesis || "").slice(0, 160) } : null; }).filter(Boolean);
+    const sessions = latestPerDay(app).filter(d => d.sessionDate >= ymd(from)).map(d => ({ date: d.sessionDate, headline: d.headline, drivers: (d.drivers || []).slice(0, 4).map(x => x.driver + " (" + x.category + ")") }));
+    const P = await pulse(app, { history: true }).catch(() => null);
+    const week = P ? P.rows.filter(r => r.ret5d != null).map(r => ({ symbol: r.symbol, name: r.name, kind: r.kind, last5DaysPct: +r.ret5d.toFixed(2), last1mPct: r.ret1m != null ? +r.ret1m.toFixed(2) : null })) : [];
+    const mine = new Set(app.store.cached("watch").map(w => w.symbol).concat((await app.valuePortfolio(app.settings.reportingCurrency).catch(() => ({ rows: [] }))).rows.filter(r => r.p.qty.gt(0)).map(r => r.p.symbol)));
+    const days = []; for (let i = 1; days.length < 5 && i < 10; i++) { const d = new Date(now + i * 864e5); if (d.getUTCDay() % 6) days.push(ymd(d)); }
+    const earn = (await Promise.all(days.map(d => D.calendar.earnings(d).catch(() => [])))).flat();
+    const nextEarnings = earn.filter(x => mine.has(x.symbol)).concat(earn.filter(x => !mine.has(x.symbol)).sort((a, b) => (Number(String(b.marketCap || "").replace(/[$,]/g, "")) || 0) - (Number(String(a.marketCap || "").replace(/[$,]/g, "")) || 0)).slice(0, 10)).map(x => ({ date: x.date, symbol: x.symbol, name: x.name, time: x.time, yours: mine.has(x.symbol) }));
+    S.done(e, "ok", " → " + graded.length + " graded calls, " + sessions.length + " sessions studied, " + nextEarnings.length + " earnings next week");
+    const lim = await s.limits().catch(() => null);
+    const tools = lim && lim.tools ? MD.ai.tools(app, S, ["economic_calendar", "search_news", "market_memory", "explain_move", "search_web"]) : undefined;
+    e = S.step("run", "Claude is writing the review (usually 1–2 minutes)");
+    const prompt = `You are the desk's market analyst writing the WEEKLY REVIEW for the week ending ${ymd(now)}. ${tools ? "Use 3 to 8 tool calls: economic_calendar for next week's key US releases (call it for the dates that matter), search_news for the week's biggest market stories, market_memory for what the desk already learned. Cite only URLs the tools returned." : "Tools are unavailable: rely on the measured data and say so."}
+Explain WHY the market did what it did (causes and their effects, with evidence), not just what moved. Grade the desk's own calls honestly: what it got right and wrong and why. Draw specific, testable lessons that would improve next week's calls. Never invent numbers.
+${MD.ai.contextNote(app)}
+Measured 5-day and 1-month moves (computed by the app): ${JSON.stringify(week)}
+Sessions the desk studied this week: ${JSON.stringify(sessions)}
+The desk's calls graded this week: ${JSON.stringify(graded.slice(0, 30))}
+Earnings next week (yours flagged): ${JSON.stringify(nextEarnings)}
+Reply with ONLY JSON:
+{"headline": "one sentence", "summary": "3-4 sentences", "why": [{"cause": "...", "effect": "what it moved and how much", "evidence": "measured figure or source"}],
+ "deskRight": ["..."], "deskWrong": ["... and why"], "lessons": ["specific, testable lesson for next week"],
+ "nextWeek": [{"date": "YYYY-MM-DD", "event": "...", "whyItMatters": "...", "watch": ["TICKER"]}], "risks": "the main risk to the current picture",
+ "sources": [{"title": "...", "url": "https://..."}]}`;
+    const r = await s.json(prompt, Object.assign({ modelTier: "complex", signal: opts.signal }, tools ? { tools } : { cache: false }));
+    S.done(e, "ok");
+    const arr = (x, n) => Array.isArray(x) ? x.slice(0, n) : [];
+    const doc = { week: weekKey(now), at: now, headline: String(r.headline || ""), summary: String(r.summary || ""), why: arr(r.why, 6).map(w => ({ cause: String(w.cause || ""), effect: String(w.effect || ""), evidence: String(w.evidence || "") })),
+      deskRight: arr(r.deskRight, 5).map(String), deskWrong: arr(r.deskWrong, 5).map(String), lessons: arr(r.lessons, 5).map(String), nextWeek: arr(r.nextWeek, 8).map(x => ({ date: String(x.date || ""), event: String(x.event || ""), whyItMatters: String(x.whyItMatters || ""), watch: arr(x.watch, 6).map(String) })),
+      risks: String(r.risks || ""), sources: S.verify(r.sources), measured: { graded: graded.length, right: graded.filter(g => g.right).length, sessions: sessions.length, earningsNextWeek: nextEarnings.length }, toolCalls: S.calls };
+    return app.demo ? doc : await app.store.create("weekly", doc);
+  }
+  function reviewView(app, w) {
+    if (!w) return h("p", { class: "small muted" }, "No weekly review yet. It looks back at the week (what moved and why, the desk's graded calls) and ahead to next week's events, and its lessons are given to every AI on the desk.");
+    return h("div", { class: "stack" },
+      h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("strong", {}, w.headline), h("span", { class: "tiny muted" }, "Week of " + w.week + " · written " + U.fmtTs(w.at) + " · " + (w.measured.graded ? w.measured.right + " of " + w.measured.graded + " graded calls right" : "no calls graded this week"))),
+      w.summary ? h("p", {}, w.summary) : null,
+      w.why.length ? h("div", {}, h("span", { class: "label" }, "Why it happened"), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:4px" }, w.why.map(x => h("li", {}, h("strong", {}, x.cause), " → " + x.effect, x.evidence ? h("span", { class: "muted" }, " (" + x.evidence + ")") : null)))) : null,
+      h("div", { class: "grid g2" }, MD.ai.list("What the desk got right", w.deskRight), MD.ai.list("What it got wrong", w.deskWrong)),
+      MD.ai.list("Lessons for next week (told to every AI)", w.lessons),
+      w.nextWeek.length ? h("div", {}, h("span", { class: "label" }, "Next week"), U.table([{ t: "Date", v: (x) => x.date }, { t: "Event", v: (x) => x.event }, { t: "Why it matters", v: (x) => x.whyItMatters }, { t: "Watch", v: (x) => x.watch.join(", ") || "—" }], w.nextWeek)) : null,
+      w.risks ? h("p", { class: "small" }, h("strong", {}, "Main risk: "), w.risks) : null,
+      MD.ai.sources(w.sources));
+  }
+
   /* ---------- automatic study after each close ---------- */
   let autoRunning = false;
   async function autoStudy(app) {
     if (autoRunning || app.demo || !app.caps.sample || !D.available() || document.hidden) return;
     if (app.settings.brainAuto === false || !app.store.cached("marketdays").length) return; // starts once the user has studied a session
     const sess = Q.session(); if (sess.phase === "open" || sess.phase === "pre") return;
-    const target = lastClosedSession(); if (latestPerDay(app).some(d => d.sessionDate === target && d.phase !== "open")) return;
+    const target = lastClosedSession(), studied = latestPerDay(app).some(d => d.sessionDate === target && d.phase !== "open");
+    const nowD = new Date(), wd = nowD.getUTCDay(), weeklyDue = (wd === 6 || wd === 0 || (wd === 5 && nowD.getUTCHours() >= 21)) && !reviews(app).some(r => r.week === weekKey());
+    if (studied && !weeklyDue) return;
     autoRunning = true;
     try {
-      const r = await studySession(app, {}); app.emit("data:marketdays");
-      await app.store.create("inbox", { kind: "brain", title: "Market Brain studied " + target, body: r.headline + " Source: Claude's study of measured moves and retrieved news.", materiality: 1, read: false, at: Date.now() }).catch(() => {});
-      // Re-study the record once 10+ more calls have been graded since the last lessons.
-      const LL = MD.ai.latestLessons(app), scored = MD.ai.scoredCalls(app).length;
-      if (scored >= 10 && (!LL || scored - (LL.basedOn || 0) >= 10)) { const les = await MD.ai.learn(app).catch(() => null); if (les) await app.store.create("inbox", { kind: "brain", title: "The AI studied its graded calls and updated its lessons", body: (les.summary || "") + " Every forecasting AI is told the new lessons.", materiality: 1, read: false, at: Date.now() }).catch(() => {}); }
-      if (!latestCall(app)) { const c = await marketCall(app, {}); await app.store.create("inbox", { kind: "brain", title: "Market call for " + c.target + ": SPY " + (c.upPct >= 50 ? "up " + c.upPct : "down " + (100 - c.upPct)) + "%", body: c.summary + " Graded from the close.", materiality: 1, read: false, at: Date.now() }).catch(() => {}); }
+      if (!studied) await afterClose(app, target);
+      if (weeklyDue) { const w = await weeklyReview(app, {}); app.emit("data:weekly"); await app.store.create("inbox", { kind: "brain", title: "Weekly review: " + w.headline, body: (w.lessons[0] ? "Lesson: " + w.lessons[0] + " " : "") + "Next week: " + w.nextWeek.slice(0, 3).map(x => x.date + " " + x.event).join("; ") + ". Source: Claude's review of the week's measured moves, graded calls and retrieved news.", materiality: 1, read: false, at: Date.now() }).catch(() => {}); }
     }
     catch (e) { /* tried again at the next check */ }
     finally { autoRunning = false; }
+  }
+  // After each close: study the session, re-study lessons once 10+ more calls are graded, and make the next market call.
+  async function afterClose(app, target) {
+    const r = await studySession(app, {}); app.emit("data:marketdays");
+    await app.store.create("inbox", { kind: "brain", title: "Market Brain studied " + target, body: r.headline + " Source: Claude's study of measured moves and retrieved news.", materiality: 1, read: false, at: Date.now() }).catch(() => {});
+    // Re-study the record once 10+ more calls have been graded since the last lessons.
+    const LL = MD.ai.latestLessons(app), scored = MD.ai.scoredCalls(app).length;
+    if (scored >= 10 && (!LL || scored - (LL.basedOn || 0) >= 10)) { const les = await MD.ai.learn(app).catch(() => null); if (les) await app.store.create("inbox", { kind: "brain", title: "The AI studied its graded calls and updated its lessons", body: (les.summary || "") + " Every forecasting AI is told the new lessons.", materiality: 1, read: false, at: Date.now() }).catch(() => {}); }
+    if (!latestCall(app)) { const c = await marketCall(app, {}); await app.store.create("inbox", { kind: "brain", title: "Market call for " + c.target + ": SPY " + (c.upPct >= 50 ? "up " + c.upPct : "down " + (100 - c.upPct)) + "%", body: c.summary + " Graded from the close.", materiality: 1, read: false, at: Date.now() }).catch(() => {}); }
   }
 
   /* ---------- page ---------- */
@@ -479,6 +544,17 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     callBox.append(callCard(app, cur0));
     root.append(U.section("Market call: will the S&P 500 close up?", h("div", { class: "stack" }, callBox, h("div", { class: "row", style: "gap:8px;align-items:center;flex-wrap:wrap" }, callBtn, callPhase), h("details", {}, h("summary", { class: "label" }, "Research steps"), callLog), callsRecord(app),
       h("p", { class: "tiny muted" }, "Anchored to SPY's own history of up days in situations like today's, then adjusted for the calendar, pre-market moves, news and backtested patterns, and checked by a second reader. The first call per session is graded from the close; the record is fed back to future calls. Once you've studied a session, the next session's call is made automatically after each close."))));
+    const wkBox = h("div", { class: "stack" }), wkLog = MD.ai.logBox(), wkPhase = h("span", { class: "small muted" }), allW = reviews(app);
+    const wkPick = allW.length > 1 ? h("select", { "aria-label": "Past weekly reviews", onchange: () => wkBox.replaceChildren(reviewView(app, allW.find(x => x.id === wkPick.value))) }, allW.map(w => h("option", { value: w.id }, "Week of " + w.week))) : null;
+    const wkBtn = h("button", { class: "btn ghost", type: "button", disabled: !app.caps.sample, onclick: async () => {
+      wkBtn.disabled = true; wkLog.clear(); wkPhase.textContent = "Working…";
+      try { const w = await weeklyReview(app, { onLog: (e) => wkLog.add(e) }); wkPhase.textContent = app.demo ? "Done (demo mode: not saved)" : "Saved; its lessons now reach every AI on the desk."; wkBox.replaceChildren(reviewView(app, w)); }
+      catch (e) { wkPhase.textContent = MD.ai.errText(e); }
+      wkBtn.disabled = false;
+    } }, allW.some(w => w.week === weekKey()) ? "Rewrite this week's review" : "Write this week's review");
+    wkBox.append(reviewView(app, allW[0]));
+    root.append(U.section("Weekly review", h("div", { class: "stack" }, wkBox, h("div", { class: "row", style: "gap:8px;align-items:center;flex-wrap:wrap" }, wkBtn, wkPick, wkPhase), h("details", {}, h("summary", { class: "label", style: "cursor:pointer" }, "Research steps"), wkLog),
+      h("p", { class: "tiny muted" }, "Written automatically on the weekend once you've studied a session (with automatic study on). Built from the week's measured moves, the sessions studied and the desk's graded calls; next week's events come from the earnings calendar and the economic-calendar tool."))));
     const pulseBox = h("div", { class: "stack" });
     root.append(U.section("Right now (measured)", pulseBox));
     U.async(pulseBox, () => pulse(app, { history: true }), (P) => {
@@ -627,5 +703,5 @@ Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": ".
       h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")));
   }
 
-  MD.brain = { fitFactors, exposures, scenarioMove, exposureSection, SCENARIOS, marketCall, latestCall, callsFor, testIdea, backtest, RULE_HELP, labView, whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
+  MD.brain = { weeklyReview, reviews, weekKey, reviewView, fitFactors, exposures, scenarioMove, exposureSection, SCENARIOS, marketCall, latestCall, callsFor, testIdea, backtest, RULE_HELP, labView, whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
 })(typeof window !== "undefined" ? window : globalThis);
