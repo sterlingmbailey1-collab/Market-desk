@@ -227,6 +227,19 @@
       const s = (r && r.data && r.data.summaryData) || {};
       return Object.values(s).filter(x => x && x.label && x.value && x.value !== "N/A").map(x => ({ label: x.label.replace(/:$/, ""), value: x.label === "Market Cap" ? "USD " + C.fmtNum(num(x.value) / 1e9, 2) + "B" : x.value }));
     },
+    // Last four reported quarters: date reported, EPS, consensus and surprise.
+    async earningsSurprise(sym) {
+      const r = await fetchJSON(`https://api.nasdaq.com/api/company/${encodeURIComponent(sym)}/earnings-surprise`, 20000, 3600000);
+      const rows = arr(r && r.data && r.data.earningsSurpriseTable && r.data.earningsSurpriseTable.rows);
+      return rows.map(x => { const m = String(x.dateReported || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return { quarter: x.fiscalQtrEnd, reported: m ? m[3] + "-" + m[1].padStart(2, "0") + "-" + m[2].padStart(2, "0") : null, eps: num(x.eps), consensus: num(x.consensusForecast), surprisePct: num(x.percentageSurprise) }; }).filter(x => x.reported);
+    },
+    // Consensus EPS forecasts by quarter and year, with the last four weeks' revisions.
+    async earningsForecast(sym) {
+      const r = await fetchJSON(`https://api.nasdaq.com/api/analyst/${encodeURIComponent(sym)}/earnings-forecast`, 20000, 3600000);
+      const rows = (t) => arr(t && t.rows).map(x => ({ period: x.fiscalEnd, consensus: num(x.consensusEPSForecast), high: num(x.highEPSForecast), low: num(x.lowEPSForecast), estimates: num(x.noOfEstimates), up: num(x.up), down: num(x.down) }));
+      const d = (r && r.data) || {};
+      return { quarterly: rows(d.quarterlyForecast), yearly: rows(d.yearlyForecast) };
+    },
     async financials(sym) {
       const r = await fetchJSON(`https://api.nasdaq.com/api/company/${encodeURIComponent(sym)}/financials?frequency=1`, 120000, 3600000);
       const d = r && r.data; if (!d) throw new DataError("not_found", "No financial statements from Nasdaq for " + sym + ".", "nasdaq");
