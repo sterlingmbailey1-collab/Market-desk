@@ -279,8 +279,8 @@
   function alertModal(asset, quote, preset) {
     const app = A();
     const kind = h("select", {}, [["above", "Price rises to or above"], ["below", "Price falls to or below"], ["move", "Daily move of at least (±%)"]].map(([v, l]) => h("option", { value: v, selected: !!(preset && preset.kind === v) }, l)));
-    const th = h("input", { type: "text", inputmode: "decimal", value: quote && quote.price ? String(quote.price) : "" });
-    const note = h("input", { type: "text", placeholder: "Why this matters (optional)" });
+    const th = h("input", { type: "text", inputmode: "decimal", value: preset && preset.threshold ? String(preset.threshold) : quote && quote.price ? String(quote.price) : "" });
+    const note = h("input", { type: "text", placeholder: "Why this matters (optional)", value: preset && preset.note || null });
     const err = h("div", { class: "err" });
     const m = U.modal("Create alert · " + (asset.symbol || asset.name), h("div", { class: "stack" },
       h("div", { class: "form" }, U.field("Condition", kind), U.field("Threshold", th, quote ? "Now " + C.fmtNum(quote.price, quote.price >= 1 ? 2 : 6) + " " + (quote.currency || "") : null), h("div", { class: "wide" }, U.field("Note", note))),

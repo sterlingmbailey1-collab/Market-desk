@@ -207,6 +207,7 @@ Reply with ONLY JSON:
     const fcs = app.store.cached("forecasts").filter(x => x.source === "ai-picks"), evals = app.store.cached("evals");
     const scored = fcs.map(x => { const e = evals.find(v => v.forecastId === x.id); return e ? Object.assign({}, e, { probability: x.probability }) : null; }).filter(Boolean);
     const cal = C.calibration(scored);
+    root.append(U.section("AI scorecard (every source)", MD.ai.scorecard(app)));
     root.append(U.section("Track record", h("div", { class: "stack" },
       U.kv([["Picks logged", String(fcs.length)], ["Scored so far", String(cal.n)], ["Calls that came true", cal.hitRate != null ? (cal.hitRate * 100).toFixed(0) + "%" : "—"], ["Brier score", cal.brier != null ? cal.brier.toFixed(3) : "—"], ["Due for scoring", String(fcs.filter(x => x.dueAt <= Date.now() && !evals.some(v => v.forecastId === x.id)).length)]]),
       h("p", { class: "small muted" }, cal.n < 20 ? "Too few scored picks to judge skill yet. Score due picks in Deep Research → Forecast journal." : "Scores come from the forecast journal."),

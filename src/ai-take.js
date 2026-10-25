@@ -51,7 +51,19 @@
         h("p", { class: "tiny muted" }, "Claude's read of the measured data and the sources it retrieved, checked by a second review. The 3-month lean is logged in your forecast journal and scored when it's due. Not advice."));
     };
     label(); paint(saved());
-    const sec = U.section("AI quick take", h("div", { class: "stack" }, h("div", { class: "row" }, go, stop), phase, log, out));
+    const dOut = h("div", { class: "stack" });
+    const dSaved = () => app.store.cached("aitakes").find(d => d.id === idOf(asset) + "__debate") || (card._demo && card._demo[idOf(asset) + "__debate"]);
+    const dGo = h("button", { class: "btn ghost", type: "button" }, dSaved() ? "Re-run bull vs bear debate" : "Bull vs bear debate");
+    dGo.onclick = async () => {
+      if (!app.caps.sample) return;
+      ctl = new AbortController(); dGo.disabled = true; go.disabled = true; stop.hidden = false; log.clear(); phase.textContent = "Two analysts are researching opposite cases, then a judge weighs them… usually 1–2 minutes.";
+      const S = A().session((e) => log.add(e));
+      try { const r = await debate(app, asset, S, ctl.signal); phase.textContent = "Debate done · " + S.calls + " research steps"; dOut.replaceChildren(debateView(r)); }
+      catch (e) { phase.textContent = ""; log.add({ at: Date.now(), kind: "fail", text: A().errText(e) }); }
+      dGo.disabled = false; go.disabled = false; stop.hidden = true; ctl = null; dGo.textContent = "Re-run bull vs bear debate";
+    };
+    if (dSaved()) dOut.append(debateView(dSaved()));
+    const sec = U.section("AI quick take", h("div", { class: "stack" }, h("div", { class: "row" }, go, dGo, stop), phase, log, out, dOut));
     sec.id = "sec-ai";
     return sec;
   }
@@ -96,6 +108,48 @@ Reply with ONLY JSON: {"stance": "positive"|"neutral"|"negative", "stanceLabel":
     const o3 = res.outlook["3M"], price = lv && lv.last;
     if (o3 && o3.lean !== "flat" && price > 0) await app.store.create("forecasts", { assetId: asset.id, asset: MD.common.slim(asset), symbol: sym, source: "ai-take", horizonDays: 91, dueAt: Date.now() + 91 * 864e5, priceAtCreation: price, currency: "USD", priceSource: "latest close", direction: o3.lean, probability: o3.probabilityPct / 100, thesis: res.headline, flatBandPct: 1 }).catch(() => {});
     return res;
+  }
+
+  /* ---------- Bull vs bear debate ---------- */
+  /* Two analysts build the strongest case each way with the research tools (in parallel), then a judge who
+     sees both cases, the measured price picture and which citations were actually retrieved weighs them. */
+  async function debate(app, asset, S, signal) {
+    const s = app.caps.sample, isStock = asset.cls === "stock" || asset.cls === "etf", sym = asset.symbol;
+    const lim = await s.limits().catch(() => null);
+    const names = isStock ? ["stock_snapshot", "zacks_view", "search_news", "options_move", "smart_money", "search_web"] : ["stock_snapshot", "crypto_news", "search_news", "search_web"];
+    const snapStep = S.step("run", "Measured price picture for the judge");
+    let snap = null; try { snap = await A().TOOLS.stock_snapshot.run(app, S, { symbol: sym }); S.done(snapStep, "ok"); } catch (e) { S.done(snapStep, "fail", " → " + U.errorText(e)); }
+    const side = (role) => s.json(`Today is ${today()}. You are the ${role.toUpperCase()} analyst in a structured debate about ${asset.name || sym} (${sym}) over the next 6–12 months. Build the strongest honest ${role === "bull" ? "case for the price rising" : "case for the price falling or lagging"}.
+${lim && lim.tools ? "Research with 3 to 6 tool calls (search_news, stock_snapshot" + (isStock ? ", zacks_view, options_move, smart_money" : "") + "). Cite only URLs the tools returned." : "Tools are unavailable."} Use measured figures only; never invent numbers. Concede the single best point on the other side.
+Reply with ONLY JSON: {"thesis": "2 sentences", "points": [{"point": "...", "evidence": "the figure or fact", "source_url": "https://... or empty"}], "concession": "the other side's best point", "confidence": 0-100}`, Object.assign({ modelTier: "complex", signal }, lim && lim.tools ? { tools: A().tools(app, S, names) } : { cache: false }));
+    S.step("run", "Bull and bear analysts researching");
+    const [bull, bear] = await Promise.all([side("bull"), side("bear")]);
+    const clean = (c) => ({ thesis: String(c && c.thesis || ""), points: (c && c.points || []).slice(0, 5).map(p => ({ point: String(p.point || ""), evidence: String(p.evidence || ""), source: p.source_url && /^https?:/.test(p.source_url) ? { url: p.source_url, verified: S.sources.some(x => x.url === p.source_url) } : null })), concession: String(c && c.concession || ""), confidence: Math.max(0, Math.min(100, Number(c && c.confidence) || 0)) });
+    const B = clean(bull), R = clean(bear);
+    if (!B.thesis || !R.thesis) throw Object.assign(new Error("The debate came back unreadable; try again."), { code: "invalid_json" });
+    const judgeStep = S.step("run", "Judge weighing both cases");
+    const j = await s.json(`You are the judge of a debate about ${sym}. Weigh the bull and bear cases below against the measured data. Points whose source was not actually retrieved ("verified": false) or that contradict the measured data count for little. Decide which case is stronger on evidence (not rhetoric), and give a calibrated probability that the price is higher in 6 months. ${A().calibrationNote(A().trackRecord(app))}
+Measured: ${JSON.stringify(snap)}
+Bull: ${JSON.stringify(B)}
+Bear: ${JSON.stringify(R)}
+Reply with ONLY JSON: {"stronger": "bull"|"bear"|"even", "probabilityHigherIn6mPct": 30-70, "verdict": "2-3 sentences", "keyDisagreement": "the one question that decides it", "bullWeakness": "...", "bearWeakness": "...", "watch": ["1-3 things that would settle it"], "confidence": 0-100}`, { modelTier: "complex", signal, cache: false });
+    S.done(judgeStep, "ok");
+    const res = { asset: MD.common.slim(asset), bull: B, bear: R, stronger: ["bull", "bear", "even"].includes(j.stronger) ? j.stronger : "even", prob: Math.max(25, Math.min(75, Number(j.probabilityHigherIn6mPct) || 50)), verdict: String(j.verdict || ""), keyDisagreement: String(j.keyDisagreement || ""), bullWeakness: String(j.bullWeakness || ""), bearWeakness: String(j.bearWeakness || ""), watch: (j.watch || []).slice(0, 3).map(String), confidence: Math.max(0, Math.min(100, Number(j.confidence) || 0)), at: Date.now() };
+    if (!app.demo) await app.store.put("aitakes", idOf(asset) + "__debate", JSON.parse(JSON.stringify(res))).catch(() => {});
+    else { card._demo = card._demo || {}; card._demo[idOf(asset) + "__debate"] = res; }
+    return res;
+  }
+  function debateView(r) {
+    const sideBox = (c, cls, label) => h("div", { class: "bb " + cls }, h("span", { class: "label" }, label + " · conviction " + c.confidence), h("p", { class: "small", style: "font-weight:600" }, c.thesis),
+      h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, c.points.map(p => h("li", {}, p.point, p.evidence ? h("span", { class: "muted" }, " — " + p.evidence) : null, p.source ? h("span", {}, " ", h("a", { href: p.source.url, target: "_blank", rel: "noopener noreferrer" }, "source"), p.source.verified ? null : h("span", { class: "warn-t" }, " (unverified)")) : null))),
+      c.concession ? h("p", { class: "tiny muted" }, "Concedes: " + c.concession) : null);
+    return h("div", { class: "stack debate" },
+      h("div", { class: "fc-head" }, h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "verdict " + (r.stronger === "bull" ? "positive" : r.stronger === "bear" ? "negative" : "neutral") }, r.stronger === "even" ? "Evenly matched" : (r.stronger === "bull" ? "Bull case stronger" : "Bear case stronger")), h("strong", {}, r.verdict)),
+        h("div", { class: "stack", style: "gap:2px;justify-items:end" }, h("span", { class: "label" }, "Higher in 6 months"), h("b", { class: "num", style: "font-size:1.3rem" }, r.prob + "%"), h("span", { class: "tiny muted" }, "judge's confidence " + r.confidence))),
+      h("div", { class: "bullbear" }, sideBox(r.bull, "up", "Bull"), sideBox(r.bear, "down", "Bear")),
+      r.keyDisagreement ? h("p", { class: "small" }, h("strong", {}, "What decides it: "), r.keyDisagreement) : null,
+      h("div", { class: "grid g2" }, r.bullWeakness ? h("p", { class: "small" }, h("strong", {}, "Weakest bull point: "), r.bullWeakness) : null, r.bearWeakness ? h("p", { class: "small" }, h("strong", {}, "Weakest bear point: "), r.bearWeakness) : null),
+      A().list("What would settle it", r.watch), h("p", { class: "tiny muted" }, "Two Claude analysts argued opposite sides with the research tools; a third weighed them against measured data and checked which citations were retrieved. " + U.fmtTs(r.at) + ". Not advice."));
   }
 
   /* ---------- AI morning brief (dashboard) ---------- */

@@ -118,6 +118,51 @@
     return "Track record of your past calls of this kind: " + tr.scored + " scored, " + tr.hitPct.toFixed(0) + "% came true (Brier " + tr.brier.toFixed(3) + "). By stated probability: " + tr.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join("; ") + ". If calls at a stated level came true less often than stated, state lower probabilities this time.";
   }
 
+  /* Score forecasts whose date has passed, from the close on (or after) the due date. Runs from the journal's
+     button and quietly in the background, so every AI's track record stays current. */
+  let scoring = null;
+  function scoreDue(app, opts = {}) {
+    if (scoring) return scoring;
+    scoring = (async () => {
+      const evals = app.store.cached("evals"), done = new Set(evals.map(e => e.forecastId));
+      const due = app.store.cached("forecasts").filter(f => f.dueAt <= Date.now() && !done.has(f.id) && f.asset).sort((a, b) => a.dueAt - b.dueAt).slice(0, opts.max || 50);
+      let n = 0; const failed = [];
+      for (const f of due) {
+        try {
+          const dueDay = Math.floor(f.dueAt / 864e5);
+          const s = await D.historyFor(f.asset, (Date.now() - f.dueAt) / 864e5 > 300 ? "5Y" : "1Y");
+          const pt = s.points.find(p => Math.floor(p.time / 86400) >= dueDay) || s.points[s.points.length - 1];
+          if (Math.floor(pt.time / 86400) < dueDay - 4) continue; // the due date's close isn't in yet
+          const price = pt.close ?? pt.value, ev = C.evaluateForecast(f, price);
+          if (ev && !app.store.cached("evals").some(e => e.forecastId === f.id)) { await app.store.create("evals", Object.assign({ forecastId: f.id, evaluatedAt: Date.now(), priceAtDue: price, priceDate: iso(pt.time), priceSource: s.source, probability: f.probability, source: f.source }, ev)); n++; }
+        } catch (e) { failed.push({ symbol: f.symbol, error: U.errorText(e) }); }
+      }
+      return { scored: n, failed, due: due.length };
+    })().finally(() => { scoring = null; });
+    return scoring;
+  }
+  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", ai: "Deep Research", user: "Your own forecasts" };
+  /* Per-source accuracy and a calibration chart: for each stated-probability band, how often calls came true. */
+  function scorecard(app) {
+    const fcs = app.store.cached("forecasts"), evals = app.store.cached("evals");
+    const srcs = [...new Set(fcs.map(f => f.source || "user"))];
+    const rows = srcs.map(s => Object.assign({ source: s, label: SOURCE_LABEL[s] || s }, trackRecord(app, s === "user" ? null : s))).filter(r => r.logged);
+    const all = trackRecord(app);
+    const W = 300, H = 150, pad = 26;
+    const pts = all.buckets.filter(b => b.n);
+    const x = (p) => pad + (p - 50) / 50 * (W - pad - 8), y = (p) => H - pad - p / 100 * (H - pad - 8);
+    const mid = { "50–60%": 55, "60–70%": 65, "70–100%": 80 };
+    const svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" style="max-width:420px" role="img" aria-label="Calibration: stated probability against how often calls came true">' +
+      '<line x1="' + x(50) + '" y1="' + y(50) + '" x2="' + x(100) + '" y2="' + y(100) + '" stroke="currentColor" stroke-opacity="0.35" stroke-dasharray="4 4"/>' +
+      '<line x1="' + pad + '" y1="' + (H - pad) + '" x2="' + (W - 8) + '" y2="' + (H - pad) + '" stroke="currentColor" stroke-opacity="0.3"/><line x1="' + pad + '" y1="8" x2="' + pad + '" y2="' + (H - pad) + '" stroke="currentColor" stroke-opacity="0.3"/>' +
+      pts.map(b => '<circle cx="' + x(mid[b.range]) + '" cy="' + y(b.hitPct) + '" r="' + Math.min(10, 3 + Math.sqrt(b.n) * 1.5) + '" fill="var(--accent)" fill-opacity="0.75"><title>' + b.range + ' stated: ' + b.hitPct.toFixed(0) + '% came true (' + b.n + ')</title></circle>').join("") +
+      '<text x="' + pad + '" y="' + (H - 8) + '" font-size="9" fill="currentColor" opacity="0.6">50% stated</text><text x="' + (W - 60) + '" y="' + (H - 8) + '" font-size="9" fill="currentColor" opacity="0.6">100% stated</text><text x="2" y="14" font-size="9" fill="currentColor" opacity="0.6">came true</text></svg>';
+    return h("div", { class: "stack" },
+      rows.length ? U.table([{ t: "Source", v: "label" }, { t: "Logged", v: (r) => String(r.logged), n: true }, { t: "Scored", v: (r) => String(r.scored), n: true }, { t: "Came true", v: (r) => r.hitPct != null ? r.hitPct.toFixed(0) + "%" : "—", n: true }, { t: "Brier (lower is better)", v: (r) => r.brier != null ? r.brier.toFixed(3) : "—", n: true }, { t: "By stated probability", v: (r) => r.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join(" · ") || "—" }], rows) : h("div", { class: "empty" }, "No forecasts logged yet."),
+      all.scored ? h("div", { class: "row", style: "gap:16px;flex-wrap:wrap;align-items:center" }, h("div", { html: svg, style: "color:var(--muted);flex:1 1 260px;min-width:0" }), h("p", { class: "small muted", style: "flex:1 1 220px" }, "Each dot is a band of stated probability; its height is how often those calls came true. Dots below the dashed line mean the AI was overconfident in that band. Every AI that logs forecasts is told this record and asked to calibrate.")) : null,
+      h("p", { class: "tiny muted" }, "Due forecasts are scored automatically while the page is open, from the close on their due date. A Brier score of 0.25 is what always saying 50% would earn."));
+  }
+
   /* ---------- review pass ---------- */
   /* A skeptical second reader checks each item of a draft against the measured data and the sources
      actually retrieved: unsupported claims, ignored risks, overconfidence. Returns per-item verdicts. */
@@ -170,5 +215,5 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { findAsset, session, tools, TOOLS, trackRecord, calibrationNote, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { findAsset, session, tools, TOOLS, trackRecord, calibrationNote, scoreDue, scorecard, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

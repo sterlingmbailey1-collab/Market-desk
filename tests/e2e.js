@@ -161,6 +161,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("pick sources: retrieved news verified, invented URL flagged", picks[0] && picks[0].picks[0].sources.find(x => /bigdata/.test(x.url)).verified === true && picks[0].picks[0].sources.find(x => /invented/.test(x.url)).verified === false);
   check("'either way' pick journaled as a move forecast", pickFc.some(f => f.direction === "move" && f.movePct > 0));
   check("review pass: one pick dropped with its reason, one revised", picks[0].review && picks[0].review.dropped === 1 && picks[0].review.revised === 1 && picks[0].excluded.some(x => /Dropped by the review/.test(x.reason)) && picks[0].picks[1].review.verdict === "revise", JSON.stringify(picks[0].review));
+  check("AI scorecard section on Recommendations", /AI scorecard/i.test(pkTxt) && /Recommendations/.test(pkTxt));
   check("pick card: bull and bear case, what would change the view, review note", /Bull case/i.test(pkTxt) && /Bear case/i.test(pkTxt) && /What would change the view/i.test(pkTxt) && /Review: holds up/i.test(pkTxt));
   check("confidence blends Claude, the review, measured signals and evidence", picks[0].picks.every(p => p.confidenceParts && p.confidenceParts.signals != null && p.confidence >= 0 && p.confidence <= 100) && picks[0].picks[1].confidenceParts.reviewed === 30);
   check("Claude used the research tools", picks[0].toolCalls > 0 && picks[0].sourcesRetrieved > 0, JSON.stringify({ t: picks[0].toolCalls, s: picks[0].sourcesRetrieved }));
@@ -445,7 +446,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("idea finder: ideas verified against exchange data and reviewed", /NVDA/.test(ideaTxt) && /SMH/.test(ideaTxt) && /Measured by the app/i.test(ideaTxt) && /1Y return/i.test(ideaTxt) && /Review:/i.test(ideaTxt), ideaTxt.slice(-700));
   check("idea search saved", await page.evaluate(() => MD.app.store.cached("ideas").length === 1 && MD.app.store.cached("ideas")[0].ideas.length >= 2));
   await page.screenshot({ path: path.join(shots, "e2e-ideas.png"), fullPage: false });
-  await page.click("button:has-text('Watch')"); await page.waitForTimeout(400);
+  await page.click(".aicard button:has-text('Watch')"); await page.waitForTimeout(400);
   check("add an idea to the watchlist", await page.evaluate(() => MD.app.store.cached("watch").some(w => w.symbol === "NVDA" || w.symbol === "SMH" || w.symbol === "BE")));
 
   // ---- AI quick take on an asset page, and the dashboard morning brief
@@ -454,10 +455,24 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const takeTxt = await page.locator("#sec-ai").innerText();
   check("AI quick take: stance, leans, both sides, measured levels, review", /Constructive, but stretched/i.test(takeTxt) && /3M lean/i.test(takeTxt) && /Working against it/i.test(takeTxt) && /200-day average/i.test(takeTxt) && /Review:/i.test(takeTxt), takeTxt.slice(0, 500));
   check("AI quick take saved and its 3-month lean journaled", await page.evaluate(() => MD.app.store.cached("aitakes").some(d => d.id === "stock_AAPL") && MD.app.store.cached("forecasts").some(f => f.source === "ai-take" && f.symbol === "AAPL" && f.direction === "up")));
+  await page.click("#sec-ai button:has-text('Bull vs bear debate')"); await page.waitForTimeout(3500);
+  const debTxt = await page.locator("#sec-ai").innerText();
+  check("bull vs bear debate: both cases, judge's probability, unverified source flagged", /Bull case stronger/i.test(debTxt) && /Higher in 6 months/i.test(debTxt) && /57%/.test(debTxt) && /What decides it/i.test(debTxt) && /\(unverified\)/.test(debTxt), debTxt.slice(-600));
   await page.evaluate(() => MD.app.go("dashboard", null, { fromNav: true })); await page.waitForTimeout(1500);
   await page.click("button:has-text(\"Write today's brief\")"); await page.waitForTimeout(3000);
   const briefTxt = await page.locator("#content").innerText();
   check("AI morning brief on the dashboard", /Quiet open; your tech holdings lead/i.test(briefTxt) && await page.evaluate(() => MD.app.store.cached("briefs").length === 1), briefTxt.slice(0, 300));
+
+  // ---- Watchlist scanner + AI triage
+  await page.evaluate(() => { MD.app.ls.set("oppTab", "watch"); MD.app.go("opportunities", null, { fromNav: true }); }); await page.waitForTimeout(800);
+  await page.click("button:has-text('Scan my watchlist and holdings')");
+  await page.waitForFunction(() => /Scanned \d+ assets/.test(document.querySelector("#content").innerText), null, { timeout: 30000 }).catch(() => {});
+  const wsTxt = await page.locator("#content").innerText();
+  check("watchlist scanner measures signals for holdings and watchlist", /Scanned \d+ assets/i.test(wsTxt) && await page.locator("#content table.tbl tbody tr").count() >= 2 && /RSI/.test(wsTxt), wsTxt.slice(0, 900));
+  const flaggedN = await page.evaluate(() => document.querySelectorAll("#content .sig").length);
+  await page.click("button:has-text('AI: what needs attention today')"); await page.waitForTimeout(3000);
+  const triTxt = await page.locator("#content").innerText();
+  check("AI triage ranks what needs attention (or says nothing does)", flaggedN ? /Review position|No action/i.test(triTxt) : /No action needed/i.test(triTxt), triTxt.slice(-500));
 
   // ---- Smart Money
   const navOrder = await page.evaluate(() => [...document.querySelectorAll(".nav a")].map(a => a.getAttribute("href")));

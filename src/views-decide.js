@@ -260,9 +260,10 @@ Facts: ${facts.join(" | ") || "no material moves"} | Alerts: ${d.alerts.map(a =>
     const ctx = app.ctx.opportunities || {};
     const tab = ctx.compare ? "compare" : (app.ls.get("oppTab", "scan"));
     root.append(head("Opportunities", "Screens, comparisons and AI idea finding built on measured data. Claude researches with news and market-data tools, a second review checks its reasoning, and every number comes from the app. A result is a lead to research, not a recommendation."),
-      U.tabs([["scan", "Scanner"], ["compare", "Investment decision comparator"], ["ideas", "AI idea finder"]], tab, (k) => { app.ls.set("oppTab", k); app.ctx.opportunities = k === "compare" ? { compare: ctx.compare || [] } : {}; app.rerender(); }));
+      U.tabs([["scan", "Scanner"], ["watch", "Watchlist scanner"], ["compare", "Investment decision comparator"], ["ideas", "AI idea finder"]], tab, (k) => { app.ls.set("oppTab", k); app.ctx.opportunities = k === "compare" ? { compare: ctx.compare || [] } : {}; app.rerender(); }));
     if (tab === "compare") return comparator(root, app, ctx.compare || []);
     if (tab === "ideas") return MD.oppAI.ideaFinder(root, app);
+    if (tab === "watch") return MD.watchScan.view(root, app);
     scanner(root, app, ctx.screen);
   };
   const PRESETS = {

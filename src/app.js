@@ -529,6 +529,9 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
     D.onActivity(() => { const p = U.$("#livePill"); if (p) p.title = "Last data request " + new Date().toLocaleTimeString(); });
     setInterval(() => { if (!document.hidden) app.checkAlerts(false).catch(() => {}); }, 120000);
     setTimeout(() => app.checkAlerts(false).catch(() => {}), 8000);
+    // Keep every AI's track record current: score due forecasts quietly while the page is open.
+    const autoScore = () => { if (app.demo || !D.available() || document.hidden || !MD.ai) return; MD.ai.scoreDue(app, { max: 12 }).then(r => { if (r.scored) { app.emit("data:evals"); if (app.settings.notify.toasts) U.toast("Scored " + r.scored + " due forecast" + (r.scored > 1 ? "s" : ""), "See Deep Research → Forecast journal for the AI scorecard."); } }).catch(() => {}); };
+    setTimeout(autoScore, 20000); setInterval(autoScore, 30 * 60e3);
     try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderView()); } catch {}
     new MutationObserver(() => { if (app.settings.theme === "system") { app._hostTheme = document.documentElement.getAttribute("data-theme"); renderView(); } }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
   }

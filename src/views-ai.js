@@ -120,21 +120,14 @@
     const due = fcs.filter(f => f.dueAt <= Date.now() && !evOf(f));
     const out = h("div", { class: "stack" });
     const scoreBtn = h("button", { class: "btn", type: "button", disabled: !due.length, onclick: async () => {
-      scoreBtn.disabled = true; let n = 0;
-      for (const f of due) {
-        try {
-          const dueDay = Math.floor(f.dueAt / 864e5);
-          const s = await D.historyFor(f.asset, (Date.now() - f.dueAt) / 864e5 > 300 ? "5Y" : "1Y");
-          const pt = s.points.find(p => Math.floor(p.time / 86400) >= dueDay) || s.points[s.points.length - 1];
-          const price = pt.close ?? pt.value;
-          const ev = C.evaluateForecast(f, price);
-          if (ev) { await app.store.create("evals", Object.assign({ forecastId: f.id, evaluatedAt: Date.now(), priceAtDue: price, priceDate: new Date(pt.time * 1000).toISOString().slice(0, 10), priceSource: s.source, probability: f.probability, source: f.source }, ev)); n++; }
-        } catch (e) { U.toast("Couldn't score " + f.symbol, U.errorText(e), true); }
-      }
-      U.toast("Scored " + n + " forecast(s)"); app.rerender();
+      scoreBtn.disabled = true;
+      const r = await MD.ai.scoreDue(app);
+      for (const f of r.failed.slice(0, 3)) U.toast("Couldn't score " + f.symbol, f.error, true);
+      U.toast("Scored " + r.scored + " forecast(s)"); app.rerender();
     } }, due.length ? "Score " + due.length + " due forecast(s)" : "No forecasts due");
     const scored = fcs.map(f => { const e = evOf(f); return e ? Object.assign({}, e, { probability: f.probability, source: f.source }) : null; }).filter(Boolean);
     const cal = C.calibration(scored), calAI = C.calibration(scored.filter(e => e.source === "ai"));
+    root.append(U.section("AI scorecard", MD.ai.scorecard(app)));
     root.append(U.section("Accuracy", h("div", { class: "stack" },
       h("div", { class: "grid g4" }, [["Forecasts recorded", String(fcs.length)], ["Scored", String(cal.n)], ["Direction hit rate", cal.hitRate != null ? (cal.hitRate * 100).toFixed(0) + "%" : "—"], ["Brier score (lower is better)", cal.brier != null ? cal.brier.toFixed(3) : "—"]].map(([k, v]) => h("div", { class: "tile" }, h("span", { class: "label" }, k), h("span", { class: "v" }, v)))),
       cal.n < 20 ? h("div", { class: "banner info" }, h("p", {}, "With " + cal.n + " scored forecast(s), accuracy figures are mostly noise. Treat them as a record, not a skill estimate, until there are dozens.")) : null,
