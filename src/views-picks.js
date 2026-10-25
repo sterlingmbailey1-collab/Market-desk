@@ -92,17 +92,20 @@
     const cands = await buildCandidates(app, opts, log);
     if (!cands.length) throw new Error("No candidates could be measured right now. Try again in a few minutes.");
     // Extra measured signals: Zacks Rank for stocks, and who among the tracked Congress members and investors holds it.
-    log("run", "Adding Zacks Rank and smart-money ownership");
-    await pool(cands.filter(c => c.asset.cls === "stock"), 4, async (c) => { try { const m = await D.zacks.metrics(c.asset.symbol); c.zacksRank = m.n("zacks_rank"); c.zacksTarget = m.n("zacks_target_price"); c.zacksUrl = m.url; } catch {} });
+    log("run", "Adding Zacks Rank, insider activity and smart-money ownership");
+    await pool(cands.filter(c => c.asset.cls === "stock"), 4, async (c) => {
+      try { const m = await D.zacks.metrics(c.asset.symbol); c.zacksRank = m.n("zacks_rank"); c.zacksTarget = m.n("zacks_target_price"); c.zacksUrl = m.url; } catch {}
+      try { const ins = await D.stocks.insiders(c.asset.symbol); const b = ins.counts["Number of Open Market Buys"], sl = ins.counts["Number of Sells"]; c.insiders = { openMarketBuys3m: b ? b.m3 : null, sells3m: sl ? sl.m3 : null }; } catch {}
+    });
     for (const c of cands) c.smartMoney = MD.smartView && c.asset.cls === "stock" ? MD.smartView.whoOwns(app, c.asset.symbol).map(w => w.name) : [];
-    log("ok", cands.filter(c => c.zacksRank != null).length + " with a Zacks Rank, " + cands.filter(c => c.smartMoney.length).length + " held or traded by tracked people");
+    log("ok", cands.filter(c => c.zacksRank != null).length + " with a Zacks Rank, " + cands.filter(c => c.smartMoney.length).length + " held or traded by tracked people, " + cands.filter(c => c.insiders && c.insiders.openMarketBuys3m > 0).length + " with insider buying");
     const S = MD.ai.session(onStep || ((e) => log(e.kind, e.text)));
     for (const c of cands) if (c.zacksUrl) S.add(c.zacksUrl, "Zacks " + c.asset.symbol, "data");
     const tools = lim && lim.tools ? MD.ai.tools(app, S, ["search_news", "crypto_news", "search_web", "stock_snapshot", "zacks_view", "options_move", "smart_money"]) : undefined;
     const table = cands.map(c => ({ symbol: c.asset.symbol, name: c.asset.name, class: c.asset.cls, price: +Number(c.price).toPrecision(6), marketCapB: c.marketCap ? +(c.marketCap / 1e9).toFixed(1) : null, todayPct: c.dayChangePct != null ? +Number(c.dayChangePct).toFixed(2) : null,
       optionsImpliedMovePct: c.impliedMovePct != null ? +c.impliedMovePct.toFixed(1) : null, optionsExpiry: c.impliedExpiry, optionsDays: c.impliedDays, nearestExpiryMove: c.nearImplied, volatilityImplied1SigmaMovePct: c.expectedMovePct != null ? +c.expectedMovePct.toFixed(1) : null, annualVolPct: c.volPct != null ? +c.volPct.toFixed(1) : null,
       earnings: c.earnings, shortInterestDaysToCover: c.shortDaysToCover != null ? +c.shortDaysToCover.toFixed(1) : null, return1mPct: c.ret1m != null ? +Number(c.ret1m).toFixed(1) : null, return3mPct: c.ret3m != null ? +c.ret3m.toFixed(1) : null, return7dPct: c.ret7d != null ? +Number(c.ret7d).toFixed(1) : null, fromYearHighPct: c.fromHighPct != null ? +c.fromHighPct.toFixed(1) : null,
-      zacksRank: c.zacksRank ?? null, zacksTarget: c.zacksTarget ?? null, smartMoney: c.smartMoney.length ? c.smartMoney : null, movementScore: +c.score.toFixed(1) }));
+      zacksRank: c.zacksRank ?? null, zacksTarget: c.zacksTarget ?? null, smartMoney: c.smartMoney.length ? c.smartMoney : null, insiders: c.insiders || null, movementScore: +c.score.toFixed(1) }));
     const calib = MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-picks"));
     log("run", "Asking Claude to choose and explain (usually 1–3 minutes)");
     const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are picking assets that could make a LARGE price move (up or down) within the window "${wLabel}" (about ${days} days), for an investor who wants to watch them closely.
