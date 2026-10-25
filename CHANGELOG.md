@@ -1,5 +1,21 @@
 # Changelog
 
+## Version 19 (2026-10-25)
+- **Open-call monitor.** Every open AI call (recommendations, quick takes, AI decisions, research) priced now: the
+  move since the call and the chance it still finishes on its side by the due date, from the asset's own volatility
+  alone. "Where do the open calls stand?" on the dashboard card. Every two hours, the inbox gets one notice when a call
+  turns clearly against itself (25% or less) or clearly in its favour (85% or more). It can be switched off on the card.
+- **Recommendations focus.** An optional theme, sector or style (e.g. "AI chips", "nuclear power", "oversold large
+  caps"). Claude names the assets that fit; the app checks each with a live quote, measures it like every other
+  candidate and drops the ones it can't price; the picks lead with them.
+- **Day-trading risk limits.** Your own daily rules (maximum loss as a % of the account, maximum trades, stop after N
+  losses in a row) checked against today's logged trades: P&L, loss left, trades left and losing streak. The position
+  sizer warns when a trade would break the loss limit and gives the share count that stays inside it. The AI plan is
+  told your state and says to sit out once your rules say stop.
+- **If you buy** (stock and crypto pages): what a purchase would have done to your portfolio over the past year,
+  covering weight, volatility, worst drop and correlation with what you hold. It is checked against the position cap
+  for your risk setting and the AI decision's size ceiling. Read-only: nothing is bought.
+
 ## Version 18 (2026-10-25)
 - **Target-before-stop odds** in day trading: from the stock's measured volatility and the minutes left in the
   session, the sizer shows the chance price reaches the target before the stop on geometry alone (a driftless random
