@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 11).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 12; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors) and a Sports Betting tab.
@@ -69,6 +69,9 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   hit rates fed back into prompts) and `blend()` (confidence from Claude, the review, signals and evidence).
   The page computes every number; Claude reasons over tool results. Citations are checked against URLs
   actually retrieved. AI quick takes log their 3-month lean in the forecast journal (source `ai-take`).
+  `scoreDue()` scores due forecasts automatically (boot + every 30 min); `scorecard()` renders the calibration view;
+  `profileNote()` adds the investor profile (`settings.profile`) to prompts. Collections added in v10–v12: follows,
+  smcache, smai, ideas, aitakes, briefs, proppicks.
 
 ## Source map (src/)
 
@@ -88,10 +91,11 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 | ai-kit.js | Shared AI kit: tools, review pass, track-record calibration, confidence blending, UI helpers |
 | views-opps-ai.js | Opportunities AI: scan review, comparison scorecard, AI idea finder (tickers verified by the app) |
 | ai-take.js | AI quick take, bull vs bear debate (two analysts + judge) on stock/crypto pages; AI morning brief on the dashboard |
+| ask-ai.js | Ask AI from any page: context-aware chat with the kit tools, profile and a double-check |
 | views-watch.js | Watchlist scanner (measured signals across watchlist + holdings) with AI triage |
 | views-earnings.js | Earnings tab: Nasdaq surprises, two-day reactions, consensus revisions, implied move, AI preview |
 | views-rebalance.js | Portfolio stress test and rebalancing helper (cap / equal / inverse-vol) with AI weighing |
-| props.js | Player props data: VegasInsider NBA points props, ESPN game logs, recency-weighted model, next game + injury |
+| props.js | Player props data: VegasInsider NBA points and NFL anytime-TD props, ESPN game logs, recency-weighted model, next game + injury, pick grading |
 | views-props.js | Sports Betting → Player props view and AI prop picks |
 | smartmoney.js | Smart Money data: Capitol Trades / Dataroma / FMP parsers, trade returns vs SPY, copy-trade backtest, projection model |
 | views-smartmoney.js | Smart Money tab: leaderboard, member and investor pages, most bought, latest filings, follows |
@@ -117,6 +121,10 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   search API is not readable through Exa. Ball Ranks answers "Too Many Requests" often. NFL anytime TD
   (`vegasinsider.com/nfl/odds/player-props/`) is not used yet.
 - Nasdaq earnings: `api.nasdaq.com/api/company/<SYM>/earnings-surprise` and `/api/analyst/<SYM>/earnings-forecast`.
+- Nasdaq insiders: `api.nasdaq.com/api/company/<SYM>/insider-trades?limit=25&type=ALL&sortColumn=lastDate&sortOrder=DESC`.
+  Dividends: `api.nasdaq.com/api/quote/<SYM>/dividends?assetclass=stocks` (Nasdaq-listed symbols only).
+- NFL anytime TD: `vegasinsider.com/nfl/odds/player-props/` (price per book; one book's column often looks like a
+  different market and is flagged when it's 15+ points from the median).
 - ESPN (used): `espn.com/{nfl|nba|wnba|mlb|nhl}/injuries`, `espn.com/{league}/scoreboard[/_/date/YYYYMMDD]`,
   `espn.com/soccer/scoreboard/_/league/{eng.1|esp.1|ita.1|ger.1|fra.1}` (soccer lists teams without home/away).
 - Smart Money (used): Capitol Trades member pages `capitoltrades.com/politicians/<bioguide>[?page=N]` (15 trades a
@@ -137,8 +145,10 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 1. Done (v8–v9): betting AI forecasts, slips, assistant, layout; start-up fix for frozen documents.
 2. Done (v10): Smart Money tab; deeper AI for Recommendations and Opportunities (tools, review pass, calibration,
    confidence breakdown, idea finder); AI quick take on asset pages; AI morning brief; advisor double-check.
-3. Done (v11): NBA points props with ESPN game-log model and AI picks; AI scorecard with automatic scoring; bull vs
-   bear debate; watchlist scanner; earnings preview; portfolio stress test and rebalancing helper.
-   Next: NFL anytime TD and soccer goalscorer props, matchup/defence adjustments.
+3. Done (v11–v12): NBA points and NFL anytime-TD props with AI picks and graded record; AI scorecard with automatic
+   scoring; bull vs bear debate; Ask AI; investor profile; watchlist scanner; earnings preview; insiders & dividends;
+   portfolio stress test and rebalancing helper; smart-money model portfolio.
+   Next: soccer goalscorer props (Statz), NBA matchup/defence adjustments, NFL game logs for a TD model, dividends for
+   non-Nasdaq listings (Twelve Data /dividends needs the owner's Grow plan or higher).
 4. Investing upgrades: signal scorecard, earnings preview, watchlist scanner, rebalancing helper, dividends,
    insider activity.

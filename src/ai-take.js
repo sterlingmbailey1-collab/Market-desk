@@ -123,8 +123,9 @@ Reply with ONLY JSON: {"stance": "positive"|"neutral"|"negative", "stanceLabel":
     const side = (role) => s.json(`Today is ${today()}. You are the ${role.toUpperCase()} analyst in a structured debate about ${asset.name || sym} (${sym}) over the next 6–12 months. Build the strongest honest ${role === "bull" ? "case for the price rising" : "case for the price falling or lagging"}.
 ${lim && lim.tools ? "Research with 3 to 6 tool calls (search_news, stock_snapshot" + (isStock ? ", zacks_view, options_move, smart_money" : "") + "). Cite only URLs the tools returned." : "Tools are unavailable."} Use measured figures only; never invent numbers. Concede the single best point on the other side.
 Reply with ONLY JSON: {"thesis": "2 sentences", "points": [{"point": "...", "evidence": "the figure or fact", "source_url": "https://... or empty"}], "concession": "the other side's best point", "confidence": 0-100}`, Object.assign({ modelTier: "complex", signal }, lim && lim.tools ? { tools: A().tools(app, S, names) } : { cache: false }));
-    S.step("run", "Bull and bear analysts researching");
+    const bb = S.step("run", "Bull and bear analysts researching");
     const [bull, bear] = await Promise.all([side("bull"), side("bear")]);
+    S.done(bb, "ok");
     const clean = (c) => ({ thesis: String(c && c.thesis || ""), points: (c && c.points || []).slice(0, 5).map(p => ({ point: String(p.point || ""), evidence: String(p.evidence || ""), source: p.source_url && /^https?:/.test(p.source_url) ? { url: p.source_url, verified: S.sources.some(x => x.url === p.source_url) } : null })), concession: String(c && c.concession || ""), confidence: Math.max(0, Math.min(100, Number(c && c.confidence) || 0)) });
     const B = clean(bull), R = clean(bear);
     if (!B.thesis || !R.thesis) throw Object.assign(new Error("The debate came back unreadable; try again."), { code: "invalid_json" });
