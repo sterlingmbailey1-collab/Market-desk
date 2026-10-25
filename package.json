@@ -1,0 +1,14 @@
+{
+  "name": "market-desk",
+  "version": "7.0.0",
+  "private": true,
+  "description": "Market Desk: a single-page market analyzer published as a claude.ai artifact (stocks, ETFs, crypto, FX, metals, trading cards, prediction markets, sports betting).",
+  "scripts": {
+    "build": "node build.js dist/market-desk.html",
+    "test": "node tests/run.js && node tests/bet.js && node tests/real.js",
+    "e2e": "node build.js dist/market-desk.html && node tests/e2e.js dist/market-desk.html shots"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}
