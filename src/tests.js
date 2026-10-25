@@ -288,6 +288,13 @@
     const st = Q.tradeStats([{ side: "long", entry: 10, exit: 11, shares: 100, stop: 9.5 }, { side: "short", entry: 20, exit: 21, shares: 50, stop: 21 }, { side: "long", entry: 5, exit: 5.5, shares: 100 }]);
     eq(st.n, 3); near(st.net, 100, 1e-9); near(st.winRatePct, 200 / 3, 1e-9); near(st.profitFactor, 3, 1e-9); near(st.avgR, 0.5, 1e-9);
   });
+  test("decision maths: expected value, payoff, Kelly and a capped quarter-Kelly ceiling", () => {
+    const Q = MD.quant, d = Q.decisionMath({ upPct: 60, upMovePct: 20, downMovePct: 10, capPct: 10 });
+    near(d.evPct, 8, 1e-9); near(d.payoff, 2, 1e-9); near(d.kellyPct, 40, 1e-9); near(d.ceilingPct, 10, 1e-9); near(d.breakEvenUpPct, 33.3, 1e-9);
+    const small = Q.decisionMath({ upPct: 55, upMovePct: 10, downMovePct: 10, capPct: 20 }); near(small.kellyPct, 10, 1e-9); near(small.ceilingPct, 2.5, 1e-9);
+    const bad = Q.decisionMath({ upPct: 40, upMovePct: 10, downMovePct: 10 }); ok(bad.evPct < 0 && bad.kellyPct === 0 && bad.ceilingPct === 0);
+    eq(Q.decisionMath({ upPct: 60, upMovePct: 0, downMovePct: 5 }), null);
+  });
   test("calibration from the record pulls overconfident calls down, by more as the record grows", () => {
     const Q = MD.quant, mk = (n, p, hits) => Array.from({ length: n }, (_, i) => ({ p, hit: i < hits }));
     const few = Q.calibrateFrom(mk(10, 0.7, 5), 0.7), many = Q.calibrateFrom(mk(100, 0.7, 50), 0.7);

@@ -135,6 +135,17 @@
     return vx > 0 && vy > 0 ? c / Math.sqrt(vx * vy) : null;
   }
 
+  /* ---------- decision maths ---------- */
+  /* Expected value of a position from the chance it rises and the typical sizes of the up and down moves, the payoff
+     ratio, the Kelly fraction (the bet size that maximizes long-run growth if the odds are right) and a ceiling of a
+     quarter of Kelly capped by the investor's maximum position: odds are estimates, so full Kelly is far too much. */
+  function decisionMath({ upPct, upMovePct, downMovePct, capPct = 10 }) {
+    const p = Math.max(0, Math.min(100, Number(upPct))) / 100, up = Math.abs(Number(upMovePct)), dn = Math.abs(Number(downMovePct));
+    if (!(up > 0) || !(dn > 0)) return null;
+    const ev = p * up - (1 - p) * dn, b = up / dn, kelly = Math.max(0, (p * b - (1 - p)) / b) * 100;
+    return { evPct: Math.round(ev * 100) / 100, payoff: Math.round(b * 100) / 100, kellyPct: Math.round(kelly * 10) / 10, ceilingPct: Math.round(Math.min(capPct, kelly / 4) * 10) / 10, breakEvenUpPct: Math.round(dn / (up + dn) * 1000) / 10 };
+  }
+
   /* ---------- calibration from the record ---------- */
   /* Correct a stated probability (for the favoured side, 0.5–1) with the record of past calls: the hit rate of calls
      stated near it (Gaussian-weighted by distance), shrunk toward the stated value by k pseudo-calls so a short record
@@ -328,6 +339,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

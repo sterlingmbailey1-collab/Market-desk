@@ -1611,6 +1611,17 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     return vx > 0 && vy > 0 ? c / Math.sqrt(vx * vy) : null;
   }
 
+  /* ---------- decision maths ---------- */
+  /* Expected value of a position from the chance it rises and the typical sizes of the up and down moves, the payoff
+     ratio, the Kelly fraction (the bet size that maximizes long-run growth if the odds are right) and a ceiling of a
+     quarter of Kelly capped by the investor's maximum position: odds are estimates, so full Kelly is far too much. */
+  function decisionMath({ upPct, upMovePct, downMovePct, capPct = 10 }) {
+    const p = Math.max(0, Math.min(100, Number(upPct))) / 100, up = Math.abs(Number(upMovePct)), dn = Math.abs(Number(downMovePct));
+    if (!(up > 0) || !(dn > 0)) return null;
+    const ev = p * up - (1 - p) * dn, b = up / dn, kelly = Math.max(0, (p * b - (1 - p)) / b) * 100;
+    return { evPct: Math.round(ev * 100) / 100, payoff: Math.round(b * 100) / 100, kellyPct: Math.round(kelly * 10) / 10, ceilingPct: Math.round(Math.min(capPct, kelly / 4) * 10) / 10, breakEvenUpPct: Math.round(dn / (up + dn) * 1000) / 10 };
+  }
+
   /* ---------- calibration from the record ---------- */
   /* Correct a stated probability (for the favoured side, 0.5–1) with the record of past calls: the hit rate of calls
      stated near it (Gaussian-weighted by distance), shrunk toward the stated value by k pseudo-calls so a short record
@@ -1804,7 +1815,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);
 
@@ -2100,6 +2111,13 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     eq(Q.positionSize({ account: 25000, riskPct: 1, entry: 100, stop: 102, side: "short" }).shares, 125);
     const st = Q.tradeStats([{ side: "long", entry: 10, exit: 11, shares: 100, stop: 9.5 }, { side: "short", entry: 20, exit: 21, shares: 50, stop: 21 }, { side: "long", entry: 5, exit: 5.5, shares: 100 }]);
     eq(st.n, 3); near(st.net, 100, 1e-9); near(st.winRatePct, 200 / 3, 1e-9); near(st.profitFactor, 3, 1e-9); near(st.avgR, 0.5, 1e-9);
+  });
+  test("decision maths: expected value, payoff, Kelly and a capped quarter-Kelly ceiling", () => {
+    const Q = MD.quant, d = Q.decisionMath({ upPct: 60, upMovePct: 20, downMovePct: 10, capPct: 10 });
+    near(d.evPct, 8, 1e-9); near(d.payoff, 2, 1e-9); near(d.kellyPct, 40, 1e-9); near(d.ceilingPct, 10, 1e-9); near(d.breakEvenUpPct, 33.3, 1e-9);
+    const small = Q.decisionMath({ upPct: 55, upMovePct: 10, downMovePct: 10, capPct: 20 }); near(small.kellyPct, 10, 1e-9); near(small.ceilingPct, 2.5, 1e-9);
+    const bad = Q.decisionMath({ upPct: 40, upMovePct: 10, downMovePct: 10 }); ok(bad.evPct < 0 && bad.kellyPct === 0 && bad.ceilingPct === 0);
+    eq(Q.decisionMath({ upPct: 60, upMovePct: 0, downMovePct: 5 }), null);
   });
   test("calibration from the record pulls overconfident calls down, by more as the record grows", () => {
     const Q = MD.quant, mk = (n, p, hits) => Array.from({ length: n }, (_, i) => ({ p, hit: i < hits }));
@@ -4237,7 +4255,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
 (function (G) {
   const MD = (G.MD = G.MD || {});
   const APPEND_ONLY = new Set(["tx", "forecasts", "evals", "reports", "picks", "betpicks", "betgrades"]);
-  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas", "aitakes", "briefs", "proppicks", "ailessons", "marketdays", "brain", "dayplans", "daytrades", "pickhide", "marketcalls", "pickchecks"];
+  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas", "aitakes", "briefs", "proppicks", "ailessons", "marketdays", "brain", "dayplans", "daytrades", "pickhide", "marketcalls", "pickchecks", "decisions"];
   const newId = () => Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
   const clone = (o) => JSON.parse(JSON.stringify(o));
 
@@ -6276,7 +6294,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       actions.replaceChildren(X.actionBar(asset, () => quote, () => panel && panel.series));
     });
     const priceSec = U.section("Price", panel.el); priceSec.id = "sec-price";
-    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, a), MD.brain.whyCard(app, a), MD.ai.memoryCard(app, a), MD.insights.panel(a, { currency: "USD", analysts: true }));
+    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-decide", "AI decision"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, a), MD.decide.card(app, a), MD.brain.whyCard(app, a), MD.ai.memoryCard(app, a), MD.insights.panel(a, { currency: "USD", analysts: true }));
     const tab = app.ls.get("stockTab", "summary");
     const renderTab = (k) => {
       app.ls.set("stockTab", k);
@@ -6325,7 +6343,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       });
       const news = h("div", {});
       const priceSec = U.section("Price (USD)", panel.el), newsSec = U.section("Latest news · CoinMarketCap", news); priceSec.id = "sec-price"; newsSec.id = "sec-news";
-      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, Object.assign({}, a, { cls: "crypto" })), MD.brain.whyCard(app, Object.assign({}, a, { cls: "crypto" })), MD.ai.memoryCard(app, Object.assign({}, a, { cls: "crypto" })), U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
+      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-decide", "AI decision"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, Object.assign({}, a, { cls: "crypto" })), MD.decide.card(app, Object.assign({}, a, { cls: "crypto" })), MD.brain.whyCard(app, Object.assign({}, a, { cls: "crypto" })), MD.ai.memoryCard(app, Object.assign({}, a, { cls: "crypto" })), U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
       U.async(news, () => D.cmc.news(a.symbol, 8), (r) => {
         news.append(X.newsList(r.items, { empty: "CoinMarketCap returned no recent news for " + a.symbol + "." }),
           r.upcoming.length ? h("details", {}, h("summary", { class: "small" }, r.upcoming.length + " event or prediction page" + (r.upcoming.length > 1 ? "s" : "") + " with future dates"), X.newsList(r.upcoming, { clip: 200 })) : null,
@@ -7750,7 +7768,7 @@ Reply with ONLY JSON: {"strongestCounter": "...", "pricedIn": "...", "fragileAss
     const r = await s.json(`You are reviewing your own track record as Market Desk's market analyst, to get better at forecasting. Below are your past forecasts that were scored against the actual close on their due date: what you predicted, the probability you stated, your thesis at the time, and what happened. Overall: ${tr.scored} scored, ${tr.hitPct.toFixed(0)}% came true, Brier ${tr.brier.toFixed(3)} (0.25 is what always saying 50% earns).
 Find the patterns behind the misses and the hits: overconfidence at some stated levels, directions or kinds of asset you get wrong, horizons that don't work, kinds of thesis that failed (momentum, valuation, news, analyst ratings). Every lesson must be supported by specific calls in the list (name their symbols); with few calls, say the evidence is thin instead of over-generalising. Do not invent calls, prices or outcomes.${prev ? " Your previous lessons were: " + prev.lessons.map(l => l.lesson).join(" | ") + ". Keep the ones the record still supports and drop the rest." : ""}
 Scored calls: ${JSON.stringify(calls)}
-Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been and the main weakness", "lessons": [{"lesson": "one-sentence instruction to your future self", "evidence": "the calls that show it, by symbol", "appliesTo": "all"|"Recommendations"|"AI quick takes"|"Deep Research"|"Day-trade plans"|"Market calls"}], "biases": ["short names of systematic biases seen"], "keepDoing": ["what worked"]}`, { modelTier: "complex", signal: opts.signal, cache: false });
+Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been and the main weakness", "lessons": [{"lesson": "one-sentence instruction to your future self", "evidence": "the calls that show it, by symbol", "appliesTo": "all"|"Recommendations"|"AI quick takes"|"Deep Research"|"Day-trade plans"|"Market calls"|"AI decisions"}], "biases": ["short names of systematic biases seen"], "keepDoing": ["what worked"]}`, { modelTier: "complex", signal: opts.signal, cache: false });
     const strs = (xs, n) => (Array.isArray(xs) ? xs : []).slice(0, n).map(x => String(x).slice(0, 200));
     const doc = { basedOn: calls.length, hitPct: tr.hitPct, brier: tr.brier, summary: String(r.summary || "").slice(0, 600), biases: strs(r.biases, 5), keepDoing: strs(r.keepDoing, 4),
       lessons: (Array.isArray(r.lessons) ? r.lessons : []).filter(l => l && l.lesson).slice(0, 6).map(l => ({ lesson: String(l.lesson).slice(0, 300), evidence: String(l.evidence || "").slice(0, 300), appliesTo: Object.values(SOURCE_LABEL).includes(l.appliesTo) ? l.appliesTo : "all" })) };
@@ -7808,12 +7826,24 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     })().finally(() => { scoring = null; });
     return scoring;
   }
-  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", "ai-day": "Day-trade plans", "ai-market": "Market calls", ai: "Deep Research", user: "Your own forecasts" };
+  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", "ai-day": "Day-trade plans", "ai-market": "Market calls", "ai-decide": "AI decisions", ai: "Deep Research", user: "Your own forecasts" };
   /* Per-source accuracy and a calibration chart: for each stated-probability band, how often calls came true. */
+  /* What following a source's up/down calls would have returned on average (a "down" call counts as a short), and
+     the S&P 500 over the same windows for comparison. */
+  function followed(app, source) {
+    const evals = app.store.cached("evals");
+    return app.store.cached("forecasts").filter(f => (f.source || "user") === source && (f.direction === "up" || f.direction === "down")).map(f => { const e = evals.find(v => v.forecastId === f.id); return e && e.realizedReturnPct != null ? { from: f.createdAt, to: f.dueAt, pct: (f.direction === "up" ? 1 : -1) * Number(e.realizedReturnPct) } : null; }).filter(Boolean);
+  }
+  async function spyOver(windows) {
+    const hs = await D.historyCached({ id: "etf:SPY", cls: "etf", symbol: "SPY", name: "SPY" }, "5Y"), pts = hs.points;
+    const at = (ms) => { let v = null; for (const p of pts) { if (p.time * 1000 <= ms) v = p.close ?? p.value; else break; } return v; };
+    const rets = windows.map(w => { const a = at(w.from), b = at(w.to); return a && b ? (b / a - 1) * 100 : null; }).filter(x => x != null);
+    return rets.length ? rets.reduce((s, x) => s + x, 0) / rets.length : null;
+  }
   function scorecard(app) {
     const fcs = app.store.cached("forecasts"), evals = app.store.cached("evals");
     const srcs = [...new Set(fcs.map(f => f.source || "user"))];
-    const rows = srcs.map(s => Object.assign({ source: s, label: SOURCE_LABEL[s] || s }, trackRecord(app, s))).filter(r => r.logged);
+    const rows = srcs.map(s => { const fw = followed(app, s); return Object.assign({ source: s, label: SOURCE_LABEL[s] || s, followedPct: fw.length ? fw.reduce((t, x) => t + x.pct, 0) / fw.length : null, followedN: fw.length, windows: fw }, trackRecord(app, s === "user" ? "user" : s)); }).filter(r => r.logged);
     const all = trackRecord(app);
     const W = 300, H = 150, pad = 26;
     const pts = all.buckets.filter(b => b.n);
@@ -7825,7 +7855,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
       pts.map(b => '<circle cx="' + x(mid[b.range]) + '" cy="' + y(b.hitPct) + '" r="' + Math.min(10, 3 + Math.sqrt(b.n) * 1.5) + '" fill="var(--accent)" fill-opacity="0.75"><title>' + b.range + ' stated: ' + b.hitPct.toFixed(0) + '% came true (' + b.n + ')</title></circle>').join("") +
       '<text x="' + pad + '" y="' + (H - 8) + '" font-size="9" fill="currentColor" opacity="0.6">50% stated</text><text x="' + (W - 60) + '" y="' + (H - 8) + '" font-size="9" fill="currentColor" opacity="0.6">100% stated</text><text x="2" y="14" font-size="9" fill="currentColor" opacity="0.6">came true</text></svg>';
     return h("div", { class: "stack" },
-      rows.length ? U.table([{ t: "Source", v: "label" }, { t: "Logged", v: (r) => String(r.logged), n: true }, { t: "Scored", v: (r) => String(r.scored), n: true }, { t: "Came true", v: (r) => r.hitPct != null ? r.hitPct.toFixed(0) + "%" : "—", n: true }, { t: "Brier (lower is better)", v: (r) => r.brier != null ? r.brier.toFixed(3) : "—", n: true }, { t: "By stated probability", v: (r) => r.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join(" · ") || "—" }], rows) : h("div", { class: "empty" }, "No forecasts logged yet."),
+      rows.length ? U.table([{ t: "Source", v: "label" }, { t: "Logged", v: (r) => String(r.logged), n: true }, { t: "Scored", v: (r) => String(r.scored), n: true }, { t: "Came true", v: (r) => r.hitPct != null ? r.hitPct.toFixed(0) + "%" : "—", n: true }, { t: "Brier (lower is better)", v: (r) => r.brier != null ? r.brier.toFixed(3) : "—", n: true }, { t: "If followed (avg)", v: (r) => r.followedPct == null ? "—" : h("span", { class: r.followedPct > 0 ? "up" : r.followedPct < 0 ? "down" : "", title: "Average return of its up/down calls if each had been acted on (down calls as shorts), " + r.followedN + " calls" }, (r.followedPct > 0 ? "+" : "") + r.followedPct.toFixed(2) + "%"), n: true }, { t: "S&P 500 same windows", v: (r) => { if (!r.windows.length) return "—"; const el = h("span", { class: "num muted" }, "…"); spyOver(r.windows).then(v => { el.textContent = v == null ? "—" : (v > 0 ? "+" : "") + v.toFixed(2) + "%"; }, () => { el.textContent = "—"; }); return el; }, n: true }, { t: "By stated probability", v: (r) => r.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join(" · ") || "—" }], rows) : h("div", { class: "empty" }, "No forecasts logged yet."),
       all.scored ? h("div", { class: "row", style: "gap:16px;flex-wrap:wrap;align-items:center" }, h("div", { html: svg, style: "color:var(--muted);flex:1 1 260px;min-width:0" }), h("p", { class: "small muted", style: "flex:1 1 220px" }, "Each dot is a band of stated probability; its height is how often those calls came true. Dots below the dashed line mean the AI was overconfident in that band. Every AI that logs forecasts is told this record and asked to calibrate.")) : null,
       lessonsPanel(app),
       h("p", { class: "tiny muted" }, "Due forecasts are scored automatically while the page is open, from the close on their due date. A Brier score of 0.25 is what always saying 50% would earn."));
@@ -8988,6 +9018,105 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
   }
 
   MD.day = { earningsWeek, levels, forAI, plan, coach, probBar, SETUPS };
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* ---- ai-decide.js ---- */
+/* AI decision on an asset page: should this investor buy, add slowly, hold, trim, sell, avoid or wait, given their
+   profile, horizon and current position? The page measures the asset's own odds over the investor's horizon, its
+   risk and their position; Claude researches and decides; a second reader checks it; the page computes the expected
+   value and a position-size ceiling. The call is logged (source ai-decide) and graded at the horizon's end. */
+(function (G) {
+  const MD = (G.MD = G.MD || {});
+  const C = MD.core, Q = MD.quant, U = MD.ui, D = MD.data, h = U.h;
+  const HORIZON_DAYS = { short: 91, mid: 365, long: 365 }, CAP = { low: 5, mid: 10, high: 20 };
+  const DECISIONS = { buy: ["Buy", "positive"], accumulate: ["Add slowly", "positive"], hold: ["Hold", "neutral"], trim: ["Trim", "negative"], sell: ["Sell", "negative"], avoid: ["Avoid", "negative"], wait: ["Wait", "neutral"] };
+  const r1 = (x) => x == null || !isFinite(x) ? null : Math.round(x * 10) / 10;
+  const idOf = (a) => String(a.id || a.symbol).replace(/[^\w-]/g, "_");
+
+  async function decide(app, asset, opts = {}) {
+    const s = app.caps.sample; if (!s) throw Object.assign(new Error("Claude isn't available in this view."), { code: "no_sample" });
+    const S = MD.ai.session(opts.onLog), prof = app.settings.profile || {}, days = HORIZON_DAYS[prof.horizon] || 365, cap = CAP[prof.risk] || 10;
+    const isStock = asset.cls === "stock" || asset.cls === "etf";
+    let e = S.step("run", "Measuring " + asset.symbol + "'s own odds over " + days + " days, its risk and your position");
+    const [br, q, hs, pv] = await Promise.all([MD.ai.baseRatesFor(asset, days).catch(() => null), app.quote(asset, 30000).catch(() => null), D.historyCached(asset, "1Y").catch(() => null), app.valuePortfolio().catch(() => null)]);
+    const st = hs ? C.seriesStats(hs.points, hs.ppy || 252) : null, tech = hs ? C.technicals(hs.points, hs.ppy || 252) : null;
+    const total = pv ? Number(pv.totals.valueR) || 0 : 0, row = pv ? pv.rows.find(r => r.p.assetId === asset.id || r.p.symbol === asset.symbol) : null;
+    const position = row && row.p.qty.gt(0) ? { weightPct: total ? r1(Number(row.v.valueR) / total * 100) : null, gainPct: row.v.pnlPctN != null ? r1(Number(row.v.pnlPctN)) : null } : null;
+    S.done(e, "ok", br ? " → history: higher " + br.model.upPct + "% of the time in situations like today's" : "");
+    const measured = { symbol: asset.symbol, name: (q && q.name) || asset.name, class: asset.cls, price: q ? q.price : null, horizonDays: days, investor: { risk: prof.risk || "mid", horizon: prof.horizon || "mid", maxPositionPct: cap, income: !!prof.income },
+      baseRates: br ? { modelUpPct: br.model.upPct, overallUpPct: r1(br.overall.upPct), independent: br.overall.independent, typicalIfUpPct: br.model.avgUpPct, typicalIfDownPct: br.model.avgDownPct, conditions: br.conditions.map(c => ({ condition: c.label, upPct: r1(c.upPct), windows: c.n })) } : null,
+      risk: st ? { volPct: r1(st.volPct), maxDrawdown1yPct: r1(st.maxDrawdownPct), return1yPct: r1(st.changePct) } : null, trend: tech ? { trend: tech.trend, rsi14: r1(tech.rsi14), fromHighPct: r1(tech.fromHighPct) } : null,
+      yourPosition: position, portfolioValue: total ? Math.round(total) : null, nextEarnings: q && q.nextEarnings || null };
+    const lim = await s.limits().catch(() => null);
+    const tools = lim && lim.tools ? MD.ai.tools(app, S, isStock ? ["search_news", "zacks_view", "earnings_info", "insider_activity", "smart_money", "options_move", "explain_move", "market_memory", "search_web"] : ["crypto_news", "search_news", "explain_move", "market_memory", "search_web"]) : undefined;
+    e = S.step("run", "Claude is deciding (usually 1–2 minutes)");
+    const r = await s.json(`Decide what this investor should do with ${asset.symbol} (${measured.name}) over their horizon of about ${days} days: "buy", "accumulate" (add slowly), "hold", "trim", "sell", "avoid" or "wait" (for a specific level or event). Fit the decision to their risk appetite, holding period and current position (yourPosition is null if they don't own it).
+Start from the measured base rate (baseRates.modelUpPct: how often it was higher over this horizon in situations like today's) and move away only for evidence history can't know: valuation, earnings revisions, news, insiders, the market regime. ${tools ? "Use 3 to 8 tool calls; cite only URLs the tools returned." : ""} Give the chance it is higher at the horizon's end, the typical gain if it rises and loss if it falls (use the measured typical sizes unless you have a reason), an entry plan (now, in steps, or at a level), an exit plan (where you'd be wrong; where you'd take profit), and what would change the decision. Never tell them to put in an order; "wait" and "avoid" are valid.
+${MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-decide"))}
+${MD.ai.contextNote(app)}
+${MD.ai.assetNote(app, asset)}
+Measured: ${JSON.stringify(measured)}
+Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoid"|"wait", "headline": "one sentence", "upProbabilityPct": 5-95, "ifUpPct": number, "ifDownPct": number, "positionSizePct": number (suggested share of the portfolio, 0 if none), "entryPlan": "...", "exitPlan": {"wrongIf": "...", "stopPct": number (loss from here that means you're wrong), "takeProfitPct": number}, "reasons": ["3-5 reasons citing the measured numbers and news"], "risks": ["..."], "changeMyMind": "...", "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "complex", signal: opts.signal }, tools ? { tools } : { cache: false }));
+    S.done(e, "ok");
+    const decision = DECISIONS[r.decision] ? r.decision : "hold", claudeUp = Math.max(5, Math.min(95, Number(r.upProbabilityPct) || 50)), modelUp = br ? br.model.upPct : null;
+    let up = modelUp != null ? 0.65 * claudeUp + 0.35 * modelUp : claudeUp, conf = Math.max(0, Math.min(100, Number(r.confidence) || 0));
+    const rv = await MD.ai.review(app, { task: "Should this investor " + decision + " " + asset.symbol + " over " + days + " days?", S, signal: opts.signal, facts: measured, items: [{ id: "decision", decision, upProbabilityPct: Math.round(up), reasons: r.reasons, confidence: conf }] }).catch(() => null);
+    const review = rv && rv.reviews[0] || null;
+    if (review && review.probabilityPct != null) up = (up + review.probabilityPct) / 2;
+    else if (review && review.adjustedConfidence != null && review.adjustedConfidence < conf && conf) up = 50 + (up - 50) * review.adjustedConfidence / conf;
+    if (review && review.adjustedConfidence != null && review.adjustedConfidence < conf) conf = review.adjustedConfidence;
+    const cal = MD.ai.calibrateUp(app, "ai-decide", up); if (cal.applied) up = cal.upPct;
+    up = Math.round(up);
+    const ifUp = Math.abs(Number(r.ifUpPct)) || (br && br.model.avgUpPct) || 10, ifDown = Math.abs(Number(r.ifDownPct)) || Math.abs((br && br.model.avgDownPct) || 10);
+    const math = Q.decisionMath({ upPct: up, upMovePct: ifUp, downMovePct: ifDown, capPct: cap });
+    const out = { assetId: asset.id, symbol: asset.symbol, at: Date.now(), days, decision, headline: String(r.headline || ""), upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, reviewer: review && review.probabilityPct != null ? Math.round(review.probabilityPct) : null, final: up }, calibration: cal.applied ? cal : null,
+      ifUpPct: r1(ifUp), ifDownPct: r1(ifDown), math, aiSizePct: Math.max(0, Math.min(100, Number(r.positionSizePct) || 0)), cap, entryPlan: String(r.entryPlan || ""), exitPlan: r.exitPlan || null, reasons: (r.reasons || []).slice(0, 5).map(String), risks: (r.risks || []).slice(0, 4).map(String), changeMyMind: String(r.changeMyMind || ""), confidence: conf, review, sources: S.verify(r.sources), price: measured.price, position, toolCalls: S.calls };
+    if (!app.demo && out.price > 0 && up !== 50) {
+      const f = await app.store.create("forecasts", { assetId: asset.id, asset: MD.common.slim(asset), symbol: asset.symbol, source: "ai-decide", horizonDays: days, dueAt: Date.now() + days * 864e5, priceAtCreation: out.price, currency: "USD", priceSource: q ? q.source : "quote", direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: out.headline + " (" + decision + ")", flatBandPct: 1 }).catch(() => null);
+      out.forecastId = f && f.id;
+      await app.store.put("decisions", idOf(asset), JSON.parse(JSON.stringify(out))).catch(() => {});
+    }
+    return out;
+  }
+
+  function view(app, d) {
+    const [label, cls] = DECISIONS[d.decision], m = d.math;
+    return h("div", { class: "stack" },
+      h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("span", { class: "verdict " + cls }, label), h("span", { class: "tiny muted" }, U.fmtTs(d.at) + " · over " + d.days + " days · confidence " + d.confidence + "/100")),
+      h("p", {}, h("strong", {}, d.headline)),
+      MD.day ? MD.day.probBar(d.upPct, "Higher in " + d.days + " days", "Lower") : null,
+      m ? h("div", { class: "kpis k4" },
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Expected value"), h("b", { class: "v " + (m.evPct > 0 ? "up" : m.evPct < 0 ? "down" : "") }, (m.evPct > 0 ? "+" : "") + m.evPct.toFixed(1) + "%"), h("span", { class: "s" }, d.upPct + "% × +" + d.ifUpPct + "% vs " + (100 - d.upPct) + "% × −" + d.ifDownPct + "%")),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Break-even odds"), h("b", { class: "v" }, m.breakEvenUpPct + "%"), h("span", { class: "s" }, "chance up needed for this payoff")),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Size ceiling (maths)"), h("b", { class: "v" }, m.ceilingPct + "%"), h("span", { class: "s" }, "¼ Kelly, capped at your " + d.cap + "% max")),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Claude suggests"), h("b", { class: "v" }, d.aiSizePct + "%"), h("span", { class: "s" }, d.position ? "you hold " + (d.position.weightPct ?? "—") + "% now" : "of the portfolio"))) : null,
+      d.aiSizePct > (m ? m.ceilingPct : 100) + 0.5 ? h("p", { class: "small warn-t" }, "Claude's suggested size is above what the odds and payoff support; the smaller number is the safer one.") : null,
+      d.entryPlan ? h("p", { class: "small" }, h("strong", {}, "Entry: "), d.entryPlan) : null,
+      d.exitPlan ? h("p", { class: "small" }, h("strong", {}, "Exit: "), "wrong if " + (d.exitPlan.wrongIf || "—") + (d.exitPlan.stopPct ? " (about −" + Math.abs(d.exitPlan.stopPct) + "%)" : "") + (d.exitPlan.takeProfitPct ? "; take profit around +" + Math.abs(d.exitPlan.takeProfitPct) + "%" : "")) : null,
+      MD.ai.list("Why", d.reasons), MD.ai.list("Risks", d.risks), d.changeMyMind ? h("p", { class: "small" }, h("strong", {}, "Would change the decision: "), d.changeMyMind) : null,
+      h("p", { class: "tiny muted" }, "Claude " + d.probs.claude + "%" + (d.probs.model != null ? " · the asset's own history " + d.probs.model + "%" : "") + (d.probs.reviewer != null ? " · reviewer " + d.probs.reviewer + "%" : "") + (d.calibration ? " · calibrated from " + d.calibration.scored + " graded decisions" : "") + " · final " + d.upPct + "%."),
+      MD.ai.reviewBadge(d.review), MD.ai.sources(d.sources),
+      h("p", { class: "tiny muted" }, d.forecastId ? "Logged in the forecast journal and graded in " + d.days + " days. Not advice: you decide and place any order yourself." : "Not advice: you decide and place any order yourself."));
+  }
+  function card(app, asset) {
+    const out = h("div", { class: "stack" }), log = MD.ai.logBox(), phase = h("span", { class: "small muted" });
+    const sec = U.section("AI decision: buy, hold or avoid?", h("div", { class: "stack" }, out, h("details", {}, h("summary", { class: "label", style: "cursor:pointer" }, "Research steps"), log))); sec.id = "sec-decide";
+    const saved = app.store.cached("decisions").find(x => x.id === idOf(asset));
+    const prof = app.settings.profile || {};
+    const btn = h("button", { class: "btn", type: "button", onclick: async () => {
+      btn.disabled = true; log.clear(); phase.textContent = "Working…";
+      try { const d = await decide(app, asset, { onLog: (e) => log.add(e) }); out.replaceChildren(view(app, d)); phase.textContent = ""; btn.textContent = "Decide again"; }
+      catch (e) { phase.textContent = MD.ai.errText(e); }
+      btn.disabled = false;
+    } }, saved ? "Decide again" : "Should I buy, hold or avoid?");
+    out.append(saved ? view(app, saved) : h("p", { class: "small muted" }, "For your profile (" + (MD.ai.RISK[prof.risk] || MD.ai.RISK.mid) + ", holding " + (MD.ai.HZ[prof.horizon] || MD.ai.HZ.mid) + "; change it in Settings), using the asset's own odds over that horizon, your current position, news, valuation and the desk's record."));
+    sec.querySelector(".bd").prepend(h("div", { class: "row", style: "gap:8px;align-items:center;flex-wrap:wrap" }, btn, phase));
+    return sec;
+  }
+
+  MD.decide = { decide, card, view, DECISIONS };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>

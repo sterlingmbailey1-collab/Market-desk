@@ -214,7 +214,7 @@
     const r = await s.json(`You are reviewing your own track record as Market Desk's market analyst, to get better at forecasting. Below are your past forecasts that were scored against the actual close on their due date: what you predicted, the probability you stated, your thesis at the time, and what happened. Overall: ${tr.scored} scored, ${tr.hitPct.toFixed(0)}% came true, Brier ${tr.brier.toFixed(3)} (0.25 is what always saying 50% earns).
 Find the patterns behind the misses and the hits: overconfidence at some stated levels, directions or kinds of asset you get wrong, horizons that don't work, kinds of thesis that failed (momentum, valuation, news, analyst ratings). Every lesson must be supported by specific calls in the list (name their symbols); with few calls, say the evidence is thin instead of over-generalising. Do not invent calls, prices or outcomes.${prev ? " Your previous lessons were: " + prev.lessons.map(l => l.lesson).join(" | ") + ". Keep the ones the record still supports and drop the rest." : ""}
 Scored calls: ${JSON.stringify(calls)}
-Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been and the main weakness", "lessons": [{"lesson": "one-sentence instruction to your future self", "evidence": "the calls that show it, by symbol", "appliesTo": "all"|"Recommendations"|"AI quick takes"|"Deep Research"|"Day-trade plans"|"Market calls"}], "biases": ["short names of systematic biases seen"], "keepDoing": ["what worked"]}`, { modelTier: "complex", signal: opts.signal, cache: false });
+Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been and the main weakness", "lessons": [{"lesson": "one-sentence instruction to your future self", "evidence": "the calls that show it, by symbol", "appliesTo": "all"|"Recommendations"|"AI quick takes"|"Deep Research"|"Day-trade plans"|"Market calls"|"AI decisions"}], "biases": ["short names of systematic biases seen"], "keepDoing": ["what worked"]}`, { modelTier: "complex", signal: opts.signal, cache: false });
     const strs = (xs, n) => (Array.isArray(xs) ? xs : []).slice(0, n).map(x => String(x).slice(0, 200));
     const doc = { basedOn: calls.length, hitPct: tr.hitPct, brier: tr.brier, summary: String(r.summary || "").slice(0, 600), biases: strs(r.biases, 5), keepDoing: strs(r.keepDoing, 4),
       lessons: (Array.isArray(r.lessons) ? r.lessons : []).filter(l => l && l.lesson).slice(0, 6).map(l => ({ lesson: String(l.lesson).slice(0, 300), evidence: String(l.evidence || "").slice(0, 300), appliesTo: Object.values(SOURCE_LABEL).includes(l.appliesTo) ? l.appliesTo : "all" })) };
@@ -272,12 +272,24 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     })().finally(() => { scoring = null; });
     return scoring;
   }
-  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", "ai-day": "Day-trade plans", "ai-market": "Market calls", ai: "Deep Research", user: "Your own forecasts" };
+  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", "ai-day": "Day-trade plans", "ai-market": "Market calls", "ai-decide": "AI decisions", ai: "Deep Research", user: "Your own forecasts" };
   /* Per-source accuracy and a calibration chart: for each stated-probability band, how often calls came true. */
+  /* What following a source's up/down calls would have returned on average (a "down" call counts as a short), and
+     the S&P 500 over the same windows for comparison. */
+  function followed(app, source) {
+    const evals = app.store.cached("evals");
+    return app.store.cached("forecasts").filter(f => (f.source || "user") === source && (f.direction === "up" || f.direction === "down")).map(f => { const e = evals.find(v => v.forecastId === f.id); return e && e.realizedReturnPct != null ? { from: f.createdAt, to: f.dueAt, pct: (f.direction === "up" ? 1 : -1) * Number(e.realizedReturnPct) } : null; }).filter(Boolean);
+  }
+  async function spyOver(windows) {
+    const hs = await D.historyCached({ id: "etf:SPY", cls: "etf", symbol: "SPY", name: "SPY" }, "5Y"), pts = hs.points;
+    const at = (ms) => { let v = null; for (const p of pts) { if (p.time * 1000 <= ms) v = p.close ?? p.value; else break; } return v; };
+    const rets = windows.map(w => { const a = at(w.from), b = at(w.to); return a && b ? (b / a - 1) * 100 : null; }).filter(x => x != null);
+    return rets.length ? rets.reduce((s, x) => s + x, 0) / rets.length : null;
+  }
   function scorecard(app) {
     const fcs = app.store.cached("forecasts"), evals = app.store.cached("evals");
     const srcs = [...new Set(fcs.map(f => f.source || "user"))];
-    const rows = srcs.map(s => Object.assign({ source: s, label: SOURCE_LABEL[s] || s }, trackRecord(app, s))).filter(r => r.logged);
+    const rows = srcs.map(s => { const fw = followed(app, s); return Object.assign({ source: s, label: SOURCE_LABEL[s] || s, followedPct: fw.length ? fw.reduce((t, x) => t + x.pct, 0) / fw.length : null, followedN: fw.length, windows: fw }, trackRecord(app, s === "user" ? "user" : s)); }).filter(r => r.logged);
     const all = trackRecord(app);
     const W = 300, H = 150, pad = 26;
     const pts = all.buckets.filter(b => b.n);
@@ -289,7 +301,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
       pts.map(b => '<circle cx="' + x(mid[b.range]) + '" cy="' + y(b.hitPct) + '" r="' + Math.min(10, 3 + Math.sqrt(b.n) * 1.5) + '" fill="var(--accent)" fill-opacity="0.75"><title>' + b.range + ' stated: ' + b.hitPct.toFixed(0) + '% came true (' + b.n + ')</title></circle>').join("") +
       '<text x="' + pad + '" y="' + (H - 8) + '" font-size="9" fill="currentColor" opacity="0.6">50% stated</text><text x="' + (W - 60) + '" y="' + (H - 8) + '" font-size="9" fill="currentColor" opacity="0.6">100% stated</text><text x="2" y="14" font-size="9" fill="currentColor" opacity="0.6">came true</text></svg>';
     return h("div", { class: "stack" },
-      rows.length ? U.table([{ t: "Source", v: "label" }, { t: "Logged", v: (r) => String(r.logged), n: true }, { t: "Scored", v: (r) => String(r.scored), n: true }, { t: "Came true", v: (r) => r.hitPct != null ? r.hitPct.toFixed(0) + "%" : "—", n: true }, { t: "Brier (lower is better)", v: (r) => r.brier != null ? r.brier.toFixed(3) : "—", n: true }, { t: "By stated probability", v: (r) => r.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join(" · ") || "—" }], rows) : h("div", { class: "empty" }, "No forecasts logged yet."),
+      rows.length ? U.table([{ t: "Source", v: "label" }, { t: "Logged", v: (r) => String(r.logged), n: true }, { t: "Scored", v: (r) => String(r.scored), n: true }, { t: "Came true", v: (r) => r.hitPct != null ? r.hitPct.toFixed(0) + "%" : "—", n: true }, { t: "Brier (lower is better)", v: (r) => r.brier != null ? r.brier.toFixed(3) : "—", n: true }, { t: "If followed (avg)", v: (r) => r.followedPct == null ? "—" : h("span", { class: r.followedPct > 0 ? "up" : r.followedPct < 0 ? "down" : "", title: "Average return of its up/down calls if each had been acted on (down calls as shorts), " + r.followedN + " calls" }, (r.followedPct > 0 ? "+" : "") + r.followedPct.toFixed(2) + "%"), n: true }, { t: "S&P 500 same windows", v: (r) => { if (!r.windows.length) return "—"; const el = h("span", { class: "num muted" }, "…"); spyOver(r.windows).then(v => { el.textContent = v == null ? "—" : (v > 0 ? "+" : "") + v.toFixed(2) + "%"; }, () => { el.textContent = "—"; }); return el; }, n: true }, { t: "By stated probability", v: (r) => r.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join(" · ") || "—" }], rows) : h("div", { class: "empty" }, "No forecasts logged yet."),
       all.scored ? h("div", { class: "row", style: "gap:16px;flex-wrap:wrap;align-items:center" }, h("div", { html: svg, style: "color:var(--muted);flex:1 1 260px;min-width:0" }), h("p", { class: "small muted", style: "flex:1 1 220px" }, "Each dot is a band of stated probability; its height is how often those calls came true. Dots below the dashed line mean the AI was overconfident in that band. Every AI that logs forecasts is told this record and asked to calibrate.")) : null,
       lessonsPanel(app),
       h("p", { class: "tiny muted" }, "Due forecasts are scored automatically while the page is open, from the close on their due date. A Brier score of 0.25 is what always saying 50% would earn."));

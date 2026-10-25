@@ -278,6 +278,11 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
 
   // ---- Why it's moving (asset page)
   await page.evaluate(() => MD.app.openAsset({ id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" })); await page.waitForTimeout(2500);
+  await page.click("#sec-decide button:has-text('Should I buy, hold or avoid?')"); await page.waitForTimeout(5000);
+  const decTxt = await page.locator("#sec-decide").innerText();
+  const decFc = await page.evaluate(() => MD.app.store.cached("forecasts").filter(f => f.source === "ai-decide"));
+  check("AI decision: a decision for the investor's profile, odds, expected value, size ceiling, entry and exit, reviewed and logged", /Add slowly/i.test(decTxt) && /Expected value/i.test(decTxt) && /Size ceiling/i.test(decTxt) && /Entry:/.test(decTxt) && /Exit:/.test(decTxt) && /Review:/i.test(decTxt) && decFc.length === 1 && decFc[0].horizonDays >= 91, decTxt.slice(0, 700));
+  check("Claude's size above what the maths supports is flagged", /above what the odds and payoff support/.test(decTxt));
   await page.click("#sec-why button:has-text('Explain the move')"); await page.waitForTimeout(4000);
   const whyTxt = await page.locator("#sec-why").innerText();
   check("why it's moving: market, sector, rates, dollar, oil and the asset's own part", /Asset-specific/.test(whyTxt) && /S&P 500 \(β/.test(whyTxt) && /Technology \(β/.test(whyTxt) && /Last 5 days/i.test(whyTxt) && /Factor model fitted on/i.test(whyTxt), whyTxt.slice(0, 600));
@@ -453,6 +458,9 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   // Automatic calibration: 12 graded market calls stated at 70% that came true half the time pull a new 70% call down.
   const cal = await page.evaluate(async () => { for (let i = 0; i < 12; i++) { const f = await MD.app.store.create("forecasts", { assetId: "etf:SPY", asset: { id: "etf:SPY", cls: "etf", symbol: "SPY" }, symbol: "SPY", source: "ai-market", direction: "up", probability: 0.7, horizonDays: 1, dueAt: Date.now() - 864e5, priceAtCreation: 100, currency: "USD", flatBandPct: 0 }); await MD.app.store.create("evals", { forecastId: f.id, evaluatedAt: Date.now(), priceAtDue: 101, probability: 0.7, source: "ai-market", realizedReturnPct: i % 2 ? 1 : -1, directionHit: i % 2 === 0, brier: i % 2 ? 0.49 : 0.09 }); } return { up: MD.ai.calibrateUp(MD.app, "ai-market", 70), down: MD.ai.calibrateUp(MD.app, "ai-market", 30), none: MD.ai.calibrateUp(MD.app, "ai-day", 70) }; });
   check("calibration from the record pulls overconfident calls toward what actually happened, both directions", cal.up.applied && cal.up.upPct < 70 && cal.up.upPct > 50 && cal.down.upPct === 100 - cal.up.upPct && !cal.none.applied, JSON.stringify(cal));
+  await page.evaluate(() => MD.app.go("research", {})); await page.waitForTimeout(3500);
+  const scTxt = await page.locator("#content").innerText();
+  check("scorecard: what following each source would have returned, against the S&P 500 over the same windows", /If followed/i.test(scTxt) && /S&P 500 same windows/i.test(scTxt) && /Market calls\s+\d+\s+\d+/.test(scTxt) && !/…/.test(await page.locator("table.tbl").first().innerText()), scTxt.slice(scTxt.search(/AI scorecard/i), scTxt.search(/AI scorecard/i) + 700));
   check("lessons are fed to later prompts, filtered by feature", notes.saved === 1 && /Cap stated probabilities/.test(notes.picks) && /Weight valuation more/.test(notes.picks) && !/Weight valuation more/.test(notes.take) && /keep leans flat/.test(notes.take), JSON.stringify(notes).slice(0, 600));
 
   // ---- Strategies
