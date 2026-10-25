@@ -121,6 +121,12 @@
     return "Track record of your past calls of this kind: " + tr.scored + " scored, " + tr.hitPct.toFixed(0) + "% came true (Brier " + tr.brier.toFixed(3) + "). By stated probability: " + tr.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join("; ") + ". If calls at a stated level came true less often than stated, state lower probabilities this time.";
   }
 
+  // The investor profile from Settings, told to every AI feature so its judgements fit this person.
+  const RISK = { low: "conservative (protect capital first)", mid: "balanced", high: "aggressive (accepts large drawdowns)" }, HZ = { short: "under a year", mid: "1–3 years", long: "5+ years" };
+  function profileNote(app) {
+    const p = (app.settings && app.settings.profile) || {};
+    return "Investor profile (set by the user in Settings; respect it): risk appetite " + (RISK[p.risk] || RISK.mid) + "; typical holding period " + (HZ[p.horizon] || HZ.mid) + (p.income ? "; wants income (dividends)" : "") + (p.goals ? "; goals: " + String(p.goals).slice(0, 300) : "") + (p.avoid ? "; avoid: " + String(p.avoid).slice(0, 200) : "") + "; experience: " + ((app.settings && app.settings.mode) || "intermediate") + ".";
+  }
   /* Score forecasts whose date has passed, from the close on (or after) the due date. Runs from the journal's
      button and quietly in the background, so every AI's track record stays current. */
   let scoring = null;
@@ -218,5 +224,5 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { findAsset, session, tools, TOOLS, trackRecord, calibrationNote, scoreDue, scorecard, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { findAsset, session, tools, TOOLS, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

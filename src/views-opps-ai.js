@@ -42,6 +42,7 @@
 ${tools ? "Use 4 to 10 tool calls: stock_snapshot and zacks_view for the most interesting names, search_news (or crypto_news) for anything that could explain the numbers, smart_money where relevant, and my_portfolio once to judge fit and concentration. Cite only URLs the tools returned." : "Tools are unavailable; say news wasn't checked."}
 Judge each honestly: a screen rank is not a reason to buy. "Pass" and "Watch" are valid. Never invent figures.
 ${A().calibrationNote(A().trackRecord(app))}
+${A().profileNote(app)}
 Results: ${JSON.stringify(facts)}
 Reply with ONLY JSON: {"summary": "2-3 sentences", "bestIdea": {"symbol": "...", "why": "..."} or null,
  "items": [{"symbol": "...", "verdict": "Research further"|"Watch"|"Pass", "score": 0-100 (attractiveness for the holding period after risk), "thesis": "1-2 sentences", "keyRisk": "...", "catalyst": "dated if possible, else empty", "fit": "how it fits the user's portfolio", "changeMyMind": "...", "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}]}`;
@@ -71,6 +72,7 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "bestIdea": {"symbol": "...",
       const facts = ok.map(r => ({ symbol: r.a.symbol, name: r.a.name, class: r.a.cls, periodReturnPct: r1(r.st.changePct), volPct: r1(r.st.volPct), maxDrawdownPct: r1(r.st.maxDrawdownPct), currency: r.s.currency || "USD" }));
       const tools = await limitsTools(app, S, ["stock_snapshot", "zacks_view", "search_news", "crypto_news", "compare_returns", "my_portfolio", "smart_money"]);
       const prompt = `Today is ${today()}. Compare these investments for an investor reporting in ${R} (measured period ${tf}). ${tools ? "Use 3 to 8 tool calls: zacks_view and stock_snapshot for valuation and trend, search_news for anything material, compare_returns against SPY and SGOV as baselines, my_portfolio once for fit. Cite only URLs the tools returned." : ""}
+${A().profileNote(app)}
 Score each on growth potential, risk (higher = safer), valuation (higher = cheaper vs its own history and peers), momentum and portfolio fit, 0–10, from the evidence. Say plainly when the data can't separate them, and that "none of these" or "wait" can be right. Never invent figures.
 Measured: ${JSON.stringify(facts)}
 Reply with ONLY JSON: {"summary": "3-4 sentences", "overallWinner": {"symbol": "... or none", "why": "..."}, "bestFor": [{"goal": "growth"|"stability"|"income"|"diversification", "symbol": "...", "why": "..."}],
@@ -110,8 +112,8 @@ Reply with ONLY JSON: {"summary": "3-4 sentences", "overallWinner": {"symbol": "
   function ideaFinder(root, app) {
     const saved = app.store.cached("ideas").slice().sort((a, b) => b.createdAt - a.createdAt);
     const theme = h("textarea", { rows: 2, placeholder: "A theme or goal, e.g. ‘companies selling picks and shovels for AI data centres’, ‘dividend payers for retirement income’, ‘beaten-down quality stocks’", "aria-label": "Theme or goal" }, app.ls.get("idea.theme", ""));
-    const hz = h("select", {}, Object.entries(HORIZONS).map(([k, l]) => h("option", { value: k, selected: k === app.ls.get("idea.hz", "mid") }, l)));
-    const rk = h("select", {}, Object.entries(RISKS).map(([k, l]) => h("option", { value: k, selected: k === app.ls.get("idea.risk", "mid") }, l.split(" (")[0][0].toUpperCase() + l.split(" (")[0].slice(1))));
+    const hz = h("select", {}, Object.entries(HORIZONS).map(([k, l]) => h("option", { value: k, selected: k === app.ls.get("idea.hz", (app.settings.profile || {}).horizon || "mid") }, l)));
+    const rk = h("select", {}, Object.entries(RISKS).map(([k, l]) => h("option", { value: k, selected: k === app.ls.get("idea.risk", (app.settings.profile || {}).risk || "mid") }, l.split(" (")[0][0].toUpperCase() + l.split(" (")[0].slice(1))));
     const n = h("select", {}, ["3", "5", "7"].map(x => h("option", { value: x, selected: x === app.ls.get("idea.n", "5") }, x + " ideas")));
     const my = new Set(app.store.cached("watch").map(w => w.symbol));
     const render = (res) => h("div", { class: "stack" },
@@ -133,6 +135,7 @@ Reply with ONLY JSON: {"summary": "3-4 sentences", "overallWinner": {"symbol": "
       const tools = await limitsTools(app, S, ["search_web", "search_news", "stock_snapshot", "zacks_view", "compare_returns", "smart_money", "my_portfolio", "read_page"]);
       const prompt = `Today is ${today()}. An investor asks for ${n.value} investment ideas for this theme or goal: "${t.replace(/"/g, "'")}". Holding period: ${HORIZONS[hz.value]}. Risk appetite: ${RISKS[rk.value]}.
 ${tools ? "Research before answering, with 5 to 12 tool calls: search_web and search_news to find companies or funds that genuinely fit (prefer primary sources and recent, dated reporting), stock_snapshot and zacks_view to check each candidate's measured price picture and ratings, my_portfolio once to avoid duplicating what they own. Cite only URLs the tools returned." : "Tools are unavailable: say ideas weren't checked against current news."}
+${A().profileNote(app)} (The holding period and risk appetite chosen above override the profile for this search.)
 Only US-listed stocks or ETFs, or major coins. Mix roles sensibly for the risk appetite (core holdings, satellites, at most one speculative idea unless aggressive). Include a diversified ETF when it fits the theme better than single names. Never invent tickers or figures.
 Reply with ONLY JSON: {"summary": "2-3 sentences on the theme and how to approach it", "ideas": [{"symbol": "TICKER", "name": "...", "role": "core"|"satellite"|"speculative", "thesis": "2 sentences on why it fits", "whyNow": "...", "risks": "...", "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}], "avoid": [{"symbol": "...", "reason": "considered but left out, and why"}]}`;
       const res = await app.caps.sample.json(prompt, Object.assign({ modelTier: "complex", signal }, tools ? { tools } : { cache: false }));

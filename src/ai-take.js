@@ -80,6 +80,7 @@
 ${tools ? "Investigate with 3 to 7 tool calls before answering: stock_snapshot first, then " + (isStock ? "zacks_view, search_news (one focused query), options_move if a near-term move matters, smart_money, and my_portfolio once to see whether they hold it." : "crypto_news or search_news, and my_portfolio once to see whether they hold it.") + " Cite only URLs the tools returned." : "Tools are unavailable: say news wasn't checked."}
 Weigh both sides honestly; "neutral" is a valid stance. Use only measured figures; never invent prices, targets or dates. For the levels, use only the measured levels below and say which matter now.
 ${A().calibrationNote(tr)}
+${A().profileNote(app)}
 Measured levels: ${JSON.stringify(lv)}
 Reply with ONLY JSON: {"stance": "positive"|"neutral"|"negative", "stanceLabel": "2-4 words, e.g. 'Constructive, but stretched'", "headline": "one sentence", "summary": "3-4 sentences",
  "outlook": {"1M": {"lean": "up"|"down"|"flat", "probabilityPct": 50-75, "note": "short"}, "3M": {...}, "6M": {...}},
@@ -129,6 +130,7 @@ Reply with ONLY JSON: {"thesis": "2 sentences", "points": [{"point": "...", "evi
     if (!B.thesis || !R.thesis) throw Object.assign(new Error("The debate came back unreadable; try again."), { code: "invalid_json" });
     const judgeStep = S.step("run", "Judge weighing both cases");
     const j = await s.json(`You are the judge of a debate about ${sym}. Weigh the bull and bear cases below against the measured data. Points whose source was not actually retrieved ("verified": false) or that contradict the measured data count for little. Decide which case is stronger on evidence (not rhetoric), and give a calibrated probability that the price is higher in 6 months. ${A().calibrationNote(A().trackRecord(app))}
+${A().profileNote(app)}
 Measured: ${JSON.stringify(snap)}
 Bull: ${JSON.stringify(B)}
 Bear: ${JSON.stringify(R)}
@@ -193,6 +195,7 @@ Reply with ONLY JSON: {"stronger": "bull"|"bear"|"even", "probabilityHigherIn6mP
     const tools = lim && lim.tools ? A().tools(app, S, ["search_news", "crypto_news", "stock_snapshot", "smart_money", "search_web"]) : undefined;
     const facts = { reportingCurrency: pv && pv.R, holdings, catalystsNext14Days: catalysts, forecastsDueThisWeek: dueSoon, followingOnSmartMoney: follows, smartMoneyNoticesLast3Days: smartNew, openBets, demo: !!app.demo };
     const prompt = `Today is ${today()}. Write the investor's short morning brief from the measured data below. ${tools ? "Use 2 to 6 tool calls: search_news for the market backdrop today (one query) and for the one or two holdings with the biggest moves or weights; crypto_news if they hold coins. Cite only URLs the tools returned." : ""}
+${A().profileNote(app)}
 Be specific and brief. Explain moves only with evidence; say "no clear news" when there is none. No advice to trade; "nothing to do today" is fine.
 Data: ${JSON.stringify(facts)}
 Reply with ONLY JSON: {"headline": "one line", "market": "2 sentences on the backdrop", "holdings": [{"symbol": "...", "note": "what moved it or what matters, one sentence"}], "today": ["2-4 things to look at today, dated where possible"], "risks": ["1-3"], "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`;

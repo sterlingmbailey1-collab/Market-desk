@@ -589,6 +589,11 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
 .sig { display: inline-block; font: 600 0.66rem var(--font-data); padding: 2px 7px; border-radius: 999px; background: var(--sheet-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
 .sig.high { background: var(--down-soft); color: var(--down); border-color: transparent; } .sig.medium { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .debate .bb p { margin: 2px 0 0; }
+.askai .askchat { max-height: 50vh; overflow: auto; display: grid; gap: 8px; }
+.askai textarea { flex: 1 1 auto; min-width: 0; }
+.modal.wide { width: min(760px, calc(100vw - 32px)); }
+.askbtn { white-space: nowrap; }
+@media (max-width: 700px) { .askbtn { padding-inline: 8px; } }
 /* Smart Money */
 .spin.sm { display: inline-block; width: 10px; height: 10px; border-width: 2px; vertical-align: -1px; }
 .party { display: inline-grid; place-items: center; min-width: 20px; height: 18px; padding: 0 5px; border-radius: 999px; font: 700 0.62rem var(--font-data); letter-spacing: 0.03em; background: var(--sheet-2); color: var(--muted); border: 1px solid var(--line); flex: none; }

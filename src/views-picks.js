@@ -109,6 +109,7 @@
 Use ONLY the measured candidates below (measured by the app from exchange, options, Zacks and disclosure data). ${tools ? "Investigate the strongest candidates with 4 to 10 tool calls before deciding: search_news (Bigdata.com) for stocks, crypto_news for coins, stock_snapshot for the price picture, options_move or zacks_view where they would change your view, search_web if a news tool fails. Cite only URLs returned by the tools." : "Web search is unavailable; say so in each pick's risks."}
 Pick the ${opts.count} with the best case for a large move. For each, judge direction honestly: "up" or "down" only when the evidence leans that way, otherwise "either" (a big move with no clear direction). Anchor the expected move to the options-implied move when present (it is the market's own estimate) and to the volatility-implied move otherwise; if you expect more than the market prices, say why. Anchor the time window to a dated catalyst (earnings date, options expiry) when there is one. Give the strongest case on each side and what would change your mind. Do not invent prices, dates or figures.
 ${calib}
+${MD.ai.profileNote(app)}
 Measured candidates: ${JSON.stringify(table)}
 Reply with ONLY JSON:
 {"summary": "2-3 sentences on the overall picture and how uncertain this is",

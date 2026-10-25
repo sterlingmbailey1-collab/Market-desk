@@ -15,6 +15,7 @@
     quiet: { enabled: false, start: "22:00", end: "07:00" }, notify: { toasts: true, minMateriality: 1 },
     assumptions: { stockExitPct: 0.05, cryptoExitPct: 0.5, metalSpreadPct: 3, cardFeePct: 13, cardShipping: 5, fxSpreadMajorPct: 0.1, fxSpreadOtherPct: 1, riskFreePct: 4, inflationPct: 2.5 },
     betting: { oddsFormat: "american", bankroll: 1000, unit: 10, kelly: 0.25, minEdge: 1 },
+    profile: { risk: "mid", horizon: "mid", goals: "", avoid: "", income: false },
     customCurrencies: [], dashboard: ["brief", "changes", "portfolio", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
   };
   const ls = { get(k, d) { try { const v = localStorage.getItem("mdp." + k); return v ? JSON.parse(v) : d; } catch { return d; } }, set(k, v) { try { localStorage.setItem("mdp." + k, JSON.stringify(v)); } catch {} } };
@@ -32,7 +33,7 @@
     try { s = await app.store.get("settings", "main"); } catch {}
     s = s ? JSON.parse(JSON.stringify(s)) : null; // never change the stored document in place
     app.settings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), s || {});
-    for (const k of ["quiet", "notify", "assumptions", "betting"]) app.settings[k] = Object.assign({}, DEFAULT_SETTINGS[k], (s || {})[k] || {});
+    for (const k of ["quiet", "notify", "assumptions", "betting", "profile"]) app.settings[k] = Object.assign({}, DEFAULT_SETTINGS[k], (s || {})[k] || {});
     // Dashboards saved before a card existed get it once, before Data health.
     for (const card of ["betting", "smart", "brief"]) {
       if (app.settings.dashSeen && app.settings.dashSeen.includes(card)) continue;
@@ -300,7 +301,7 @@
     top.append(
       h("button", { class: "btn ghost sm menu-btn", type: "button", "aria-label": "Open sections", onclick: () => { document.body.classList.toggle("nav-open"); } }, "Menu"),
       h("button", { class: "cmd-btn", type: "button", onclick: () => openCommand() }, "Search assets, currencies, cards, pages… or ask", h("kbd", {}, "⌘K")),
-      h("div", { class: "top-right" }, h("label", { class: "row", style: "gap:6px" }, h("span", { class: "label" }, "Display"), disp), storeLabel, live));
+      h("div", { class: "top-right" }, h("button", { class: "btn sm askbtn", type: "button", title: "Ask AI about what's on this page", onclick: () => MD.askAI.open(app) }, "✦ Ask AI"), h("label", { class: "row", style: "gap:6px" }, h("span", { class: "label" }, "Display"), disp), storeLabel, live));
   }
   /* ---------- ticker tape ---------- */
   const TAPE = [

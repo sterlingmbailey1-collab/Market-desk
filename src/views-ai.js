@@ -204,6 +204,7 @@
 Rules: use the tools for every price, statistic, odds figure, holding and calculation; never invent numbers or sources; cite the URLs and sources the tools return (attribute Zacks data to Zacks with its URL); separate facts from opinion; quantify uncertainty; mention the strongest counterargument; "do nothing", "wait", "no bet" or "research further" are valid answers; you never execute trades or place bets.
 Investing: consider costs, currency effects, liquidity, concentration and the investor's existing holdings; price ranges from project_price are statistical, not forecasts.
 Betting: start from the fair (no-vig) probabilities, which are the market's best estimate; only claim value when a price beats the fair line or there is concrete evidence; use bet_math for odds arithmetic; say how stale the odds may be and that the user must confirm prices in the sportsbook; suggest small stakes (around 1-2% of bankroll at most) and never chasing losses; parlays compound the margin; if the user shows signs of problem gambling, point to 1-800-GAMBLER (US) or BeGambleAware (UK) kindly and without lecturing.
+${MD.ai.profileNote(app)}
 How to think for any decision question: (1) gather the evidence with tools first; (2) start from the base rate or the market's own view (fair odds, options-implied move, consensus target) before your own; (3) weigh the strongest counterargument; (4) give a conclusion with a probability or a confidence level and say what would change it. When confidence matters, check track_record and be more modest if past calls were overconfident. smart_money shows which tracked members of Congress and investors hold a stock (disclosures lag; never imply wrongdoing).
 Plain text, short paragraphs, no markdown headings.${app.demo ? " The portfolio is DEMO data; say so if you discuss it." : ""}`;
     send.onclick = async () => {
@@ -303,9 +304,9 @@ ${rows.map(r => `<tr><td>${esc(r.p.symbol)} — ${esc(r.p.name)}</td><td>${esc(r
   V.settings = function (root, app) {
     const tab = (app.ctx.settings && app.ctx.settings.tab) || app.ls.get("setTab", "general");
     root.append(head("Settings & Data Sources", "Saved " + (app.store.kind === "account" ? "privately to your claude.ai account" : "in this browser") + (app.demo ? " (demo mode: changes are not kept)" : "") + "."),
-      U.tabs([["general", "General"], ["assumptions", "Costs & assumptions"], ["currencies", "Currencies"], ["notify", "Notifications"], ["sources", "Data sources"], ["data", "Data & demo"], ["selftest", "Self-test"], ["access", "Accessibility & shortcuts"]], tab, (k) => { app.ls.set("setTab", k); app.ctx.settings = { tab: k }; app.rerender(); }));
+      U.tabs([["general", "General"], ["ai", "AI & investor profile"], ["assumptions", "Costs & assumptions"], ["currencies", "Currencies"], ["notify", "Notifications"], ["sources", "Data sources"], ["data", "Data & demo"], ["selftest", "Self-test"], ["access", "Accessibility & shortcuts"]], tab, (k) => { app.ls.set("setTab", k); app.ctx.settings = { tab: k }; app.rerender(); }));
     const s = app.settings, body = h("div", { class: "stack" });
-    root.append(U.section({ general: "General", assumptions: "Costs & assumptions", currencies: "Currency registry", notify: "Notifications", sources: "Data sources", data: "Data, privacy & demo mode", selftest: "Calculation self-test", access: "Accessibility & shortcuts" }[tab], body));
+    root.append(U.section({ general: "General", ai: "AI & investor profile", assumptions: "Costs & assumptions", currencies: "Currency registry", notify: "Notifications", sources: "Data sources", data: "Data, privacy & demo mode", selftest: "Calculation self-test", access: "Accessibility & shortcuts" }[tab], body));
     const ccySel = (val, on) => h("select", { onchange: (e) => on(e.target.value) }, [...app.reg.values()].filter(c => c.type === "fiat" || c.type === "metal").map(c => h("option", { value: c.code, selected: c.code === val }, c.code + " · " + c.name)));
     if (tab === "general") {
       body.append(h("div", { class: "form" },
@@ -315,6 +316,18 @@ ${rows.map(r => `<tr><td>${esc(r.p.symbol)} — ${esc(r.p.name)}</td><td>${esc(r
         U.field("Experience mode", h("select", { onchange: (e) => app.saveSettings({ mode: e.target.value }) }, [["beginner", "Beginner — explanations on, advanced metrics hidden"], ["intermediate", "Intermediate"], ["advanced", "Advanced — every metric"]].map(([v, l]) => h("option", { value: v, selected: v === s.mode }, l))))),
         h("h3", {}, "Research universe"), (() => { const i = h("input", { type: "text", value: s.universe.join(", ") }); return h("div", { class: "row" }, i, h("button", { class: "btn ghost", type: "button", onclick: () => { const u = i.value.split(/[\s,]+/).map(x => x.trim().toUpperCase()).filter(x => /^[A-Z][A-Z.\-]{0,5}$/.test(x)); app.saveSettings({ universe: [...new Set(u)].slice(0, 40) }); U.toast("Universe saved", u.length + " tickers"); } }, "Save")); })(),
         h("p", { class: "small muted" }, "US-listed tickers used by the scanner and the Stocks page. Add ADRs (TM, SONY, ASML, NVO, TSM, SAP, BABA…) for international companies."));
+    } else if (tab === "ai") {
+      const p = Object.assign({}, s.profile);
+      const save = (patch) => { Object.assign(p, patch); app.saveSettings({ profile: Object.assign({}, p) }); };
+      const sel = (key, opts) => h("select", { onchange: (e) => save({ [key]: e.target.value }) }, opts.map(([v, l]) => h("option", { value: v, selected: v === p[key] }, l)));
+      const txt = (key, ph) => { const i = h("textarea", { rows: 2, placeholder: ph }, p[key] || ""); i.onchange = () => save({ [key]: i.value.trim().slice(0, 300) }); return i; };
+      const inc = h("input", { type: "checkbox", checked: !!p.income, onchange: (e) => save({ income: e.target.checked }) });
+      const tr = MD.ai.trackRecord(app);
+      body.append(h("p", { class: "small muted" }, "Every AI feature (quick takes, debates, recommendations, idea finder, scan and portfolio reviews, the advisor and the morning brief) is told this profile, so its judgements fit you. It is saved privately with your settings."),
+        h("div", { class: "form" }, U.field("Risk appetite", sel("risk", Object.entries(MD.ai.RISK).map(([k, l]) => [k, l[0].toUpperCase() + l.slice(1)]))), U.field("Typical holding period", sel("horizon", Object.entries(MD.ai.HZ).map(([k, l]) => [k, l[0].toUpperCase() + l.slice(1)]))), h("label", { class: "chk" }, inc, "I want income (dividends)")),
+        U.field("Goals", txt("goals", "e.g. retire in 15 years; grow a deposit for a house by 2029")), U.field("Avoid", txt("avoid", "e.g. tobacco, leveraged ETFs, coins outside the top 10")),
+        h("h3", {}, "How the AI works here"),
+        h("ul", { class: "small", style: "display:grid;gap:4px;padding-left:1.1em" }, h("li", {}, "The page fetches and computes every number; Claude reasons over what its research tools return."), h("li", {}, "A second, skeptical review checks each answer against the measured data and the sources actually retrieved, and can revise or drop it."), h("li", {}, "Citations are checked: links Claude didn't retrieve are marked unverified."), h("li", {}, "Forecasts are logged and scored automatically; the record (" + tr.scored + " scored so far" + (tr.hitPct != null ? ", " + tr.hitPct.toFixed(0) + "% came true" : "") + ") is fed back so stated probabilities stay calibrated. See Deep Research → Forecast journal.")));
     } else if (tab === "assumptions") {
       const a = s.assumptions;
       const fld = (k, label, hint) => { const i = h("input", { type: "number", step: "0.01", value: a[k] }); i.onchange = () => app.saveSettings({ assumptions: Object.assign({}, a, { [k]: Number(i.value) }) }); return U.field(label, i, hint); };

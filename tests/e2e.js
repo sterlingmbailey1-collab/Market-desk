@@ -555,6 +555,20 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.screenshot({ path: path.join(shots, "e2e-props.png"), fullPage: false });
   await page.evaluate(() => { MD.app.ls.set("bet.tab", "games"); MD.app.ls.set("bet.sport", "nfl"); });
 
+  // ---- Ask AI from any page, with page context
+  await page.evaluate(() => MD.app.openAsset({ id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple Inc." })); await page.waitForTimeout(1500);
+  await page.click("button.askbtn"); await page.waitForTimeout(400);
+  check("Ask AI opens with the page's context and starter questions", /Ask AI · AAPL/.test(await page.locator(".modal").innerText()) && await page.locator(".askai .chip").count() === 4);
+  await page.click(".askai .chip >> nth=0"); await page.waitForTimeout(1500);
+  const askTxt = await page.locator(".modal").innerText();
+  check("Ask AI answers with tools and offers a double-check", /Mock answer/.test(askTxt) && /Double-check this answer/.test(askTxt) && await page.evaluate(() => (window.__mock.advisorTools || []).includes("stock_snapshot") && (window.__mock.advisorTools || []).includes("insider_activity") && window.__mock.advisorTools.length <= 20), askTxt.slice(-300));
+  check("AI prompts carry the investor profile", await page.evaluate(() => window.__mock.samplePrompts.some(x => /Investor profile|Market Desk's analyst/.test(x))));
+  await page.keyboard.press("Escape"); await page.waitForTimeout(200);
+  await page.evaluate(() => { MD.app.ls.set("setTab", "ai"); MD.app.go("settings", { tab: "ai" }); }); await page.waitForTimeout(600);
+  await page.selectOption("#content select >> nth=0", "high"); await page.waitForTimeout(800);
+  check("investor profile saved from Settings", await page.evaluate(() => MD.app.settings.profile.risk === "high" && /aggressive/.test(MD.ai.profileNote(MD.app))));
+  await page.evaluate(() => MD.app.ls.set("setTab", "general"));
+
   // ---- AI Advisor: Enter sends, Shift+Enter adds a line
   await page.evaluate(() => MD.app.go("advisor", null, { fromNav: true })); await page.waitForTimeout(800);
   const before = await page.evaluate(() => window.__mock.samplePrompts.length);
