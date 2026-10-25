@@ -90,7 +90,7 @@
     const base = `Today is ${today}. User's reporting currency: ${R}. Decision horizon: ${horizon}.
 Asset: ${assetLine}.
 User's question / decision: "${question}".
-Rules: never invent prices, figures, sources or research steps. Use get_quote for the current price and the app's tools for any calculation. Cite only URLs returned by your tools. Say plainly when evidence is missing. "No action" or "wait" are valid conclusions.${MD.ai ? "\n" + MD.ai.contextNote(app) + "\n" + MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai")) : ""}`;
+Rules: never invent prices, figures, sources or research steps. Use get_quote for the current price and the app's tools for any calculation. Cite only URLs returned by your tools. Say plainly when evidence is missing. "No action" or "wait" are valid conclusions.${MD.ai ? "\n" + MD.ai.contextNote(app) + (asset ? "\n" + MD.ai.assetNote(app, asset) : "") + "\n" + MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai")) : ""}`;
     // Phase 1: evidence gathering (tools)
     onPhase && onPhase("Gathering evidence");
     const evPrompt = `${base}

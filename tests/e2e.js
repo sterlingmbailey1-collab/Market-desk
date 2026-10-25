@@ -276,6 +276,9 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("why it's moving: market, sector, rates, dollar, oil and the asset's own part", /Asset-specific/.test(whyTxt) && /S&P 500 \(β/.test(whyTxt) && /Technology \(β/.test(whyTxt) && /Last 5 days/i.test(whyTxt) && /Factor model fitted on/i.test(whyTxt), whyTxt.slice(0, 600));
   await page.click("#sec-why button:has-text('Find the news behind it')"); await page.waitForTimeout(3000);
   check("why it's moving: AI finds the news behind the asset-specific part", /supplier report/.test(await page.locator("#sec-why").innerText()));
+  const memTxt = await page.locator("#sec-memory").innerText();
+  check("AI memory on the asset page: every past AI call on it with its result, and the Market Brain's notes", /AI memory/i.test(memTxt) && /Day-trade plans/.test(memTxt) && /Recommendations/.test(memTxt) && /Fell with tech on higher yields/.test(memTxt) && /logged/.test(memTxt), memTxt.slice(0, 600));
+  check("prompts about an asset carry its record with the desk", await page.evaluate(() => (window.__mock.fullPrompts || []).some(p => /The desk's past AI calls on AAPL: \d+ logged/.test(p) && /separating what the market explains/.test(p))));
 
   // ---- Connector missing: contained, clear message
   await page.evaluate(() => { window.__mock.disconnected = ["Bigdata.com"]; });

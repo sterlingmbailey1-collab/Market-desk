@@ -295,6 +295,40 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
       h("p", { class: "tiny muted" }, "Due forecasts are scored automatically while the page is open, from the close on their due date. A Brier score of 0.25 is what always saying 50% would earn."));
   }
 
+  /* ---------- per-asset memory ---------- */
+  /* Everything the desk's AI has said about one asset (every logged call from any feature, re-checks of picks, and
+     the Market Brain's notes on its moves) and how each call turned out. */
+  function assetMemory(app, asset) {
+    const sym = String(asset.symbol || "").toUpperCase(), id = asset.id, evals = app.store.cached("evals");
+    const calls = app.store.cached("forecasts").filter(f => f.assetId === id || (sym && String(f.symbol || "").toUpperCase() === sym)).map(f => {
+      const e = evals.find(v => v.forecastId === f.id);
+      return { at: f.createdAt, source: f.source || "user", label: SOURCE_LABEL[f.source] || f.source || "Your own forecasts", direction: f.direction, probabilityPct: f.probability != null ? Math.round(f.probability * 100) : null, horizonDays: f.horizonDays, dueAt: f.dueAt, priceThen: f.priceAtCreation, thesis: String(f.thesis || "").slice(0, 220), result: e ? { hit: !!e.directionHit, returnPct: e.realizedReturnPct, priceAtDue: e.priceAtDue } : null };
+    }).sort((a, b) => (b.at || 0) - (a.at || 0));
+    const graded = calls.filter(c => c.result), right = graded.filter(c => c.result.hit).length;
+    const mentions = (MD.brain ? MD.brain.latestPerDay(app) : []).flatMap(d => (d.movers || []).filter(m => String(m.symbol || "").toUpperCase() === sym).map(m => ({ date: d.sessionDate, movePct: m.movePct, why: m.why }))).slice(0, 6);
+    const checks = app.store.cached("pickchecks").filter(c => String(c.symbol).toUpperCase() === sym).sort((a, b) => b.at - a.at).slice(0, 3);
+    return { symbol: sym, calls, graded: graded.length, right, hitPct: graded.length ? right / graded.length * 100 : null, mentions, checks };
+  }
+  const callText = (c) => new Date(c.at || 0).toISOString().slice(0, 10) + " " + c.label + ": " + (c.direction === "move" ? "big move" : c.direction) + (c.probabilityPct != null ? " " + c.probabilityPct + "%" : "") + " → " + (c.result ? (c.result.hit ? "right" : "wrong") + (c.result.returnPct != null ? " (" + (c.result.returnPct > 0 ? "+" : "") + Number(c.result.returnPct).toFixed(1) + "%)" : "") : "pending");
+  // For prompts about this asset: its record with the desk and what the Market Brain saw.
+  function assetNote(app, asset) {
+    const m = assetMemory(app, asset); if (!m.calls.length && !m.mentions.length) return "";
+    return ("The desk's past AI calls on " + m.symbol + ": " + m.calls.length + " logged" + (m.graded ? ", " + m.graded + " graded, " + m.right + " right" : "") + (m.calls.length ? ". Latest: " + m.calls.slice(0, 5).map(callText).join("; ") : "") + "." +
+      (m.mentions.length ? " Market Brain notes on its moves: " + m.mentions.slice(0, 3).map(x => x.date + " " + (x.movePct > 0 ? "+" : "") + x.movePct + "%: " + x.why).join("; ") + "." : "") +
+      (m.checks.length ? " Latest re-check of a pick: " + m.checks[0].status + " (" + m.checks[0].whatChanged.slice(0, 160) + ")." : "") +
+      " Learn from the misses; don't repeat a thesis that failed without new evidence.").slice(0, 1400);
+  }
+  function memoryCard(app, asset) {
+    const m = assetMemory(app, asset), body = h("div", { class: "stack" });
+    const sec = U.section("AI memory: what the desk has said about " + (asset.symbol || asset.name), body); sec.id = "sec-memory";
+    if (!m.calls.length && !m.mentions.length) { body.append(h("p", { class: "small muted" }, "No AI calls on " + (asset.symbol || asset.name) + " yet. Quick takes, recommendations, day-trade plans and research on it are listed here with how they turned out, and every AI that looks at it again is told this record.")); return sec; }
+    body.append(h("p", { class: "small" }, m.calls.length + " call" + (m.calls.length > 1 ? "s" : "") + " logged" + (m.graded ? " · " + m.graded + " graded · " + m.right + " right (" + m.hitPct.toFixed(0) + "%)" : " · none graded yet") + ". Every AI that looks at " + m.symbol + " again is told this record."),
+      m.calls.length ? U.table([{ t: "When", v: (c) => U.fmtDate(c.at) }, { t: "From", v: "label" }, { t: "Call", v: (c) => (c.direction === "up" ? "▲ up" : c.direction === "down" ? "▼ down" : c.direction === "move" ? "↕ big move" : c.direction) + (c.probabilityPct != null ? " " + c.probabilityPct + "%" : "") + (c.horizonDays ? " · " + c.horizonDays + "d" : "") }, { t: "Price then", v: (c) => c.priceThen ? C.fmtNum(c.priceThen, c.priceThen >= 1 ? 2 : 6) : "—", n: true },
+        { t: "Result", v: (c) => c.result ? h("span", { class: c.result.hit ? "up" : "down" }, (c.result.hit ? "Right" : "Wrong") + (c.result.returnPct != null ? " · " + U.pct(c.result.returnPct) : "")) : h("span", { class: "muted" }, c.dueAt > Date.now() ? "due " + U.fmtDate(c.dueAt) : "awaiting grade") }], m.calls.slice(0, 12)) : null,
+      m.mentions.length ? MD.ai.list("Market Brain notes on its moves", m.mentions.map(x => x.date + " · " + (x.movePct > 0 ? "+" : "") + x.movePct + "%: " + x.why)) : null);
+    return sec;
+  }
+
   /* ---------- review pass ---------- */
   /* A skeptical second reader checks each item of a draft against the measured data and the sources
      actually retrieved: unsupported claims, ignored risks, overconfidence. Returns per-item verdicts. */
@@ -348,5 +382,5 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

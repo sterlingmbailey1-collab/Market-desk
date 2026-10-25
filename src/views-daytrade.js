@@ -156,6 +156,7 @@ Use the measured levels below (computed by the app). ${tools ? "Use 2 to 6 tool 
 Start from the base rates: a typical name closes above its current price about half the time, so stray far from 50% only with strong evidence (a catalyst, relative volume, trend vs VWAP, how past gaps behaved). Give the probability that it CLOSES this session (or the next one, if closed now) ABOVE the current price ${px(L.last)}. Build at most one long and one short setup with exact trigger, entry, stop and targets taken from the measured levels; a stop must be on the correct side of the entry. "No trade" is a valid answer: list the conditions under which to stay out. Never tell the user to place an order; this is analysis.
 ${calib}
 ${MD.ai.contextNote(app)}
+${MD.ai.assetNote(app, L.asset)}
 Measured: ${JSON.stringify(forAI(L))}
 Market right now: ${JSON.stringify(mkt)}
 Reply with ONLY JSON:

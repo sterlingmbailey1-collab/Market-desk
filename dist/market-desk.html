@@ -6252,7 +6252,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       actions.replaceChildren(X.actionBar(asset, () => quote, () => panel && panel.series));
     });
     const priceSec = U.section("Price", panel.el); priceSec.id = "sec-price";
-    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-why", "Why it's moving"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, a), MD.brain.whyCard(app, a), MD.insights.panel(a, { currency: "USD", analysts: true }));
+    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, a), MD.brain.whyCard(app, a), MD.ai.memoryCard(app, a), MD.insights.panel(a, { currency: "USD", analysts: true }));
     const tab = app.ls.get("stockTab", "summary");
     const renderTab = (k) => {
       app.ls.set("stockTab", k);
@@ -6301,7 +6301,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       });
       const news = h("div", {});
       const priceSec = U.section("Price (USD)", panel.el), newsSec = U.section("Latest news · CoinMarketCap", news); priceSec.id = "sec-price"; newsSec.id = "sec-news";
-      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-why", "Why it's moving"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, Object.assign({}, a, { cls: "crypto" })), MD.brain.whyCard(app, Object.assign({}, a, { cls: "crypto" })), U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
+      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, Object.assign({}, a, { cls: "crypto" })), MD.brain.whyCard(app, Object.assign({}, a, { cls: "crypto" })), MD.ai.memoryCard(app, Object.assign({}, a, { cls: "crypto" })), U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
       U.async(news, () => D.cmc.news(a.symbol, 8), (r) => {
         news.append(X.newsList(r.items, { empty: "CoinMarketCap returned no recent news for " + a.symbol + "." }),
           r.upcoming.length ? h("details", {}, h("summary", { class: "small" }, r.upcoming.length + " event or prediction page" + (r.upcoming.length > 1 ? "s" : "") + " with future dates"), X.newsList(r.upcoming, { clip: 200 })) : null,
@@ -7432,7 +7432,7 @@ Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "
     const base = `Today is ${today}. User's reporting currency: ${R}. Decision horizon: ${horizon}.
 Asset: ${assetLine}.
 User's question / decision: "${question}".
-Rules: never invent prices, figures, sources or research steps. Use get_quote for the current price and the app's tools for any calculation. Cite only URLs returned by your tools. Say plainly when evidence is missing. "No action" or "wait" are valid conclusions.${MD.ai ? "\n" + MD.ai.contextNote(app) + "\n" + MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai")) : ""}`;
+Rules: never invent prices, figures, sources or research steps. Use get_quote for the current price and the app's tools for any calculation. Cite only URLs returned by your tools. Say plainly when evidence is missing. "No action" or "wait" are valid conclusions.${MD.ai ? "\n" + MD.ai.contextNote(app) + (asset ? "\n" + MD.ai.assetNote(app, asset) : "") + "\n" + MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai")) : ""}`;
     // Phase 1: evidence gathering (tools)
     onPhase && onPhase("Gathering evidence");
     const evPrompt = `${base}
@@ -7807,6 +7807,40 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
       h("p", { class: "tiny muted" }, "Due forecasts are scored automatically while the page is open, from the close on their due date. A Brier score of 0.25 is what always saying 50% would earn."));
   }
 
+  /* ---------- per-asset memory ---------- */
+  /* Everything the desk's AI has said about one asset (every logged call from any feature, re-checks of picks, and
+     the Market Brain's notes on its moves) and how each call turned out. */
+  function assetMemory(app, asset) {
+    const sym = String(asset.symbol || "").toUpperCase(), id = asset.id, evals = app.store.cached("evals");
+    const calls = app.store.cached("forecasts").filter(f => f.assetId === id || (sym && String(f.symbol || "").toUpperCase() === sym)).map(f => {
+      const e = evals.find(v => v.forecastId === f.id);
+      return { at: f.createdAt, source: f.source || "user", label: SOURCE_LABEL[f.source] || f.source || "Your own forecasts", direction: f.direction, probabilityPct: f.probability != null ? Math.round(f.probability * 100) : null, horizonDays: f.horizonDays, dueAt: f.dueAt, priceThen: f.priceAtCreation, thesis: String(f.thesis || "").slice(0, 220), result: e ? { hit: !!e.directionHit, returnPct: e.realizedReturnPct, priceAtDue: e.priceAtDue } : null };
+    }).sort((a, b) => (b.at || 0) - (a.at || 0));
+    const graded = calls.filter(c => c.result), right = graded.filter(c => c.result.hit).length;
+    const mentions = (MD.brain ? MD.brain.latestPerDay(app) : []).flatMap(d => (d.movers || []).filter(m => String(m.symbol || "").toUpperCase() === sym).map(m => ({ date: d.sessionDate, movePct: m.movePct, why: m.why }))).slice(0, 6);
+    const checks = app.store.cached("pickchecks").filter(c => String(c.symbol).toUpperCase() === sym).sort((a, b) => b.at - a.at).slice(0, 3);
+    return { symbol: sym, calls, graded: graded.length, right, hitPct: graded.length ? right / graded.length * 100 : null, mentions, checks };
+  }
+  const callText = (c) => new Date(c.at || 0).toISOString().slice(0, 10) + " " + c.label + ": " + (c.direction === "move" ? "big move" : c.direction) + (c.probabilityPct != null ? " " + c.probabilityPct + "%" : "") + " → " + (c.result ? (c.result.hit ? "right" : "wrong") + (c.result.returnPct != null ? " (" + (c.result.returnPct > 0 ? "+" : "") + Number(c.result.returnPct).toFixed(1) + "%)" : "") : "pending");
+  // For prompts about this asset: its record with the desk and what the Market Brain saw.
+  function assetNote(app, asset) {
+    const m = assetMemory(app, asset); if (!m.calls.length && !m.mentions.length) return "";
+    return ("The desk's past AI calls on " + m.symbol + ": " + m.calls.length + " logged" + (m.graded ? ", " + m.graded + " graded, " + m.right + " right" : "") + (m.calls.length ? ". Latest: " + m.calls.slice(0, 5).map(callText).join("; ") : "") + "." +
+      (m.mentions.length ? " Market Brain notes on its moves: " + m.mentions.slice(0, 3).map(x => x.date + " " + (x.movePct > 0 ? "+" : "") + x.movePct + "%: " + x.why).join("; ") + "." : "") +
+      (m.checks.length ? " Latest re-check of a pick: " + m.checks[0].status + " (" + m.checks[0].whatChanged.slice(0, 160) + ")." : "") +
+      " Learn from the misses; don't repeat a thesis that failed without new evidence.").slice(0, 1400);
+  }
+  function memoryCard(app, asset) {
+    const m = assetMemory(app, asset), body = h("div", { class: "stack" });
+    const sec = U.section("AI memory: what the desk has said about " + (asset.symbol || asset.name), body); sec.id = "sec-memory";
+    if (!m.calls.length && !m.mentions.length) { body.append(h("p", { class: "small muted" }, "No AI calls on " + (asset.symbol || asset.name) + " yet. Quick takes, recommendations, day-trade plans and research on it are listed here with how they turned out, and every AI that looks at it again is told this record.")); return sec; }
+    body.append(h("p", { class: "small" }, m.calls.length + " call" + (m.calls.length > 1 ? "s" : "") + " logged" + (m.graded ? " · " + m.graded + " graded · " + m.right + " right (" + m.hitPct.toFixed(0) + "%)" : " · none graded yet") + ". Every AI that looks at " + m.symbol + " again is told this record."),
+      m.calls.length ? U.table([{ t: "When", v: (c) => U.fmtDate(c.at) }, { t: "From", v: "label" }, { t: "Call", v: (c) => (c.direction === "up" ? "▲ up" : c.direction === "down" ? "▼ down" : c.direction === "move" ? "↕ big move" : c.direction) + (c.probabilityPct != null ? " " + c.probabilityPct + "%" : "") + (c.horizonDays ? " · " + c.horizonDays + "d" : "") }, { t: "Price then", v: (c) => c.priceThen ? C.fmtNum(c.priceThen, c.priceThen >= 1 ? 2 : 6) : "—", n: true },
+        { t: "Result", v: (c) => c.result ? h("span", { class: c.result.hit ? "up" : "down" }, (c.result.hit ? "Right" : "Wrong") + (c.result.returnPct != null ? " · " + U.pct(c.result.returnPct) : "")) : h("span", { class: "muted" }, c.dueAt > Date.now() ? "due " + U.fmtDate(c.dueAt) : "awaiting grade") }], m.calls.slice(0, 12)) : null,
+      m.mentions.length ? MD.ai.list("Market Brain notes on its moves", m.mentions.map(x => x.date + " · " + (x.movePct > 0 ? "+" : "") + x.movePct + "%: " + x.why)) : null);
+    return sec;
+  }
+
   /* ---------- review pass ---------- */
   /* A skeptical second reader checks each item of a draft against the measured data and the sources
      actually retrieved: unsupported claims, ignored risks, overconfidence. Returns per-item verdicts. */
@@ -7860,7 +7894,7 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -8378,6 +8412,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
         const r = await s.json(`Explain why ${a.symbol} (${a.name || a.symbol}) moved, separating what the market explains from what is specific to it. The app's factor model already measured the split below; find the news for the asset-specific part with 1 to 4 tool calls (${a.cls === "crypto" ? "crypto_news, search_news" : "search_news"}, search_web if needed). If the asset-specific part is small, say the move is mostly the market and don't invent a story. Cite only URLs the tools returned.
 Measured: ${JSON.stringify({ today: last.today, last5Days: last.week, verdict: last.verdict, unexplainedZ: last.unexplainedZ, factors: last.model.factors })}
 ${MD.ai.contextNote(app)}
+${MD.ai.assetNote(app, a)}
 Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": "...", "when": "date or time", "impact": "how it moved the price"}], "marketPart": "one sentence on the market/sector part", "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`, { modelTier: "complex", cache: false, tools: MD.ai.tools(app, S, a.cls === "crypto" ? ["crypto_news", "search_news", "search_web"] : ["search_news", "search_web", "read_page"]) });
         ai.replaceChildren(h("div", { class: "aicard" }, h("p", {}, r.explanation), r.marketPart ? h("p", { class: "small muted" }, r.marketPart) : null, (r.catalysts || []).length ? h("ul", { class: "small" }, r.catalysts.slice(0, 4).map(c => h("li", {}, h("strong", {}, c.what), c.when ? " (" + c.when + ")" : "", c.impact ? ": " + c.impact : ""))) : null, MD.ai.sources(S.verify(r.sources)), h("p", { class: "tiny muted" }, "Confidence " + (Number(r.confidence) || 0) + "/100 · " + S.calls + " research steps")));
       } catch (e) { ai.replaceChildren(U.errorBox({ message: MD.ai.errText(e) })); }
@@ -8637,6 +8672,7 @@ Use the measured levels below (computed by the app). ${tools ? "Use 2 to 6 tool 
 Start from the base rates: a typical name closes above its current price about half the time, so stray far from 50% only with strong evidence (a catalyst, relative volume, trend vs VWAP, how past gaps behaved). Give the probability that it CLOSES this session (or the next one, if closed now) ABOVE the current price ${px(L.last)}. Build at most one long and one short setup with exact trigger, entry, stop and targets taken from the measured levels; a stop must be on the correct side of the entry. "No trade" is a valid answer: list the conditions under which to stay out. Never tell the user to place an order; this is analysis.
 ${calib}
 ${MD.ai.contextNote(app)}
+${MD.ai.assetNote(app, L.asset)}
 Measured: ${JSON.stringify(forAI(L))}
 Market right now: ${JSON.stringify(mkt)}
 Reply with ONLY JSON:
@@ -9212,6 +9248,7 @@ Reply with ONLY JSON: {"summary": "2 sentences", "items": [{"symbol": "...", "pr
     const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. Write an earnings preview for ${m.name || m.symbol} (${m.symbol}) from the measured data below. ${tools ? "Use 2 to 6 tool calls: search_news for what the market expects and recent company news (one focused query each), zacks_view for estimate revisions and the Zacks view. Cite only URLs the tools returned." : ""}
 Be specific about what matters this quarter (guidance, margins, segments, demand signals). Use the measured beat rate and typical reaction as the base rate; the options-implied move includes normal daily moves until that expiry. Never invent figures. No advice to trade.
 ${A().calibrationNote(A().trackRecord(app))}
+${A().assetNote(app, { id: "stock:" + m.symbol, cls: "stock", symbol: m.symbol })}
 ${A().contextNote(app)}
 Measured: ${JSON.stringify(facts)}
 Reply with ONLY JSON: {"setup": "2-3 sentences", "watch": ["3-5 metrics or topics that will decide the reaction"], "bulls": "what bulls need to hear", "bears": "what bears fear",
@@ -9458,6 +9495,7 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
 ${tools ? "Investigate with 3 to 7 tool calls before answering: stock_snapshot first, then " + (isStock ? "zacks_view, search_news (one focused query), options_move if a near-term move matters, smart_money, and my_portfolio once to see whether they hold it." : "crypto_news or search_news, and my_portfolio once to see whether they hold it.") + " Cite only URLs the tools returned." : "Tools are unavailable: say news wasn't checked."}
 Weigh both sides honestly; "neutral" is a valid stance. Use only measured figures; never invent prices, targets or dates. For the levels, use only the measured levels below and say which matter now.
 ${A().calibrationNote(tr)}
+${A().assetNote(app, asset)}
 ${A().contextNote(app)}
 Measured levels: ${JSON.stringify(lv)}
 Reply with ONLY JSON: {"stance": "positive"|"neutral"|"negative", "stanceLabel": "2-4 words, e.g. 'Constructive, but stretched'", "headline": "one sentence", "summary": "3-4 sentences",
@@ -9508,7 +9546,7 @@ Reply with ONLY JSON: {"thesis": "2 sentences", "points": [{"point": "...", "evi
     const B = clean(bull), R = clean(bear);
     if (!B.thesis || !R.thesis) throw Object.assign(new Error("The debate came back unreadable; try again."), { code: "invalid_json" });
     const judgeStep = S.step("run", "Judge weighing both cases");
-    const j = await s.json(`You are the judge of a debate about ${sym}. Weigh the bull and bear cases below against the measured data. Points whose source was not actually retrieved ("verified": false) or that contradict the measured data count for little. Decide which case is stronger on evidence (not rhetoric), and give a calibrated probability that the price is higher in 6 months. ${A().calibrationNote(A().trackRecord(app))}
+    const j = await s.json(`You are the judge of a debate about ${sym}. Weigh the bull and bear cases below against the measured data. ${A().assetNote(app, asset)} Points whose source was not actually retrieved ("verified": false) or that contradict the measured data count for little. Decide which case is stronger on evidence (not rhetoric), and give a calibrated probability that the price is higher in 6 months. ${A().calibrationNote(A().trackRecord(app))}
 ${A().contextNote(app)}
 Measured: ${JSON.stringify(snap)}
 Bull: ${JSON.stringify(B)}
@@ -9792,7 +9830,8 @@ Use the tools for every price, statistic, odds figure and holding; never invent 
       earnings: c.earnings, shortInterestDaysToCover: c.shortDaysToCover != null ? +c.shortDaysToCover.toFixed(1) : null, return1mPct: c.ret1m != null ? +Number(c.ret1m).toFixed(1) : null, return3mPct: c.ret3m != null ? +c.ret3m.toFixed(1) : null, return7dPct: c.ret7d != null ? +Number(c.ret7d).toFixed(1) : null, fromYearHighPct: c.fromHighPct != null ? +c.fromHighPct.toFixed(1) : null,
       zacksRank: c.zacksRank ?? null, zacksTarget: c.zacksTarget ?? null, smartMoney: c.smartMoney.length ? c.smartMoney : null, insiders: c.insiders || null, movementScore: +c.score.toFixed(1),
       baseRates: c.baseRates ? { modelUpPct: c.baseRates.modelUpPct, overallUpPct: c.baseRates.overallUpPct, independentSamples: c.baseRates.independent, typicalIfUpPct: c.baseRates.typicalIfUpPct, typicalIfDownPct: c.baseRates.typicalIfDownPct, conditions: c.baseRates.conditions } : null,
-      last5DaysExplained: c.moveExplained ? c.moveExplained.last5Days : null, onYourWatchlistOrHeld: !!c.mine }));
+      last5DaysExplained: c.moveExplained ? c.moveExplained.last5Days : null, onYourWatchlistOrHeld: !!c.mine,
+      deskPastAiCalls: (() => { const mm = MD.ai.assetMemory(app, c.asset); return mm.calls.length ? mm.calls.length + " logged, " + mm.graded + " graded, " + mm.right + " right; latest " + mm.calls.slice(0, 2).map(x => (x.direction || "") + " " + (x.probabilityPct || "") + "% → " + (x.result ? (x.result.hit ? "right" : "wrong") : "pending")).join(", ") : null; })() }));
     const calib = MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-picks"));
     log("run", "Asking Claude to choose and explain (usually 1–3 minutes)");
     const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are picking assets that could make a LARGE price move within the window "${wLabel}" (about ${days} days), for an investor who wants to watch them closely, and giving the odds of each one going UP or DOWN.
@@ -9885,6 +9924,7 @@ Reply with ONLY JSON:
 Since then the price moved ${since == null ? "an unknown amount" : since.toFixed(1) + "%"} (${p.priceAtPick} → ${q ? q.price : "?"}). ${daysLeft} days are left. Measured base rate for the remaining window: ${br ? br.model.upPct + "% up" : "n/a"}.
 ${tools ? "Check what happened since with 1 to 4 tool calls; cite only URLs the tools returned." : ""} Then give the updated chance that the price is higher at the window's end than it was when the call was made (${p.priceAtPick}), and whether the thesis still holds.
 ${MD.ai.contextNote(app)}
+${MD.ai.assetNote(app, p.asset)}
 Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"broken"|"played out", "whatChanged": "2-3 sentences", "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "complex" }, tools ? { tools } : { cache: false }));
     const claude = Math.max(5, Math.min(95, Number(r.upProbabilityPct) || 50)), model = br ? br.model.upPct : null;
     const up = Math.round(model != null ? 0.65 * claude + 0.35 * model : claude);

@@ -49,6 +49,7 @@
     const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. Write an earnings preview for ${m.name || m.symbol} (${m.symbol}) from the measured data below. ${tools ? "Use 2 to 6 tool calls: search_news for what the market expects and recent company news (one focused query each), zacks_view for estimate revisions and the Zacks view. Cite only URLs the tools returned." : ""}
 Be specific about what matters this quarter (guidance, margins, segments, demand signals). Use the measured beat rate and typical reaction as the base rate; the options-implied move includes normal daily moves until that expiry. Never invent figures. No advice to trade.
 ${A().calibrationNote(A().trackRecord(app))}
+${A().assetNote(app, { id: "stock:" + m.symbol, cls: "stock", symbol: m.symbol })}
 ${A().contextNote(app)}
 Measured: ${JSON.stringify(facts)}
 Reply with ONLY JSON: {"setup": "2-3 sentences", "watch": ["3-5 metrics or topics that will decide the reaction"], "bulls": "what bulls need to hear", "bears": "what bears fear",
