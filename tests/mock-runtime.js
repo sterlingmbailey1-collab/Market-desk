@@ -8,10 +8,13 @@
   const subs = new Set();
   const notify = () => { for (const s of subs) s(); };
   window.__mock = { downloads: [], toolCalls: [], samplePrompts: [], store };
+  // Like claude.ai's storage, documents come back deeply frozen: code must copy before changing them.
+  const deepFreeze = (o) => { if (o && typeof o === "object" && !Object.isFrozen(o)) { Object.freeze(o); for (const v of Object.values(o)) deepFreeze(v); } return o; };
+  const frozen = (d) => deepFreeze(JSON.parse(JSON.stringify(d)));
   function docRef(path) {
     return {
       id: path.split("/").pop(), path,
-      async get() { const d = store.get(path); return { id: path.split("/").pop(), exists: !!d, data: () => d && JSON.parse(JSON.stringify(d)), metadata: {} }; },
+      async get() { const d = store.get(path); return { id: path.split("/").pop(), exists: !!d, data: () => d && frozen(d), metadata: {} }; },
       async set(data) { store.set(path, JSON.parse(JSON.stringify(data))); save(); setTimeout(notify, 5); },
       async update(data) { if (!store.has(path)) throw { code: "invalid_argument" }; store.set(path, Object.assign(store.get(path), data)); save(); setTimeout(notify, 5); },
       async delete() { store.delete(path); save(); setTimeout(notify, 5); },
@@ -25,7 +28,7 @@
       doc(id) { return docRef(path + "/" + (id || Math.random().toString(36).slice(2))); },
       async add(d) { const r = this.doc(); await r.set(d); return r; },
       where() { return q; }, orderBy() { return q; }, limit() { return q; },
-      async get() { const docs = [...store.entries()].filter(([k]) => k.startsWith(path + "/") && k.slice(path.length + 1).indexOf("/") === -1).map(([k, v]) => ({ id: k.split("/").pop(), exists: true, data: () => JSON.parse(JSON.stringify(v)), metadata: {} })); return { docs, size: docs.length, empty: !docs.length, docChanges: () => [], metadata: {} }; },
+      async get() { const docs = [...store.entries()].filter(([k]) => k.startsWith(path + "/") && k.slice(path.length + 1).indexOf("/") === -1).map(([k, v]) => ({ id: k.split("/").pop(), exists: true, data: () => frozen(v), metadata: {} })); return { docs, size: docs.length, empty: !docs.length, docChanges: () => [], metadata: {} }; },
       onSnapshot(next) { const f = async () => next(await q.get()); subs.add(f); f(); return () => subs.delete(f); }
     };
     return q;

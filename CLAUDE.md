@@ -13,7 +13,11 @@ node tests/run.js                     # unit tests for core.js + odds.js (also r
 node tests/bet.js                     # betting parsers and analysis against tests/bet-fixtures.js
 node tests/real.js                    # parsers against real captured page text in tests/real/
 node tests/e2e.js dist/market-desk.html shots   # Playwright, mocked claude.ai runtime (tests/mock-runtime.js)
+node tests/upgrade.js dist/market-desk.html     # opens the page with settings saved by an older version
 ```
+
+- claude.ai storage returns **frozen** documents (the mock does too). `src/store.js` deep-copies everything it
+  reads; never mutate a document obtained any other way.
 
 - e2e needs Playwright with Chromium (`npm i -D playwright@1.63.0 && npx playwright install chromium`).
   It serves `vendor/` copies of decimal.js and lightweight-charts in place of the CDN.

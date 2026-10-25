@@ -47,11 +47,12 @@
     const coll = (c) => root.collection(c);
     return {
       kind: "account",
-      async list(c) { const s = await coll(c).limit(1000).get(); return s.docs.map(d => Object.assign({}, d.data(), { id: d.id })); },
-      async get(c, id) { const s = await coll(c).doc(id).get(); return s.exists ? Object.assign({}, s.data(), { id }) : null; },
+      // Documents from the artifact db are frozen; deep copies keep the rest of the app free to change them.
+      async list(c) { const s = await coll(c).limit(1000).get(); return s.docs.map(d => Object.assign(clone(d.data()), { id: d.id })); },
+      async get(c, id) { const s = await coll(c).doc(id).get(); return s.exists ? Object.assign(clone(s.data()), { id }) : null; },
       async set(c, id, doc) { await coll(c).doc(id).set(JSON.parse(JSON.stringify(Object.assign({}, doc, { id })))); },
       async del(c, id) { await coll(c).doc(id).delete(); },
-      subscribe(c, f, onErr) { return coll(c).limit(1000).onSnapshot(s => f(s.docs.map(d => Object.assign({}, d.data(), { id: d.id }))), e => onErr && onErr(e)); }
+      subscribe(c, f, onErr) { return coll(c).limit(1000).onSnapshot(s => f(s.docs.map(d => Object.assign(clone(d.data()), { id: d.id }))), e => onErr && onErr(e)); }
     };
   }
 

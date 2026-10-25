@@ -30,6 +30,7 @@
   async function loadSettings() {
     let s = null;
     try { s = await app.store.get("settings", "main"); } catch {}
+    s = s ? JSON.parse(JSON.stringify(s)) : null; // never change the stored document in place
     app.settings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), s || {});
     for (const k of ["quiet", "notify", "assumptions", "betting"]) app.settings[k] = Object.assign({}, DEFAULT_SETTINGS[k], (s || {})[k] || {});
     // Dashboards saved before the betting card existed get it once, before Data health.

@@ -3247,11 +3247,12 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     const coll = (c) => root.collection(c);
     return {
       kind: "account",
-      async list(c) { const s = await coll(c).limit(1000).get(); return s.docs.map(d => Object.assign({}, d.data(), { id: d.id })); },
-      async get(c, id) { const s = await coll(c).doc(id).get(); return s.exists ? Object.assign({}, s.data(), { id }) : null; },
+      // Documents from the artifact db are frozen; deep copies keep the rest of the app free to change them.
+      async list(c) { const s = await coll(c).limit(1000).get(); return s.docs.map(d => Object.assign(clone(d.data()), { id: d.id })); },
+      async get(c, id) { const s = await coll(c).doc(id).get(); return s.exists ? Object.assign(clone(s.data()), { id }) : null; },
       async set(c, id, doc) { await coll(c).doc(id).set(JSON.parse(JSON.stringify(Object.assign({}, doc, { id })))); },
       async del(c, id) { await coll(c).doc(id).delete(); },
-      subscribe(c, f, onErr) { return coll(c).limit(1000).onSnapshot(s => f(s.docs.map(d => Object.assign({}, d.data(), { id: d.id }))), e => onErr && onErr(e)); }
+      subscribe(c, f, onErr) { return coll(c).limit(1000).onSnapshot(s => f(s.docs.map(d => Object.assign(clone(d.data()), { id: d.id }))), e => onErr && onErr(e)); }
     };
   }
 
@@ -3667,6 +3668,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
   async function loadSettings() {
     let s = null;
     try { s = await app.store.get("settings", "main"); } catch {}
+    s = s ? JSON.parse(JSON.stringify(s)) : null; // never change the stored document in place
     app.settings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), s || {});
     for (const k of ["quiet", "notify", "assumptions", "betting"]) app.settings[k] = Object.assign({}, DEFAULT_SETTINGS[k], (s || {})[k] || {});
     // Dashboards saved before the betting card existed get it once, before Data health.
