@@ -5,7 +5,7 @@
   "description": "Market Desk: a single-page market analyzer published as a claude.ai artifact (stocks, ETFs, crypto, FX, metals, trading cards, prediction markets, sports betting).",
   "scripts": {
     "build": "node build.js dist/market-desk.html",
-    "test": "node tests/run.js && node tests/bet.js && node tests/real.js",
+    "test": "node tests/run.js && node tests/bet.js && node tests/real.js && node tests/smart.js",
     "e2e": "node build.js dist/market-desk.html && node tests/e2e.js dist/market-desk.html shots && node tests/upgrade.js dist/market-desk.html"
   },
   "devDependencies": {

@@ -7,7 +7,7 @@
     ["dashboard", "Dashboard", "Overview"], ["markets", "Global Markets", "Overview"],
     ["stocks", "Stocks & ETFs", "Markets"], ["crypto", "Crypto", "Markets"], ["fx", "FX & Currencies", "Markets"], ["metals", "Precious Metals", "Markets"], ["cards", "Trading Cards", "Markets"],
     ["betting", "Sports Betting", "Sports"],
-    ["portfolio", "Portfolio", "Decide"], ["picks", "Recommendations", "Decide"], ["opportunities", "Opportunities", "Decide"], ["research", "Deep Research", "Decide"], ["calendar", "Calendar & Catalysts", "Decide"], ["advisor", "AI Advisor", "Decide"], ["strategies", "Strategies & Backtesting", "Decide"],
+    ["smartmoney", "Smart Money", "Decide"], ["portfolio", "Portfolio", "Decide"], ["picks", "Recommendations", "Decide"], ["opportunities", "Opportunities", "Decide"], ["research", "Deep Research", "Decide"], ["calendar", "Calendar & Catalysts", "Decide"], ["advisor", "AI Advisor", "Decide"], ["strategies", "Strategies & Backtesting", "Decide"],
     ["reports", "Reports", "Workflow"], ["inbox", "Alerts & Research Inbox", "Workflow"], ["settings", "Settings & Data Sources", "Workflow"]
   ];
   const DEFAULT_SETTINGS = {
@@ -15,7 +15,7 @@
     quiet: { enabled: false, start: "22:00", end: "07:00" }, notify: { toasts: true, minMateriality: 1 },
     assumptions: { stockExitPct: 0.05, cryptoExitPct: 0.5, metalSpreadPct: 3, cardFeePct: 13, cardShipping: 5, fxSpreadMajorPct: 0.1, fxSpreadOtherPct: 1, riskFreePct: 4, inflationPct: 2.5 },
     betting: { oddsFormat: "american", bankroll: 1000, unit: 10, kelly: 0.25, minEdge: 1 },
-    customCurrencies: [], dashboard: ["changes", "portfolio", "fx", "watch", "alerts", "catalysts", "betting", "data"], universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
+    customCurrencies: [], dashboard: ["changes", "portfolio", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
   };
   const ls = { get(k, d) { try { const v = localStorage.getItem("mdp." + k); return v ? JSON.parse(v) : d; } catch { return d; } }, set(k, v) { try { localStorage.setItem("mdp." + k, JSON.stringify(v)); } catch {} } };
 
@@ -33,8 +33,12 @@
     s = s ? JSON.parse(JSON.stringify(s)) : null; // never change the stored document in place
     app.settings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), s || {});
     for (const k of ["quiet", "notify", "assumptions", "betting"]) app.settings[k] = Object.assign({}, DEFAULT_SETTINGS[k], (s || {})[k] || {});
-    // Dashboards saved before the betting card existed get it once, before Data health.
-    if (!app.settings.dashSeen || !app.settings.dashSeen.includes("betting")) { if (!app.settings.dashboard.includes("betting")) { const i = app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, "betting"); } app.settings.dashSeen = (app.settings.dashSeen || []).concat("betting"); }
+    // Dashboards saved before a card existed get it once, before Data health.
+    for (const card of ["betting", "smart"]) {
+      if (app.settings.dashSeen && app.settings.dashSeen.includes(card)) continue;
+      if (!app.settings.dashboard.includes(card)) { const i = app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
+      app.settings.dashSeen = (app.settings.dashSeen || []).concat(card);
+    }
     applySettings();
   }
   let saveTimer = null;
@@ -175,12 +179,13 @@
 
   /* ---------- navigation ---------- */
   /* List → detail → back. Tabs open their list; opening an item remembers where you came from. */
-  const LIST_ROUTES = ["stocks", "crypto", "fx", "metals", "cards", "markets", "betting"];
+  const LIST_ROUTES = ["stocks", "crypto", "fx", "metals", "cards", "markets", "betting", "smartmoney"];
   const routeLabel = (r) => (ROUTES.find(x => x[0] === r) || [r, r])[1];
   app.backStack = [];
   function placeLabel(route) {
     const c = app.ctx[route];
     if (route === "betting") return c && c.gameId ? c.label || "game" : "Sports Betting";
+    if (route === "smartmoney") return c && c.person ? c.person.name : "Smart Money";
     if (LIST_ROUTES.includes(route)) {
       if (route === "fx" && c && c.base && c.cls === "fx") return c.base + "/" + c.quote;
       if (route === "markets" && c && c.cls === "event") return c.name || "event";
@@ -237,6 +242,12 @@
     if (app.backStack.length > 30) app.backStack.shift();
     app.go("betting", { gameId: g.id, sport: g.sport, label: g.soccer ? g.home.name + " vs " + g.away.name : g.away.name + " at " + g.home.name });
   };
+  // A person on the Smart Money tab (member of Congress or 13F investor).
+  app.openPerson = function (p) {
+    app.backStack.push({ route: app.route, ctx: app.ctx[app.route] ? JSON.parse(JSON.stringify(app.ctx[app.route])) : null, scroll: window.scrollY, label: placeLabel(app.route) });
+    if (app.backStack.length > 30) app.backStack.shift();
+    app.go("smartmoney", { person: { kind: p.kind, key: p.key, name: p.name } });
+  };
   window.addEventListener("hashchange", () => { const r = location.hash.slice(1); if (ROUTES.some(x => x[0] === r) && r !== app.route) app.go(r, null, { fromNav: true }); });
   /* Live tickers belong to the page that started them. */
   const liveSet = new Set();
@@ -253,6 +264,7 @@
     metals: "M3 19h18l-2.5-6h-13zM7.5 13l1.8-5h5.4l1.8 5",
     cards: "M8 3h9a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM3 7v12a3 3 0 0 0 3 3h9M10 8h5M10 12h5",
     betting: "M3 7h18v3a2 2 0 0 0 0 4v3H3v-3a2 2 0 0 0 0-4zM14 7v2M14 11v2M14 15v2M7 11h4M7 14h3",
+    smartmoney: "M3 21h18M5 21v-9M9.5 21v-9M14.5 21v-9M19 21v-9M2.5 9.5L12 4l9.5 5.5zM12 4V2",
     portfolio: "M21 12A9 9 0 1 1 12 3v9zM15 3.5A9 9 0 0 1 20.5 9H15z",
     picks: "M12 3l1.9 4.8L18.7 9.7l-4.8 1.9L12 16.4l-1.9-4.8L5.3 9.7l4.8-1.9zM19 15l.8 2.2 2.2.8-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z",
     opportunities: "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1.1 1.3 1.1 2.2h5c0-.9.5-1.7 1.1-2.2A6 6 0 0 0 12 3z",

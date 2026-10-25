@@ -12,6 +12,7 @@ const T = __dirname, V = path.join(__dirname, "..", "vendor"), page_ = path.reso
   await ctx.route(/fonts\.(googleapis|gstatic)\.com/, r => r.fulfill({ body: "", contentType: "text/css" }));
   await ctx.addInitScript(() => { if (!localStorage.getItem("__mockdb")) localStorage.setItem("__mockdb", JSON.stringify([["data/users/u_test/md/settings/main", { displayCurrency: "USD", reportingCurrency: "USD", mode: "intermediate", dashboard: ["changes", "portfolio", "fx", "watch", "alerts", "catalysts", "data"], universe: ["SPY", "AAPL"] }]])); });
   await ctx.addInitScript({ path: path.join(T, "bet-fixtures.js") });
+  await ctx.addInitScript({ content: "window.__smartFixtures = " + JSON.stringify(Object.fromEntries(["capitol-pelosi-p1", "capitol-pelosi-p2", "dataroma-brk", "dataroma-brk-activity"].map(f => [f, require("fs").readFileSync(path.join(T, "real", f + ".md"), "utf8")]))) });
   await ctx.addInitScript({ path: path.join(T, "mock-runtime.js") });
   const p = await ctx.newPage();
   const errs = []; p.on("pageerror", e => errs.push(e.message));
@@ -19,8 +20,9 @@ const T = __dirname, V = path.join(__dirname, "..", "vendor"), page_ = path.reso
   await p.waitForTimeout(4000);
   const txt = await p.locator("body").innerText();
   const results = [
-    ["starts with settings saved by an older version", !/failed to start/i.test(txt) && await p.locator(".nav a").count() === 18],
+    ["starts with settings saved by an older version", !/failed to start/i.test(txt) && await p.locator(".nav a").count() === 19],
     ["older dashboard gains the Betting today card", /Betting today/i.test(txt)],
+    ["older dashboard gains the Smart Money card", /Smart Money/i.test(await p.locator("#content").innerText()) && /Open Smart Money/i.test(txt)],
     ["no uncaught errors", errs.length === 0]
   ];
   let fail = 0; for (const [n, ok] of results) { console.log((ok ? "PASS " : "FAIL ") + n); if (!ok) fail++; }

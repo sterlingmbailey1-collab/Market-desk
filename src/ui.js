@@ -158,7 +158,7 @@
     });
   }
   // Errors from a direct connector name that connector; everything else is fetched through Exa.
-  const CONNECTOR_NAMES = { cryptocom: "Crypto.com", alphavantage: "Alpha Vantage", cardchain: "CardChain AI", kartenankauf: "karten-ankauf.de", bigdata: "Bigdata.com", coinmarketcap: "CoinMarketCap", zacks: "Zacks Data", twelvedata: "Twelve Data" };
+  const CONNECTOR_NAMES = { cryptocom: "Crypto.com", alphavantage: "Alpha Vantage", cardchain: "CardChain AI", kartenankauf: "karten-ankauf.de", bigdata: "Bigdata.com", coinmarketcap: "CoinMarketCap", zacks: "Zacks Data", twelvedata: "Twelve Data", fmp: "FMP" };
   function errorText(e) {
     const direct = e && CONNECTOR_NAMES[e.provider], n = direct || "Exa";
     const map = { no_mcp: direct ? "This needs the " + n + " connector. Open this page on claude.ai with " + n + " connected." : "Live data needs the Exa connector. Open this page on claude.ai with Exa connected.", server_not_connected: n + " isn't connected. Add it in claude.ai Settings → Connectors, then reload.", needs_reauth: n + " needs to be reconnected in claude.ai Settings → Connectors.", not_in_manifest: n + " was turned off for this page. Turn it back on from the page's Permissions menu.", not_granted: n + " access was declined for this page. Allow it from the page's Permissions menu.", approval_required: "This needs your approval. Click Try again and allow " + n + ".", server_unavailable: (direct ? n : "The data service") + " didn't respond. Try again in a moment.", blocked_by_policy: "Your organization blocks the " + n + " connector for this page.", rate_limited: n + " says its usage limit has been reached. Try again later." };
