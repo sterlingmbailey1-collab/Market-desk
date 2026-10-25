@@ -45,7 +45,7 @@
     const hhi = items.reduce((a, it) => a + it.weight * it.weight, 0);
     const sorted = items.slice().sort((a, b) => b.weight - a.weight);
     const rf = Number(app.settings.assumptions.riskFreePct || 0) / 100;
-    return { R, total, items, live, series, corr, volPct: Math.sqrt(Math.max(varP, 0)) * 100, stats, sharpe: C.sharpe(vals, 252, rf), beta, effective: hhi > 0 ? 1 / hhi : 0, top: sorted[0], top3: sorted.slice(0, 3).reduce((a, it) => a + it.weight, 0), classes: new Set(items.map(it => it.cls)).size, constant: items.filter(it => !it.path), ret1y: vals.length > 1 ? (vals[vals.length - 1] / vals[0] - 1) * 100 : null };
+    return { R, total, items, live, series, corr, cov, volPct: Math.sqrt(Math.max(varP, 0)) * 100, stats, sharpe: C.sharpe(vals, 252, rf), beta, effective: hhi > 0 ? 1 / hhi : 0, top: sorted[0], top3: sorted.slice(0, 3).reduce((a, it) => a + it.weight, 0), classes: new Set(items.map(it => it.cls)).size, constant: items.filter(it => !it.path), ret1y: vals.length > 1 ? (vals[vals.length - 1] / vals[0] - 1) * 100 : null };
   }
 
   function heatmap(m) {
@@ -93,15 +93,23 @@
     const facts = { reportingCurrency: m.R, totalValue: Math.round(m.total), holdings: m.items.map(it => ({ symbol: it.symbol, name: it.name, class: it.cls, weightPct: +(it.weight * 100).toFixed(1), return1yPct: it.ret1y != null ? +it.ret1y.toFixed(1) : null, volatilityPct: it.volPct != null ? +it.volPct.toFixed(1) : null, shareOfRiskPct: it.riskShare != null ? +(it.riskShare * 100).toFixed(1) : null, hasPriceHistory: !!it.path })),
       portfolio: { return1yOfCurrentMixPct: m.ret1y != null ? +m.ret1y.toFixed(1) : null, volatilityPct: +m.volPct.toFixed(1), maxDrawdown1yPct: m.stats.maxDrawdownPct != null ? +m.stats.maxDrawdownPct.toFixed(1) : null, sharpe: isFinite(m.sharpe) ? +m.sharpe.toFixed(2) : null, betaVsSPY: m.beta ? +m.beta.beta.toFixed(2) : null, effectiveNumberOfHoldings: +m.effective.toFixed(1), largestPositionPct: +(m.top.weight * 100).toFixed(1), top3Pct: +(m.top3 * 100).toFixed(1), assetClasses: m.classes } };
     try {
-      const r = await s.json(`You are reviewing a personal investment portfolio for its owner. Use ONLY these measured figures (computed by the app from market data; returns are for today's holdings over the past year, not the owner's actual results):
+      const log = MD.ai.logBox(); out.replaceChildren(log);
+      const S = MD.ai.session((e) => log.add(e));
+      const lim = await s.limits().catch(() => null);
+      const tools = lim && lim.tools ? MD.ai.tools(app, S, ["search_news", "crypto_news", "zacks_view", "stock_snapshot", "smart_money", "compare_returns", "search_web"]) : undefined;
+      const r = await s.json(`You are reviewing a personal investment portfolio for its owner. The measured figures below were computed by the app from market data (returns are for today's holdings over the past year, not the owner's actual results):
 ${JSON.stringify(facts)}
-Be specific, plain and balanced. Do not invent prices, news or figures. Do not tell them to buy or sell; frame ideas as things to consider, with the trade-off.
-Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "strengths": ["..."], "risks": ["..."], "concentration": "1-2 sentences on concentration and diversification", "toConsider": [{"idea": "...", "tradeOff": "..."}], "watch": ["what to monitor"]}`, { modelTier: "default", cache: false });
+${tools ? "Investigate before writing, with 3 to 8 tool calls: search_news (or crypto_news) for the two or three largest or riskiest holdings, zacks_view for large stock positions, compare_returns against SPY, AGG and SGOV as baselines, smart_money where interesting. Cite only URLs the tools returned." : ""}
+Be specific, plain and balanced. Do not invent prices, news or figures. Do not tell them to buy or sell; frame ideas as things to consider, with the trade-off. Say what a stress in the market would do using the measured beta.
+Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "strengths": ["..."], "risks": ["..."], "concentration": "1-2 sentences on concentration and diversification", "toConsider": [{"idea": "...", "tradeOff": "..."}], "watch": ["what to monitor"], "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "complex" }, tools ? { tools } : { cache: false }));
+      const rv = await MD.ai.review(app, { task: "A balanced review of this portfolio", S, facts, items: [{ id: "review", headline: r.headline, summary: r.summary, risks: r.risks, toConsider: r.toConsider, confidence: r.confidence, sources: (r.sources || []).map(x => x.url) }] });
+      const rev = rv && rv.reviews[0], srcs = S.verify(r.sources);
+      const conf = MD.ai.blend([{ value: rev && rev.adjustedConfidence != null ? rev.adjustedConfidence : Number(r.confidence) || 0, weight: 0.7 }, { value: Math.min(100, srcs.filter(x => x.verified).length * 25 + 20), weight: 0.3 }]);
       const list = (t, a, cls) => Array.isArray(a) && a.length ? h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, t), h("ul", { class: "small " + (cls || ""), style: "margin:0;padding-left:1.1em;display:grid;gap:3px" }, a.map(x => h("li", {}, typeof x === "string" ? x : (x.idea + (x.tradeOff ? " — trade-off: " + x.tradeOff : "")))))) : null;
-      out.replaceChildren(h("div", { class: "review" }, h("strong", { class: "review-h" }, r.headline || "Portfolio review"), r.summary ? h("p", {}, r.summary) : null,
+      out.replaceChildren(log, h("div", { class: "review" }, h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("strong", { class: "review-h" }, r.headline || "Portfolio review"), h("span", { class: "small" }, "Confidence ", h("b", {}, String(conf)))), r.summary ? h("p", {}, r.summary) : null,
         h("div", { class: "grid g2" }, list("Strengths", r.strengths), list("Risks", r.risks)), r.concentration ? h("p", { class: "small" }, h("strong", {}, "Concentration: "), r.concentration) : null,
-        list("Worth considering", r.toConsider), list("What to watch", r.watch),
-        h("p", { class: "tiny muted" }, "Written by Claude from the figures above, " + new Date().toLocaleString() + ". Not financial advice; it can't see your goals, taxes or other accounts.")));
+        list("Worth considering", r.toConsider), list("What to watch", r.watch), MD.ai.reviewBadge(rev), MD.ai.sources(srcs),
+        h("p", { class: "tiny muted" }, "Written by Claude from the figures above and the sources it retrieved (" + S.calls + " research steps), then checked by a second review, " + new Date().toLocaleString() + ". Not financial advice; it can't see your goals, taxes or other accounts.")));
     } catch (e) { out.replaceChildren(U.errorBox({ message: ({ not_granted: "Claude access was declined for this page.", rate_limited: "Usage limit reached; try again later." })[e && e.code] || (e && e.message) || "The review failed." })); }
     btn.disabled = false;
   }
@@ -133,6 +141,8 @@ Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "
           h("div", { class: "stack" }, h("span", { class: "label" }, "How your holdings move together"), heatmap(m),
             h("p", { class: "tiny muted" }, "Correlation of daily moves over the past year: 1 means they move in lockstep, 0 unrelated, negative opposite. High numbers across the board mean less real diversification than the holding count suggests."))),
         h("div", { class: "stack" }, h("span", { class: "label" }, "Projected value"), projection(app, m)),
+        h("div", { class: "stack" }, h("span", { class: "label" }, "Stress test"), MD.rebalance.stress(app, m)),
+        h("div", { class: "stack" }, h("span", { class: "label" }, "Rebalancing helper"), MD.rebalance.section(app, m)),
         h("div", { class: "stack" }, h("div", { class: "row between" }, h("span", { class: "label" }, "Claude's review"), reviewBtn), reviewOut));
       const spy = m.beta && m.beta.spy, compare = [];
       if (spy && spy.points.length > 2) {

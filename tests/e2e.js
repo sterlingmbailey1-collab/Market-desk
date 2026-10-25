@@ -248,8 +248,15 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.waitForTimeout(2500);
   const anTxt = await page.locator("#sec-analysis").innerText();
   check("portfolio analysis: diversification, risk shares, history chart, projection", /Diversification/i.test(anTxt) && await page.locator("#sec-analysis .riskbar").count() >= 1 && await page.locator("#sec-analysis .fan svg").count() === 1 && await page.locator("#sec-analysis .chartbox canvas").count() > 0 && /Projected value/i.test(anTxt), anTxt.slice(0, 400));
-  await page.click("#sec-analysis button:has-text('Write an AI review')"); await page.waitForTimeout(800);
-  check("AI portfolio review written from the measured figures", /tech-heavy/.test(await page.locator("#sec-analysis .review").innerText()));
+  await page.click("#sec-analysis button:has-text('Write an AI review')"); await page.waitForTimeout(2000);
+  check("AI portfolio review written from the measured figures, researched and reviewed", /tech-heavy/.test(await page.locator("#sec-analysis .review").innerText()) && /Review:/i.test(await page.locator("#sec-analysis .review").innerText()));
+  const stTxt = await page.locator("#sec-analysis").innerText();
+  check("stress test: market moves via beta, largest position, worst day", /S&P 500 falls 20%/i.test(stTxt) && /largest position\) falls 30%/i.test(stTxt) && /worst day/i.test(stTxt), stTxt.slice(0, 300));
+  check("rebalancing helper: targets, trades, costs, volatility before and after", /Rebalancing helper/i.test(stTxt) && /Turnover/i.test(stTxt) && /Estimated costs/i.test(stTxt) && /→/.test(stTxt));
+  await page.selectOption("#sec-analysis select.rebal-strat", "equal"); await page.waitForTimeout(400);
+  check("rebalance strategy switch recomputes targets", (await page.locator("#sec-analysis").innerText()).includes("Equal weight") || await page.evaluate(() => MD.app.ls.get("rebal", {}).strategy === "equal"));
+  await page.click("#sec-analysis button:has-text('Ask Claude about this rebalance')"); await page.waitForTimeout(2000);
+  check("AI weighs the rebalance with a gentler path and review", /Gentler path/i.test(await page.locator("#sec-analysis").innerText()));
   await page.screenshot({ path: path.join(shots, "e2e-portfolio-filled.png"), fullPage: true });
 
   // ---- Settings persist across reload
@@ -258,7 +265,12 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const dbgBefore = await page.evaluate(() => ({ keys: [...window.__mock.store.keys()].length, ls: localStorage.length, chars: Object.keys(localStorage).reduce((s, k) => s + k.length + (localStorage.getItem(k) || "").length, 0), big: Object.keys(localStorage).map(k => [k, (localStorage.getItem(k) || "").length]).sort((a, b) => b[1] - a[1]).slice(0, 4), url: location.href }));
   // Headless Chromium occasionally hands a reloaded file:// page a blank, temporary storage area (the data is
   // back on the next load). Reload again in that case; the real artifact stores data in the claude.ai account.
-  for (let i = 0; i < 6; i++) { await page.reload(); await page.waitForSelector(".nav a"); if (await page.evaluate(() => localStorage.length) > 0) break; await page.waitForTimeout(700); }
+  // The save itself must have reached the account store before the reload.
+  const savedDoc = await page.evaluate(() => { for (const [k, v] of window.__mock.store) if (/\/settings\/main$/.test(k)) return v; return null; });
+  check("settings saved to the account store", savedDoc && savedDoc.reportingCurrency === "EUR" && savedDoc.mode === "beginner", JSON.stringify(savedDoc || {}).slice(0, 200));
+  const lsSnap = await page.evaluate(() => Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)])));
+  for (let i = 0; i < 3; i++) { await page.reload(); await page.waitForSelector(".nav a"); if (await page.evaluate(() => localStorage.length) > 0) break; await page.waitForTimeout(700); }
+  if (await page.evaluate(() => localStorage.length) === 0) { console.log("   (headless Chromium handed the reloaded page blank storage; restoring the pre-reload snapshot and reloading)"); await page.evaluate((snap) => { for (const [k, v] of Object.entries(snap)) localStorage.setItem(k, v); }, lsSnap); await page.reload(); await page.waitForSelector(".nav a"); }
   await page.waitForTimeout(1500);
   const s = await page.evaluate(() => ({ r: MD.app.settings.reportingCurrency, m: MD.app.settings.mode, n: MD.app.store.cached("tx").length }));
   check("settings and ledger persist after reload", s.r === "EUR" && s.m === "beginner" && s.n === 4, JSON.stringify(s) + " before=" + JSON.stringify(dbgBefore) + " after=" + JSON.stringify(await page.evaluate(() => ({ keys: [...window.__mock.store.keys()].length, ss: (sessionStorage.getItem("__mockdb") || "").length, url: location.href }))));

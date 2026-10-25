@@ -89,5 +89,19 @@ ok(near(M.project({ excessPct: 10, years: 1, n: 0, riskFreePct: 4 }).driftPct, 9
 const cons = M.consensus([{ name: "A", trades: [{ ticker: "AAA", issuer: "AAA Inc", traded: new Date().toISOString().slice(0, 10), type: "buy", size: M.sizeRange("1K–15K") }] }], [{ name: "B", holdings: [{ symbol: "AAA", name: "AAA Inc", activityKind: "Add" }, { symbol: "BBB", name: "B Co", activityKind: null }] }]);
 ok(cons.length === 1 && cons[0].people === 2 && cons[0].politicians[0] === "A" && cons[0].investors[0] === "B", "consensus counts politicians and investors");
 
+// rebalancing targets
+globalThis.MD.ui = globalThis.MD.ui || { h: () => null };
+require("../src/views-rebalance.js");
+const RB = MD.rebalance;
+const capW = RB.targets([{ weight: 0.6 }, { weight: 0.3 }, { weight: 0.1 }], "cap", { cap: 0.4 });
+ok(near(capW[0], 0.4) && near(capW[1], 0.4) && near(capW[2], 0.2) && near(capW.reduce((a, b) => a + b, 0), 1), "cap at 40%: excess shared in proportion until nothing is over the cap (" + capW.map(x => x.toFixed(3)).join(", ") + ")");
+const cap2 = RB.targets([{ weight: 0.5 }, { weight: 0.45 }, { weight: 0.05 }], "cap", { cap: 0.35 });
+ok(cap2.every(x => x <= 0.35 + 1e-9) && near(cap2.reduce((a, b) => a + b, 0), 1), "cap applies again when a share pushes another over (" + cap2.map(x => x.toFixed(3)).join(", ") + ")");
+ok(RB.targets([{ weight: 0.7 }, { weight: 0.3 }], "equal").every(x => near(x, 0.5)), "equal weight");
+const iv = RB.targets([{ weight: 0.5, volPct: 10 }, { weight: 0.3, volPct: 40 }, { weight: 0.2 }], "invvol");
+ok(near(iv[2], 0.2) && near(iv[0], 0.8 * 0.8) && near(iv[1], 0.8 * 0.2), "inverse volatility keeps unpriced holdings at their weight");
+const mm = { live: [{ symbol: "A" }, { symbol: "B" }], cov: [[0.04, 0], [0, 0.09]] };
+ok(near(RB.volOf(mm, new Map([["A", 0.5], ["B", 0.5]])), Math.sqrt(0.25 * 0.04 + 0.25 * 0.09) * 100), "portfolio volatility from covariance");
+
 console.log(fail ? fail + " failed" : "all passed");
 process.exit(fail ? 1 : 0);
