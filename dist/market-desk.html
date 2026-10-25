@@ -8753,6 +8753,49 @@ Reply with ONLY JSON:
     return P;
   }
 
+  /* ---------- earnings this week ---------- */
+  // Reports due in the next five sessions from the watchlist, holdings and the 100 largest US companies, each with the
+  // options-implied move into the report and the stock's average two-day reaction to its last four reports.
+  async function earningsWeek(app, max = 12) {
+    const days = []; let t = Date.now();
+    while (days.length < 5) { const p = Q.nyParts(new Date(t)); if (p.dow > 0 && p.dow < 6 && !Q.HOLIDAYS.has(p.ymd) && !days.includes(p.ymd)) days.push(p.ymd); t += 864e5; }
+    const [cal, big] = await Promise.all([Promise.all(days.map(x => D.calendar.earnings(x).catch(() => []))), D.stocks.screener(0, 100).catch(() => [])]);
+    const mine = new Set(app.store.cached("watch").map(w => w.symbol).concat((() => { try { return [...C.buildPositions(app.store.cached("tx")).positions.values()].filter(p => p.qty && p.qty.gt && p.qty.gt(0)).map(p => p.symbol); } catch { return []; } })()));
+    const bigMap = new Map(big.map(r => [r.symbol, r])), seen = new Set();
+    const rows = cal.flat().filter(e => (mine.has(e.symbol) || bigMap.has(e.symbol)) && !seen.has(e.symbol) && seen.add(e.symbol))
+      .map(e => ({ date: e.date, time: e.time, symbol: e.symbol, name: e.name, mine: mine.has(e.symbol), marketCap: (bigMap.get(e.symbol) || {}).marketCap || 0, epsForecast: e.epsForecast }))
+      .sort((a, b) => (b.mine - a.mine) || b.marketCap - a.marketCap).slice(0, max);
+    await Promise.all(rows.map(async (r, i) => { await new Promise(res => setTimeout(res, i * 150)); try { const m = await MD.earnings.measure(app, { id: "stock:" + r.symbol, cls: "stock", symbol: r.symbol, name: r.name }); Object.assign(r, { implied: m.implied, avgReaction: m.avgAbsReactionPct, beats: m.beats, past: m.past.length, lastSurprisePct: m.past[0] ? m.past[0].surprisePct : null, price: m.price }); } catch (e) { r.error = U.errorText(e); } }));
+    for (const r of rows) r.richness = r.implied && r.avgReaction ? r.implied.movePct / r.avgReaction : null;
+    return { days, rows };
+  }
+  function earningsWeekView(app) {
+    const box = h("div", { class: "stack" }), out = h("div", { class: "stack" }), ai = h("div", { class: "stack" });
+    let week = null;
+    const load = h("button", { class: "btn ghost", type: "button", onclick: () => U.async(out, () => earningsWeek(app), (w) => {
+      week = w;
+      out.append(w.rows.length ? U.table([{ t: "Day", v: (r) => r.date.slice(5) + (r.time ? " · " + r.time.replace(/pre market/i, "before open").replace(/after hours/i, "after close") : "") }, { t: "Company", v: (r) => h("span", { class: "stack", style: "gap:0" }, h("strong", {}, r.symbol + (r.mine ? " ★" : "")), h("span", { class: "tiny muted" }, String(r.name || "").slice(0, 28))) },
+        { t: "Options imply", v: (r) => r.implied ? "±" + r.implied.movePct.toFixed(1) + "%" : "—", n: true }, { t: "Past reactions", v: (r) => r.avgReaction != null ? "±" + r.avgReaction.toFixed(1) + "% avg" : "—", n: true },
+        { t: "Priced", v: (r) => r.richness == null ? "—" : h("span", { class: r.richness > 1.25 ? "warn-t" : r.richness < 0.8 ? "up" : "" }, r.richness > 1.25 ? "more than usual" : r.richness < 0.8 ? "less than usual" : "about usual") },
+        { t: "Beats", v: (r) => r.past ? r.beats + " of " + r.past : "—", n: true }], w.rows, { onRow: (r) => { app.ls.set("stockTab", "earnings"); app.openAsset({ id: "stock:" + r.symbol, cls: "stock", symbol: r.symbol, name: r.name }); } }) : h("div", { class: "empty" }, "No reports from your names or the largest companies in the next five sessions."),
+        h("p", { class: "tiny muted" }, "Reports " + w.days[0] + " to " + w.days[w.days.length - 1] + " (Nasdaq calendar). ★ = on your watchlist or held. Options imply = at-the-money straddle to the first expiry after the report; past reactions = average two-day move after the last four reports. Click a row for the stock's earnings tab."),
+        h("div", { class: "row", style: "gap:8px" }, aiBtn));
+    }, { loading: "Loading the calendar, then each company's options and past reactions…" }) }, "Load this week's reports");
+    const aiBtn = h("button", { class: "btn ghost sm", type: "button", disabled: !app.caps.sample, onclick: async () => {
+      if (!week) return; aiBtn.disabled = true; ai.replaceChildren(h("div", { class: "skeleton" }, "Reading the week…"));
+      try {
+        const r = await app.caps.sample.json(`These earnings reports are due this week. For an investor and short-term trader, say which reports matter most (their holdings and watchlist first, marked mine), where the options market prices a bigger or smaller move than the stock's own past reactions, and what to watch. Use only the measured data; do not invent figures.
+${MD.ai.contextNote(app)}
+Reports: ${JSON.stringify(week.rows.map(x => ({ symbol: x.symbol, day: x.date, time: x.time, mine: x.mine, optionsImpliedMovePct: x.implied ? +x.implied.movePct.toFixed(1) : null, avgPastReactionPct: x.avgReaction != null ? +x.avgReaction.toFixed(1) : null, beatsOfLast4: x.past ? x.beats : null, lastSurprisePct: x.lastSurprisePct })))}
+Reply with ONLY JSON: {"summary": "2-3 sentences", "mostImportant": [{"symbol": "...", "why": "..."}], "pricedRich": ["symbols where options price more than usual, with one reason each"], "pricedCheap": ["..."], "watch": ["..."]}`, { modelTier: "complex", cache: false });
+        ai.replaceChildren(h("div", { class: "aicard" }, h("p", {}, r.summary), (r.mostImportant || []).length ? MD.ai.list("Matter most", r.mostImportant.map(x => x.symbol + ": " + x.why)) : null, MD.ai.list("Options price more than usual", r.pricedRich), MD.ai.list("Options price less than usual", r.pricedCheap), MD.ai.list("Watch", r.watch), h("p", { class: "tiny muted" }, "Claude's read of the measured table; not advice.")));
+      } catch (e) { ai.replaceChildren(U.errorBox({ message: MD.ai.errText(e) })); }
+      aiBtn.disabled = false;
+    } }, "AI read of the week");
+    box.append(h("div", { class: "row", style: "gap:8px;align-items:center;flex-wrap:wrap" }, load, h("span", { class: "tiny muted" }, "About 4 data requests per company; up to 12 companies.")), out, ai);
+    return box;
+  }
+
   /* ---------- AI coach for the trade journal ---------- */
   async function coach(app, trades) {
     const s = app.caps.sample; if (!s) throw Object.assign(new Error("Claude isn't available in this view."), { code: "no_sample" });
@@ -8795,6 +8838,7 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
     paintScan(status);
 
     root.append(U.section("Watch board", boardView(app, (a) => load(a))));
+    root.append(U.section("Earnings this week", earningsWeekView(app)));
 
     // Desk
     const input = h("input", { type: "text", placeholder: "Ticker or coin (e.g. NVDA, SPY, BTC)", "aria-label": "Symbol", style: "max-width:240px" });
@@ -8943,7 +8987,7 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
     return box;
   }
 
-  MD.day = { levels, forAI, plan, coach, probBar, SETUPS };
+  MD.day = { earningsWeek, levels, forAI, plan, coach, probBar, SETUPS };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
