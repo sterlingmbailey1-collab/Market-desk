@@ -1,5 +1,21 @@
 # Changelog
 
+## Version 16 (2026-10-25)
+- **Day trading: setup signals.** The desk measures setups as they happen (opening-range breakout/breakdown, VWAP
+  reclaim/rejection, holding above or below VWAP, stretched from VWAP, at the day's high/low, beyond the prior day's
+  or pre-market range, gap holding/filling/filled, heavy or light volume) with the time each began; the AI plan sees
+  them too.
+- **Watch board.** Several symbols at once (price, change, gap, position in the day's range, relative volume,
+  signals), refreshed every minute while US markets trade, with a notice when a new setup appears.
+- **One-click level alerts** on every key level of the day-trade desk.
+- **Portfolio macro sensitivity.** Each holding's sensitivity to the market, its sector, long Treasuries, the dollar,
+  oil, gold and bitcoin, weighted into the portfolio's betas, with scenario estimates in money ("stocks fall 10%",
+  "long yields jump", "risk-off day", …), your own scenario, and the asset-specific risk left over. The AI portfolio
+  review sees these exposures.
+- **Recommendations:** re-check a pick (updated odds and whether the thesis holds, with sources; the logged call is
+  not changed) and set alerts at a pick's upside target and downside level in one click.
+- **Fix:** a second price alert on the same asset no longer replaces the first.
+
 ## Version 15 (2026-10-25)
 - **Testable playbook.** Market Brain patterns now carry a rule over daily moves (e.g. "TLT below −1% → XLK minus SPY
   below 0% the same day"). Every rule is backtested on a year of daily closes (how often the effect followed the cause
