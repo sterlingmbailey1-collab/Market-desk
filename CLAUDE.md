@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 19; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 20; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading and a Sports Betting tab.
@@ -65,7 +65,7 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   extra tools are in `src/views-ai.js` (`advisorTools`). Everything newer uses the shared kit in `src/ai-kit.js`
   (`MD.ai`): `session()` (log, sources, citation checks), `tools(app, S, names)` (search_news, search_web,
   read_page, crypto_news, stock_snapshot, zacks_view, options_move, smart_money, price_range, my_portfolio,
-  track_record, compare_returns), `review()` (a skeptical second pass that keeps/revises/drops each draft item
+  track_record, compare_returns, portfolio_fit, open_calls and the quant tools), `review()` (a skeptical second pass that keeps/revises/drops each draft item
   against the measured data and retrieved sources), `trackRecord()`/`calibrationNote()` (forecast-journal
   hit rates fed back into prompts) and `blend()` (confidence from Claude, the review, signals and evidence).
   The page computes every number; Claude reasons over tool results. Citations are checked against URLs
@@ -75,12 +75,15 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   (`ailessons`); `trackRecord()` attaches the latest lessons, filtered by feature, so `calibrationNote()` carries
   them into every forecasting prompt. Collections added in v10–v19: follows, smcache, smai, ideas, aitakes, briefs,
   proppicks, ailessons, marketdays, brain (the playbook doc), dayplans, daytrades, pickhide, marketcalls, pickchecks, decisions,
-  callwatch (one doc per open-call notice, id `<forecastId>:<against|working>`).
+  callwatch (one doc per open-call notice, id `<forecastId>:<against|working>`), weekly (Market Brain weekly reviews,
+  `MD.brain.weeklyReview`, keyed by the week's Monday; lessons reach every prompt through `MD.brain.note`).
   `MD.ai.assetNote(app, asset)` = the desk's past calls on one asset (add it to any asset-specific prompt).
   `MD.ai.blendFor(app, source)` = learned Claude/history weights (inverse Brier, 10+ graded calls); `MD.ai.statusCard` is the
   dashboard's "What the AI is tracking" card (widget id `aistatus`); `MD.ai.openCalls/monitorCalls` price open calls
   (`MD.quant.callStanding`). `MD.quant.riskGuard` = day-trade daily limits; `MD.quant.tradePreview` + `MD.rebalance.buyCard`
-  = the "If you buy" section on asset pages.
+  = the "If you buy" section on asset pages (`MD.rebalance.previewBuy` is shared with AI decisions' portfolio fit and the
+  `portfolio_fit` tool). Technical alerts: `MD.quant.techState/evaluateTechAlert` (kinds xma50, xma200, rsi_above, rsi_below,
+  high52, low52).
   `D.historyCached(asset, tf)` caches daily histories for 6 h in localStorage (size-capped); use it for analysis, not charts.
   Playbook patterns may carry `rule` (MD.quant.cleanRule shape) and `backtest`; same-day rules are scored by the page
   (`testSrc[date] = "measured"`). `MD.ai.calibrateUp(app, source, upPct)` corrects probabilities once a source has

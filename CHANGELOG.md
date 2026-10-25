@@ -1,5 +1,21 @@
 # Changelog
 
+## Version 20 (2026-10-25)
+- **AI weekly review** (Market Brain). Claude looks back at the week: why the market moved (cause → effect, with
+  evidence), what the desk's graded calls got right and wrong, lessons for next week, and next week's events
+  (earnings for your holdings and watchlist, the economic calendar). It is written automatically on the weekend once
+  you've studied a session, and its lessons and calendar reach every AI on the desk.
+- **Portfolio-aware AI decisions.** Before deciding, the desk measures what a position at your maximum size would have
+  done to your portfolio (correlation, volatility, worst drop) and Claude weighs diversification against
+  concentration. The decision card shows the fit.
+- **Technical alerts**: crosses of the 50- and 200-day averages, RSI(14) at a threshold, new 52-week highs and lows.
+  Each is measured from daily closes plus the live price and fires once per event.
+- **How the desk's AI decides** (scorecard): the steps behind every probability (measure, research, context, review,
+  blend, calibrate, grade, learn) with their live state. Per feature, it shows graded calls, how much the odds lean on
+  Claude versus history, and whether calibration has started.
+- **New AI tools** for Ask AI and the Advisor: `portfolio_fit` (what buying a symbol would do to your portfolio) for
+  buying questions, and `open_calls` (where the desk's open calls stand) for questions about its calls.
+
 ## Version 19 (2026-10-25)
 - **Open-call monitor.** Every open AI call (recommendations, quick takes, AI decisions, research) priced now: the
   move since the call and the chance it still finishes on its side by the due date, from the asset's own volatility
