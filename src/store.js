@@ -6,7 +6,7 @@
 (function (G) {
   const MD = (G.MD = G.MD || {});
   const APPEND_ONLY = new Set(["tx", "forecasts", "evals", "reports", "picks", "betpicks", "betgrades"]);
-  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas"];
+  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas", "aitakes", "briefs"];
   const newId = () => Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
   const clone = (o) => JSON.parse(JSON.stringify(o));
 

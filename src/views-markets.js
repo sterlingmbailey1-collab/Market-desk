@@ -125,7 +125,7 @@
       actions.replaceChildren(X.actionBar(asset, () => quote, () => panel && panel.series));
     });
     const priceSec = U.section("Price", panel.el); priceSec.id = "sec-price";
-    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.insights.panel(a, { currency: "USD", analysts: true }));
+    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, a), MD.insights.panel(a, { currency: "USD", analysts: true }));
     const tab = app.ls.get("stockTab", "summary");
     const renderTab = (k) => {
       app.ls.set("stockTab", k);
@@ -172,7 +172,7 @@
       });
       const news = h("div", {});
       const priceSec = U.section("Price (USD)", panel.el), newsSec = U.section("Latest news · CoinMarketCap", news); priceSec.id = "sec-price"; newsSec.id = "sec-news";
-      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
+      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, Object.assign({}, a, { cls: "crypto" })), U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
       U.async(news, () => D.cmc.news(a.symbol, 8), (r) => {
         news.append(X.newsList(r.items, { empty: "CoinMarketCap returned no recent news for " + a.symbol + "." }),
           r.upcoming.length ? h("details", {}, h("summary", { class: "small" }, r.upcoming.length + " event or prediction page" + (r.upcoming.length > 1 ? "s" : "") + " with future dates"), X.newsList(r.upcoming, { clip: 200 })) : null,

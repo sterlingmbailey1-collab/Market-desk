@@ -448,6 +448,17 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.click("button:has-text('Watch')"); await page.waitForTimeout(400);
   check("add an idea to the watchlist", await page.evaluate(() => MD.app.store.cached("watch").some(w => w.symbol === "NVDA" || w.symbol === "SMH" || w.symbol === "BE")));
 
+  // ---- AI quick take on an asset page, and the dashboard morning brief
+  await page.evaluate(() => MD.app.openAsset({ id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple Inc." })); await page.waitForTimeout(2500);
+  await page.click("#sec-ai button:has-text('Get AI quick take')"); await page.waitForTimeout(3500);
+  const takeTxt = await page.locator("#sec-ai").innerText();
+  check("AI quick take: stance, leans, both sides, measured levels, review", /Constructive, but stretched/i.test(takeTxt) && /3M lean/i.test(takeTxt) && /Working against it/i.test(takeTxt) && /200-day average/i.test(takeTxt) && /Review:/i.test(takeTxt), takeTxt.slice(0, 500));
+  check("AI quick take saved and its 3-month lean journaled", await page.evaluate(() => MD.app.store.cached("aitakes").some(d => d.id === "stock_AAPL") && MD.app.store.cached("forecasts").some(f => f.source === "ai-take" && f.symbol === "AAPL" && f.direction === "up")));
+  await page.evaluate(() => MD.app.go("dashboard", null, { fromNav: true })); await page.waitForTimeout(1500);
+  await page.click("button:has-text(\"Write today's brief\")"); await page.waitForTimeout(3000);
+  const briefTxt = await page.locator("#content").innerText();
+  check("AI morning brief on the dashboard", /Quiet open; your tech holdings lead/i.test(briefTxt) && await page.evaluate(() => MD.app.store.cached("briefs").length === 1), briefTxt.slice(0, 300));
+
   // ---- Smart Money
   const navOrder = await page.evaluate(() => [...document.querySelectorAll(".nav a")].map(a => a.getAttribute("href")));
   check("Smart Money sits right above Portfolio", navOrder.indexOf("#smartmoney") === navOrder.indexOf("#portfolio") - 1, navOrder.join(","));
@@ -498,8 +509,10 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("Shift+Enter adds a line instead of sending", await page.evaluate(() => window.__mock.samplePrompts.length) === before && /\n/.test(await page.locator("textarea").inputValue()));
   await page.keyboard.press("Enter"); await page.waitForTimeout(800);
   check("Enter sends the advisor message", await page.evaluate(() => window.__mock.samplePrompts.length) > before && (await page.locator("textarea").inputValue()) === "");
+  await page.click("button:has-text('Double-check this answer')"); await page.waitForTimeout(1200);
+  check("advisor answers can be double-checked by an independent review", /Review: holds up/i.test(await page.locator("#content").innerText()));
   const adv = await page.evaluate(() => ({ names: window.__mock.advisorTools || [], res: window.__mock.advisorResults || {} }));
-  check("advisor has investing and betting tools", ["get_technicals", "project_price", "zacks_view", "analyze_portfolio", "get_betting_odds", "bet_math", "get_my_bets", "search_news"].every(n => adv.names.includes(n)) && adv.names.length <= 20, adv.names.join(","));
+  check("advisor has investing and betting tools", ["get_technicals", "project_price", "zacks_view", "analyze_portfolio", "get_betting_odds", "bet_math", "get_my_bets", "search_news", "smart_money", "options_move", "track_record"].every(n => adv.names.includes(n)) && adv.names.length <= 20, adv.names.join(","));
   check("advisor tool: technicals and price range computed by the app", adv.res.get_technicals && adv.res.get_technicals.technicals && adv.res.get_technicals.technicals.rsi14 != null && adv.res.project_price && adv.res.project_price.percentiles && adv.res.project_price.chanceTouchPct != null, JSON.stringify(adv.res.project_price || {}).slice(0, 200));
   check("advisor tool: odds lookup filtered to a team", adv.res.get_betting_odds && adv.res.get_betting_odds.games.length === 1 && /Dolphins/.test(adv.res.get_betting_odds.games[0].game) && adv.res.get_betting_odds.games[0].markets.ml.fairPct, JSON.stringify(adv.res.get_betting_odds || {}).slice(0, 200));
   check("advisor tool: exact bet maths (+250 on $40)", adv.res.bet_math && adv.res.bet_math.decimal === 3.5 && adv.res.bet_math.profitIfWin === 100 && adv.res.bet_math.impliedPct === 28.57 && adv.res.bet_math.edgePct === 5, JSON.stringify(adv.res.bet_math || {}));

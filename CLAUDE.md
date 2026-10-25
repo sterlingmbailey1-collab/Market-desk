@@ -1,9 +1,10 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 8).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 10).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
-with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, and a Sports Betting tab.
+with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
+AI idea finder), Smart Money (Congress trades and 13F superinvestors) and a Sports Betting tab.
 
 ## Build, test, publish
 
@@ -12,6 +13,7 @@ node build.js dist/market-desk.html   # bundles src/* into one page (order is in
 node tests/run.js                     # unit tests for core.js + odds.js (also run in-app: Settings → Self-test)
 node tests/bet.js                     # betting parsers and analysis against tests/bet-fixtures.js
 node tests/real.js                    # parsers against real captured page text in tests/real/
+node tests/smart.js                   # Smart Money parsers (real Capitol Trades / Dataroma pages) and return maths
 node tests/e2e.js dist/market-desk.html shots   # Playwright, mocked claude.ai runtime (tests/mock-runtime.js)
 node tests/upgrade.js dist/market-desk.html     # opens the page with settings saved by an older version
 ```
@@ -39,7 +41,8 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   {"server": "CoinMarketCap", "tools": ["search_cryptos", "get_crypto_latest_news"]},
   {"server": "Zacks Data", "tools": ["get_zacks_metrics", "get_wall_st_rating"]},
   {"server": "Twelve Data", "tools": ["get_time_series"]},
-  {"server": "Statz", "tools": ["get_upcoming_fixtures", "get_match_leaders"]}]}}
+  {"server": "Statz", "tools": ["get_upcoming_fixtures", "get_match_leaders"]},
+  {"server": "FMP", "tools": ["senate"]}]}}
 ```
 
 ## How the page works
@@ -57,9 +60,15 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 - **Storage:** `src/store.js` keeps collections under the viewer's private `data/users/<id>/md/...` in the
   artifact db (browser localStorage when signed out; memory in demo mode). Append-only collections:
   tx, forecasts, evals, reports, picks. Add new collections to `COLLECTIONS`.
-- **AI:** `app.caps.sample` (Claude). Research tools live in `src/research.js` (`makeTools`); the AI Advisor's
-  extra tools are in `src/views-ai.js` (`advisorTools`). The page computes every number; Claude reasons
-  over tool results. Citations are checked against URLs actually retrieved.
+- **AI:** `app.caps.sample` (Claude). Deep Research tools live in `src/research.js` (`makeTools`); the AI Advisor's
+  extra tools are in `src/views-ai.js` (`advisorTools`). Everything newer uses the shared kit in `src/ai-kit.js`
+  (`MD.ai`): `session()` (log, sources, citation checks), `tools(app, S, names)` (search_news, search_web,
+  read_page, crypto_news, stock_snapshot, zacks_view, options_move, smart_money, price_range, my_portfolio,
+  track_record, compare_returns), `review()` (a skeptical second pass that keeps/revises/drops each draft item
+  against the measured data and retrieved sources), `trackRecord()`/`calibrationNote()` (forecast-journal
+  hit rates fed back into prompts) and `blend()` (confidence from Claude, the review, signals and evidence).
+  The page computes every number; Claude reasons over tool results. Citations are checked against URLs
+  actually retrieved. AI quick takes log their 3-month lean in the forecast journal (source `ai-take`).
 
 ## Source map (src/)
 
@@ -76,6 +85,11 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 | app.js | Shell: routes/nav/icons, settings, back-stack navigation, `openAsset`, `openGame` |
 | views-*.js | Pages (markets, cards, insights, decide, portfolio analysis, picks, betting, AI) |
 | research.js | Deep Research engine |
+| ai-kit.js | Shared AI kit: tools, review pass, track-record calibration, confidence blending, UI helpers |
+| views-opps-ai.js | Opportunities AI: scan review, comparison scorecard, AI idea finder (tickers verified by the app) |
+| ai-take.js | AI quick take on stock/crypto pages; AI morning brief on the dashboard |
+| smartmoney.js | Smart Money data: Capitol Trades / Dataroma / FMP parsers, trade returns vs SPY, copy-trade backtest, projection model |
+| views-smartmoney.js | Smart Money tab: leaderboard, member and investor pages, most bought, latest filings, follows |
 | template.html | CSS (theme tokens, light/dark) and the page skeleton |
 
 ## Rules this project follows (from the owner's build prompt)
@@ -96,9 +110,12 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   logs (`espn.com/nba/player/gamelog/_/id/<id>/<slug>`) read cleanly.
 - ESPN (used): `espn.com/{nfl|nba|wnba|mlb|nhl}/injuries`, `espn.com/{league}/scoreboard[/_/date/YYYYMMDD]`,
   `espn.com/soccer/scoreboard/_/league/{eng.1|esp.1|ita.1|ger.1|fra.1}` (soccer lists teams without home/away).
-- Smart Money sources (verified, not yet used): FMP `senate` (senate/house latest, by name, by symbol),
-  Alpha Vantage `CONGRESS_TRADES`/`POLITICIAN_METADATA`, Dataroma superinvestor pages
-  (`dataroma.com/m/holdings.php?m=BRK`, `m_activity.php?m=BRK&typ=a`). FMP `form13F` needs a higher FMP plan.
+- Smart Money (used): Capitol Trades member pages `capitoltrades.com/politicians/<bioguide>[?page=N]` (15 trades a
+  page; later pages are separate crawls with a squashed header; site keeps 3 years), Dataroma
+  `dataroma.com/m/holdings.php?m=CODE` and `m_activity.php?m=CODE&typ=a` (codes BRK, psc, ic, BAUPOST, AM, HC, FS,
+  GFT, TGM, LMM; SAM, oaktree, DJCO don't exist), FMP `senate` house-latest/senate-latest (by-name, by-symbol and
+  `page` are gated on the owner's plan; `form13F` needs a higher plan). Alpha Vantage `CONGRESS_TRADES` works but the
+  free key allows 25 requests a day. Capitol Trades `/trades?politician=ID` has a Price column but it's mostly N/A.
 - Soccer odds: `sportsline.com/{epl|la-liga|serie-a|bundesliga|ligue-1}/odds/{money-line/|over-under/|}`
   (no draw column; one unlabelled book column is dropped).
 - Kalshi: `api.elections.kalshi.com/trade-api/v2/events?series_ticker=KX{EPL|LALIGA|SERIEA|BUNDESLIGA|LIGUE1}GAME&status=open&with_nested_markets=true`
@@ -108,12 +125,10 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 
 ## Roadmap (owner-approved order)
 
-1. Done (v8): AI game forecasts + slate forecasts with confidence, AI picks and ready-made slips, AI track record,
-   betting assistant, streamlined betting layout (league buttons, rows, side slip with round robin), ESPN injuries
-   and records, price alerts, loss limits, settle-from-final-score, dashboard betting card.
-2. Smart Money tab: Congress trades (FMP + Alpha Vantage), superinvestor portfolios (Dataroma), news
-   (Bigdata.com), performance since trade/disclosure vs SPY, copy-trade backtest, projected ranges.
+1. Done (v8–v9): betting AI forecasts, slips, assistant, layout; start-up fix for frozen documents.
+2. Done (v10): Smart Money tab; deeper AI for Recommendations and Opportunities (tools, review pass, calibration,
+   confidence breakdown, idea finder); AI quick take on asset pages; AI morning brief; advisor double-check.
 3. Player props: NBA points and NFL anytime TD by book, ESPN game logs, matchup, probability model, AI notes;
    soccer goalscorers via Statz.
 4. Investing upgrades: signal scorecard, earnings preview, watchlist scanner, rebalancing helper, dividends,
-   insider activity, AI morning brief, confidence across AI features.
+   insider activity.

@@ -3522,7 +3522,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
 (function (G) {
   const MD = (G.MD = G.MD || {});
   const APPEND_ONLY = new Set(["tx", "forecasts", "evals", "reports", "picks", "betpicks", "betgrades"]);
-  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas"];
+  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas", "aitakes", "briefs"];
   const newId = () => Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
   const clone = (o) => JSON.parse(JSON.stringify(o));
 
@@ -3969,7 +3969,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     quiet: { enabled: false, start: "22:00", end: "07:00" }, notify: { toasts: true, minMateriality: 1 },
     assumptions: { stockExitPct: 0.05, cryptoExitPct: 0.5, metalSpreadPct: 3, cardFeePct: 13, cardShipping: 5, fxSpreadMajorPct: 0.1, fxSpreadOtherPct: 1, riskFreePct: 4, inflationPct: 2.5 },
     betting: { oddsFormat: "american", bankroll: 1000, unit: 10, kelly: 0.25, minEdge: 1 },
-    customCurrencies: [], dashboard: ["changes", "portfolio", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
+    customCurrencies: [], dashboard: ["brief", "changes", "portfolio", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
   };
   const ls = { get(k, d) { try { const v = localStorage.getItem("mdp." + k); return v ? JSON.parse(v) : d; } catch { return d; } }, set(k, v) { try { localStorage.setItem("mdp." + k, JSON.stringify(v)); } catch {} } };
 
@@ -3988,9 +3988,9 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     app.settings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), s || {});
     for (const k of ["quiet", "notify", "assumptions", "betting"]) app.settings[k] = Object.assign({}, DEFAULT_SETTINGS[k], (s || {})[k] || {});
     // Dashboards saved before a card existed get it once, before Data health.
-    for (const card of ["betting", "smart"]) {
+    for (const card of ["betting", "smart", "brief"]) {
       if (app.settings.dashSeen && app.settings.dashSeen.includes(card)) continue;
-      if (!app.settings.dashboard.includes(card)) { const i = app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
+      if (!app.settings.dashboard.includes(card)) { const i = card === "brief" ? 0 : app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
       app.settings.dashSeen = (app.settings.dashSeen || []).concat(card);
     }
     applySettings();
@@ -5550,7 +5550,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       actions.replaceChildren(X.actionBar(asset, () => quote, () => panel && panel.series));
     });
     const priceSec = U.section("Price", panel.el); priceSec.id = "sec-price";
-    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.insights.panel(a, { currency: "USD", analysts: true }));
+    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, a), MD.insights.panel(a, { currency: "USD", analysts: true }));
     const tab = app.ls.get("stockTab", "summary");
     const renderTab = (k) => {
       app.ls.set("stockTab", k);
@@ -5597,7 +5597,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       });
       const news = h("div", {});
       const priceSec = U.section("Price (USD)", panel.el), newsSec = U.section("Latest news · CoinMarketCap", news); priceSec.id = "sec-price"; newsSec.id = "sec-news";
-      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
+      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, Object.assign({}, a, { cls: "crypto" })), U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
       U.async(news, () => D.cmc.news(a.symbol, 8), (r) => {
         news.append(X.newsList(r.items, { empty: "CoinMarketCap returned no recent news for " + a.symbol + "." }),
           r.upcoming.length ? h("details", {}, h("summary", { class: "small" }, r.upcoming.length + " event or prediction page" + (r.upcoming.length > 1 ? "s" : "") + " with future dates"), X.newsList(r.upcoming, { clip: 200 })) : null,
@@ -6120,7 +6120,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
   }
 
   /* ================= Dashboard ================= */
-  const WIDGETS = { changes: "What changed today", portfolio: "Portfolio", fx: "Currency exposure", watch: "Watchlist", alerts: "Alerts & inbox", catalysts: "Upcoming catalysts", smart: "Smart Money", betting: "Betting today", data: "Data health" };
+  const WIDGETS = { brief: "AI morning brief", changes: "What changed today", portfolio: "Portfolio", fx: "Currency exposure", watch: "Watchlist", alerts: "Alerts & inbox", catalysts: "Upcoming catalysts", smart: "Smart Money", betting: "Betting today", data: "Data health" };
   V.dashboard = function (root, app) {
     const R = app.settings.reportingCurrency;
     root.append(head("Dashboard", new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) + " · reporting in " + R, [h("button", { class: "btn ghost sm", type: "button", onclick: () => customize(app) }, "Customize")]));
@@ -6134,7 +6134,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       const sec = U.section(WIDGETS[w] || w, box);
       if (w === "changes") sec.style.gridColumn = "1 / -1";
       grid.append(sec);
-      ({ changes: wChanges, portfolio: wPortfolio, fx: wFx, watch: wWatch, alerts: wAlerts, catalysts: wCatalysts, smart: (b) => MD.smartView.dashboardCard(b, app), betting: (b) => MD.betting.dashboardCard(b, app), data: wData }[w] || (() => {}))(box, app, pvP, R, sec);
+      ({ changes: wChanges, portfolio: wPortfolio, fx: wFx, watch: wWatch, alerts: wAlerts, catalysts: wCatalysts, smart: (b) => MD.smartView.dashboardCard(b, app), brief: (b) => MD.aiTake.brief(b, app), betting: (b) => MD.betting.dashboardCard(b, app), data: wData }[w] || (() => {}))(box, app, pvP, R, sec);
     }
     return app.on("explainToday", () => { const b = root.querySelector("[data-explain]"); if (b) b.click(); });
   };
@@ -6877,6 +6877,9 @@ Reply with ONLY JSON: {"strongestCounter": "...", "pricedIn": "...", "fragileAss
     my_portfolio: { description: "The user's current holdings in their reporting currency: each holding's weight, class, currency and gain since purchase, plus the watchlist.", props: {}, req: [],
       label: () => "Your portfolio",
       async run(app) { const pv = await app.valuePortfolio(); const total = Number(pv.totals.valueR) || 0; return rnd({ reportingCurrency: pv.R, totalValue: total, holdings: pv.rows.filter(r => r.p.qty.gt(0)).map(r => ({ symbol: r.p.symbol, name: r.p.name, class: r.p.assetClass, weightPct: total ? Number(r.v.valueR || 0) / total * 100 : null, gainPct: r.v.pnlPctN != null ? Number(r.v.pnlPctN) : null })), watchlist: app.store.cached("watch").map(w => w.symbol).slice(0, 30), demo: !!app.demo }); } },
+    track_record: { description: "How the app's own past AI calls turned out, from the forecast journal: Recommendations picks and AI quick takes, each with the number scored, hit rate, Brier score and hit rate by stated probability. Use it to calibrate how confident to be.", props: {}, req: [],
+      label: () => "AI track record",
+      async run(app) { return rnd({ recommendations: trackRecord(app, "ai-picks"), quickTakes: trackRecord(app, "ai-take"), allForecasts: trackRecord(app) }); } },
     compare_returns: { description: "Measured 1-year return, volatility, max drawdown and Sharpe ratio for up to 5 tickers or coins side by side (e.g. against SPY or SGOV as baselines).", props: { symbols: { type: "array", items: { type: "string" } } }, req: ["symbols"],
       label: (i) => "Compare " + (i.symbols || []).join(", "),
       async run(app, S, i) { const syms = (Array.isArray(i.symbols) ? i.symbols : []).slice(0, 5).map(String); return Promise.all(syms.map(async (s) => { try { const a = await findAsset(s); const hs = await D.historyFor(a, "1Y"); const st = C.seriesStats(hs.points, hs.ppy || 252); return rnd({ symbol: a.symbol, returnPct: st.changePct, volPct: st.volPct, maxDrawdownPct: st.maxDrawdownPct, sharpe: st.sharpe }); } catch (e) { return { symbol: s, error: U.errorText(e) }; } })); } }
@@ -6894,7 +6897,7 @@ Reply with ONLY JSON: {"strongestCounter": "...", "pricedIn": "...", "fragileAss
   // How past calls from one source turned out, bucketed by the probability Claude stated.
   function trackRecord(app, source) {
     const fcs = app.store.cached("forecasts").filter(f => !source || f.source === source), evals = app.store.cached("evals");
-    const scored = fcs.map(f => { const e = evals.find(v => v.forecastId === f.id); return e ? { p: Number(f.probability) || 0.5, hit: !!e.hit } : null; }).filter(Boolean);
+    const scored = fcs.map(f => { const e = evals.find(v => v.forecastId === f.id); return e ? { p: Number(f.probability) || 0.5, hit: !!e.directionHit } : null; }).filter(Boolean);
     const buckets = [[0.5, 0.6], [0.6, 0.7], [0.7, 1.01]].map(([lo, hi]) => { const xs = scored.filter(x => x.p >= lo && x.p < hi); return { range: Math.round(lo * 100) + "–" + Math.min(100, Math.round(hi * 100)) + "%", n: xs.length, hitPct: xs.length ? xs.filter(x => x.hit).length / xs.length * 100 : null }; });
     const n = scored.length, hits = scored.filter(x => x.hit).length;
     const brier = n ? scored.reduce((s, x) => s + Math.pow(x.p - (x.hit ? 1 : 0), 2), 0) / n : null;
@@ -6910,7 +6913,7 @@ Reply with ONLY JSON: {"strongestCounter": "...", "pricedIn": "...", "fragileAss
      actually retrieved: unsupported claims, ignored risks, overconfidence. Returns per-item verdicts. */
   async function review(app, { task, items, facts, S, signal }) {
     const s = app.caps.sample; if (!s || !items.length) return null;
-    S.step("run", "Independent review of " + items.length + " item" + (items.length > 1 ? "s" : ""));
+    const st = S.step("run", "Independent review of " + items.length + " item" + (items.length > 1 ? "s" : ""));
     const prompt = `You are a skeptical independent reviewer checking an analyst's draft before an investor sees it. Task the draft answers: ${task}
 Check each item ONLY against the measured data and the list of sources that were actually retrieved. Flag: claims not supported by the data or sources, figures that contradict the measured data, risks ignored, confidence that is too high for the evidence, and anything that reads like advice to act. Be concrete. Keep items that hold up.
 Measured data: ${JSON.stringify(facts).slice(0, 60000)}
@@ -6920,9 +6923,9 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
     try {
       const r = await s.json(prompt, { modelTier: "complex", signal, cache: false });
       const reviews = (Array.isArray(r.reviews) ? r.reviews : []).filter(x => x && x.id != null).map(x => ({ id: String(x.id), verdict: ["keep", "revise", "drop"].includes(x.verdict) ? x.verdict : "keep", issues: (x.issues || []).slice(0, 4).map(String), adjustedConfidence: x.adjustedConfidence == null ? null : Math.max(0, Math.min(100, Number(x.adjustedConfidence) || 0)), note: String(x.note || "") }));
-      S.step("ok", "Review: " + reviews.filter(x => x.verdict === "keep").length + " kept, " + reviews.filter(x => x.verdict === "revise").length + " revised, " + reviews.filter(x => x.verdict === "drop").length + " dropped");
+      S.done(st, "ok", " → " + reviews.filter(x => x.verdict === "keep").length + " kept, " + reviews.filter(x => x.verdict === "revise").length + " revised, " + reviews.filter(x => x.verdict === "drop").length + " dropped");
       return { reviews, overall: String(r.overall || "") };
-    } catch (e) { if (e && e.code === "cancelled") throw e; S.step("fail", "Review didn't complete; showing the draft unreviewed"); return null; }
+    } catch (e) { if (e && e.code === "cancelled") throw e; S.done(st, "fail", " → didn't complete; showing the draft unreviewed"); return null; }
   }
 
   /* Overall confidence from parts (0–100 each) with weights; parts missing are skipped. */
@@ -7103,9 +7106,9 @@ Reply with ONLY JSON: {"summary": "2-3 sentences on the theme and how to approac
       const res = await app.caps.sample.json(prompt, Object.assign({ modelTier: "complex", signal }, tools ? { tools } : { cache: false }));
       let ideas = (res.ideas || []).filter(x => x && x.symbol).slice(0, Number(n.value) + 2).map(x => ({ symbol: String(x.symbol).toUpperCase().trim(), name: String(x.name || ""), role: ["core", "satellite", "speculative"].includes(x.role) ? x.role : "satellite", thesis: String(x.thesis || ""), whyNow: String(x.whyNow || ""), risks: String(x.risks || ""), confidence: Math.max(0, Math.min(100, Number(x.confidence) || 0)), sources: S.verify(x.sources) }));
       if (!ideas.length) throw Object.assign(new Error("The answer came back unreadable; try again."), { code: "invalid_json" });
-      S.step("run", "Verifying " + ideas.length + " tickers against exchange data");
+      const vs = S.step("run", "Verifying " + ideas.length + " tickers against exchange data");
       await Promise.all(ideas.map(async (x) => { const v = await verifyIdea(app, x); if (v.error) x.verifyError = v.error; else { x.asset = MD.common.slim(Object.assign({}, v.asset, { name: x.name || v.asset.name })); x.measured = v.measured; } }));
-      S.step("ok", ideas.filter(x => x.measured).length + " of " + ideas.length + " verified");
+      S.done(vs, "ok", " → " + ideas.filter(x => x.measured).length + " of " + ideas.length + " verified");
       const rv = await A().review(app, { task: "Ideas for: " + t + " (" + HORIZONS[hz.value] + ", " + RISKS[rk.value] + ")", S, signal, facts: ideas.map(x => ({ symbol: x.symbol, measured: x.measured ? A().rnd(x.measured) : "could not verify ticker" })), items: ideas.map(x => ({ id: x.symbol, role: x.role, thesis: x.thesis, whyNow: x.whyNow, risks: x.risks, confidence: x.confidence, sources: x.sources.map(s => s.url) })) });
       applyReview(ideas, rv);
       for (const x of ideas) x.blended = A().blend([{ value: x.review && x.review.adjustedConfidence != null ? x.review.adjustedConfidence : x.confidence, weight: 0.6 }, { value: x.measured ? 80 : 0, weight: 0.2 }, { value: Math.min(100, x.sources.filter(s => s.verified).length * 30 + 10), weight: 0.2 }]);
@@ -7125,6 +7128,168 @@ Reply with ONLY JSON: {"summary": "2-3 sentences on the theme and how to approac
   }
 
   MD.oppAI = { scanReview, compareAI, ideaFinder, runner };
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* ---- ai-take.js ---- */
+/* Everyday AI without Deep Research: a reviewed one-click "AI quick take" on every stock and crypto page,
+   and a daily AI morning brief on the dashboard. Both use the shared AI kit (tools, review pass,
+   blended confidence). Each quick take's 3-month lean is logged in the forecast journal, so the takes are
+   scored and later takes are told how earlier ones did. */
+(function (G) {
+  const MD = (G.MD = G.MD || {});
+  const C = MD.core, U = MD.ui, D = MD.data, h = U.h, A = () => MD.ai;
+  const idOf = (asset) => String(asset.id || "").replace(/[^\w-]/g, "_");
+  const today = () => new Date().toISOString().slice(0, 10);
+  const stanceCls = (s) => s === "positive" ? "positive" : s === "negative" ? "negative" : "neutral";
+  const pctTxt = (x) => x == null || !isFinite(x) ? "—" : (x > 0 ? "+" : "") + Number(x).toFixed(1) + "%";
+
+  // Levels the page measures itself, so Claude explains levels rather than inventing them.
+  function levelsFrom(points) {
+    const t = C.technicals(points); if (!t) return null;
+    const out = [["52-week low", t.low52], ["200-day average", t.sma200], ["50-day average", t.sma50], ["20-day average", t.sma20], ["52-week high", t.high52]].filter(([, v]) => v > 0).map(([label, v]) => ({ label, price: +v.toPrecision(6), vsPricePct: +((v / t.last - 1) * 100).toFixed(1) }));
+    return { last: t.last, trend: t.trend, rsi14: t.rsi14 != null ? +t.rsi14.toFixed(1) : null, levels: out.sort((a, b) => a.price - b.price) };
+  }
+
+  /* ---------- AI quick take on an asset page ---------- */
+  function card(app, asset) {
+    const out = h("div", { class: "stack" }), log = A().logBox(), phase = h("div", { class: "small muted" });
+    let ctl = null;
+    const saved = () => app.store.cached("aitakes").find(d => d.id === idOf(asset)) || (card._demo && card._demo[idOf(asset)]);
+    const go = h("button", { class: "btn", type: "button" });
+    const stop = h("button", { class: "btn ghost", type: "button", hidden: true, onclick: () => ctl && ctl.abort() }, "Stop");
+    const label = () => { const s = saved(); go.textContent = s ? (Date.now() - s.at > 6 * 3600e3 ? "Refresh AI take (" + U.fmtTs(s.at) + ")" : "Refresh AI take") : "Get AI quick take"; };
+    go.onclick = async () => {
+      const s = app.caps.sample; if (!s) { out.replaceChildren(U.errorBox({ message: "Claude isn't available in this view." })); return; }
+      ctl = new AbortController(); go.disabled = true; stop.hidden = false; log.clear(); phase.textContent = "Working… usually under a minute.";
+      const S = A().session((e) => log.add(e));
+      try { const res = await run(app, asset, S, ctl.signal); phase.textContent = "Done · " + S.calls + " research steps, " + S.sources.length + " sources" + (app.demo ? " (demo: not saved)" : ""); paint(res); }
+      catch (e) { phase.textContent = ""; log.add({ at: Date.now(), kind: "fail", text: A().errText(e) }); }
+      go.disabled = false; stop.hidden = true; ctl = null; label();
+    };
+    const paint = (r) => {
+      if (!r) { out.replaceChildren(h("p", { class: "small muted" }, "Claude reads the measured price picture, " + (asset.cls === "crypto" ? "crypto news" : "news, Zacks, the options-implied move and smart-money ownership") + ", your position if you hold it, and gives a quick read with the evidence on both sides. A second review checks it before you see it.")); return; }
+      const lv = r.levels;
+      out.replaceChildren(
+        h("div", { class: "fc-head" }, h("div", { class: "stack", style: "gap:4px;min-width:0" }, h("span", { class: "verdict " + stanceCls(r.stance) }, r.stanceLabel || r.stance), h("strong", { style: "font-size:1.05rem" }, r.headline)),
+          h("div", { class: "stack", style: "gap:2px;justify-items:end" }, h("span", { class: "label" }, "Confidence"), h("b", { class: "num", style: "font-size:1.3rem" }, String(r.confidence)), h("span", { class: "tiny muted" }, U.fmtTs(r.at)))),
+        h("p", {}, r.summary),
+        r.outlook ? h("div", { class: "kpis k4" }, ["1M", "3M", "6M"].filter(k => r.outlook[k]).map(k => h("div", { class: "kpi" }, h("span", { class: "label" }, k + " lean"), h("span", { class: "v " + (r.outlook[k].lean === "up" ? "up" : r.outlook[k].lean === "down" ? "down" : "") }, (r.outlook[k].lean === "up" ? "▲ Up" : r.outlook[k].lean === "down" ? "▼ Down" : "→ Flat") + " · " + r.outlook[k].probabilityPct + "%"), r.outlook[k].note ? h("span", { class: "s" }, r.outlook[k].note) : null))) : null,
+        h("div", { class: "bullbear" }, h("div", { class: "bb up" }, h("span", { class: "label" }, "Working for it"), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em" }, (r.forIt || []).map(x => h("li", {}, x)))), h("div", { class: "bb down" }, h("span", { class: "label" }, "Working against it"), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em" }, (r.against || []).map(x => h("li", {}, x))))),
+        lv && lv.levels.length ? h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, "Levels measured by the app"), h("div", { class: "row", style: "flex-wrap:wrap;gap:6px" }, lv.levels.map(l => h("span", { class: "pill" }, l.label + " " + C.fmtNum(l.price, l.price >= 1 ? 2 : 6) + " (" + pctTxt(l.vsPricePct) + ")"))), r.levelsNote ? h("p", { class: "small" }, r.levelsNote) : null) : null,
+        r.position ? h("p", { class: "small" }, h("strong", {}, "Your position: "), r.position) : null,
+        A().list("What to watch", r.watch), r.changeMyMind ? h("p", { class: "small" }, h("strong", {}, "What would change the view: "), r.changeMyMind) : null,
+        A().reviewBadge(r.review),
+        h("details", { class: "small" }, h("summary", { class: "label", style: "cursor:pointer" }, "How confident, and why"), A().meters([{ label: "Claude", value: r.parts.claude, note: r.confidenceWhy }, { label: "After review", value: r.parts.reviewed }, { label: "Evidence", value: r.parts.evidence, note: "Verified sources retrieved" }, { label: "Data coverage", value: r.parts.coverage, note: "Research tools that returned data" }, r.parts.track != null ? { label: "Track record", value: r.parts.track, note: "How earlier AI takes' leans turned out" } : null])),
+        A().sources(r.sources),
+        h("p", { class: "tiny muted" }, "Claude's read of the measured data and the sources it retrieved, checked by a second review. The 3-month lean is logged in your forecast journal and scored when it's due. Not advice."));
+    };
+    label(); paint(saved());
+    const sec = U.section("AI quick take", h("div", { class: "stack" }, h("div", { class: "row" }, go, stop), phase, log, out));
+    sec.id = "sec-ai";
+    return sec;
+  }
+  async function run(app, asset, S, signal) {
+    const isStock = asset.cls === "stock" || asset.cls === "etf", sym = asset.symbol;
+    const lim = await app.caps.sample.limits().catch(() => null);
+    const names = isStock ? ["stock_snapshot", "zacks_view", "search_news", "options_move", "smart_money", "price_range", "my_portfolio", "search_web"] : ["stock_snapshot", "crypto_news", "search_news", "price_range", "my_portfolio", "search_web"];
+    const tools = lim && lim.tools ? A().tools(app, S, names) : undefined;
+    const ls = S.step("run", "Measuring levels from price history");
+    let lv = null; try { const hs = await D.historyFor(asset, "1Y"); lv = levelsFrom(hs.points); } catch {}
+    S.done(ls, lv ? "ok" : "fail", lv ? "" : " → no price history");
+    const tr = A().trackRecord(app, "ai-take");
+    const prompt = `Today is ${today()}. Give a quick, decision-useful read of ${asset.name || sym} (${sym}, ${isStock ? "US-listed " + (asset.cls === "etf" ? "ETF" : "stock") : "cryptocurrency"}) for an investor looking at its page.
+${tools ? "Investigate with 3 to 7 tool calls before answering: stock_snapshot first, then " + (isStock ? "zacks_view, search_news (one focused query), options_move if a near-term move matters, smart_money, and my_portfolio once to see whether they hold it." : "crypto_news or search_news, and my_portfolio once to see whether they hold it.") + " Cite only URLs the tools returned." : "Tools are unavailable: say news wasn't checked."}
+Weigh both sides honestly; "neutral" is a valid stance. Use only measured figures; never invent prices, targets or dates. For the levels, use only the measured levels below and say which matter now.
+${A().calibrationNote(tr)}
+Measured levels: ${JSON.stringify(lv)}
+Reply with ONLY JSON: {"stance": "positive"|"neutral"|"negative", "stanceLabel": "2-4 words, e.g. 'Constructive, but stretched'", "headline": "one sentence", "summary": "3-4 sentences",
+ "outlook": {"1M": {"lean": "up"|"down"|"flat", "probabilityPct": 50-75, "note": "short"}, "3M": {...}, "6M": {...}},
+ "forIt": ["2-4 points, each citing a measured figure or a source"], "against": ["2-4 points"], "levelsNote": "which measured levels matter and why",
+ "position": "if the user holds it: what the take means for their position (size, concentration); otherwise empty", "watch": ["2-4 dated things to watch"], "changeMyMind": "...",
+ "confidence": 0-100, "confidenceWhy": "one sentence", "sources": [{"title": "...", "url": "https://..."}]}`;
+    const r = await app.caps.sample.json(prompt, Object.assign({ modelTier: "default", signal }, tools ? { tools } : { cache: false }));
+    if (!r || !r.summary) throw Object.assign(new Error("The answer came back unreadable; try again."), { code: "invalid_json" });
+    const lean = (o) => o && ["up", "down", "flat"].includes(o.lean) ? { lean: o.lean, probabilityPct: Math.max(50, Math.min(80, Number(o.probabilityPct) || 50)), note: String(o.note || "") } : null;
+    const res = { asset: MD.common.slim(asset), stance: ["positive", "neutral", "negative"].includes(r.stance) ? r.stance : "neutral", stanceLabel: String(r.stanceLabel || ""), headline: String(r.headline || ""), summary: String(r.summary || ""),
+      outlook: { "1M": lean(r.outlook && r.outlook["1M"]), "3M": lean(r.outlook && r.outlook["3M"]), "6M": lean(r.outlook && r.outlook["6M"]) },
+      forIt: (r.forIt || []).slice(0, 5).map(String), against: (r.against || []).slice(0, 5).map(String), levels: lv, levelsNote: String(r.levelsNote || ""), position: String(r.position || ""), watch: (r.watch || []).slice(0, 5).map(String), changeMyMind: String(r.changeMyMind || ""),
+      sources: S.verify(r.sources), at: Date.now() };
+    const rv = await A().review(app, { task: "A quick read of " + sym + " with 1/3/6-month leans", S, signal, facts: { measuredLevels: lv, toolSteps: S.log.filter(e => e.kind === "ok").map(e => e.text) }, items: [{ id: "take", stance: res.stance, headline: res.headline, summary: res.summary, outlook: res.outlook, forIt: res.forIt, against: res.against, confidence: Number(r.confidence) || 0, sources: res.sources.map(s => s.url) }] });
+    const rev = rv && rv.reviews.find(x => x.id === "take");
+    if (rev) res.review = rev;
+    const verified = res.sources.filter(s => s.verified).length, okSteps = S.log.filter(e => e.kind === "ok").length, allSteps = S.log.filter(e => /^(ok|fail)$/.test(e.kind)).length;
+    res.parts = { claude: Math.max(0, Math.min(100, Number(r.confidence) || 0)), reviewed: rev && rev.adjustedConfidence != null ? rev.adjustedConfidence : null, evidence: Math.min(100, verified * 25 + 10), coverage: allSteps ? Math.round(okSteps / allSteps * 100) : 0, track: tr.scored >= 5 ? Math.round(tr.hitPct) : null };
+    res.confidenceWhy = String(r.confidenceWhy || "");
+    res.confidence = A().blend([{ value: res.parts.reviewed ?? res.parts.claude, weight: 0.45 }, { value: res.parts.evidence, weight: 0.2 }, { value: res.parts.coverage, weight: 0.15 }, { value: res.parts.track, weight: 0.2 }]);
+    // If the review lowered confidence, pull the leans toward 50%.
+    if (rev && rev.adjustedConfidence != null && res.parts.claude && rev.adjustedConfidence < res.parts.claude) for (const k of Object.keys(res.outlook)) if (res.outlook[k]) res.outlook[k].probabilityPct = Math.round(50 + (res.outlook[k].probabilityPct - 50) * rev.adjustedConfidence / res.parts.claude);
+    if (app.demo) { card._demo = card._demo || {}; card._demo[idOf(asset)] = res; return res; }
+    await app.store.put("aitakes", idOf(asset), JSON.parse(JSON.stringify(res))).catch(() => {});
+    // Journal the 3-month lean so AI takes are scored like every other forecast.
+    const o3 = res.outlook["3M"], price = lv && lv.last;
+    if (o3 && o3.lean !== "flat" && price > 0) await app.store.create("forecasts", { assetId: asset.id, asset: MD.common.slim(asset), symbol: sym, source: "ai-take", horizonDays: 91, dueAt: Date.now() + 91 * 864e5, priceAtCreation: price, currency: "USD", priceSource: "latest close", direction: o3.lean, probability: o3.probabilityPct / 100, thesis: res.headline, flatBandPct: 1 }).catch(() => {});
+    return res;
+  }
+
+  /* ---------- AI morning brief (dashboard) ---------- */
+  function brief(box, app) {
+    const out = h("div", { class: "stack" }), log = A().logBox();
+    const key = today();
+    const saved = () => app.store.cached("briefs").find(d => d.id === key) || brief._demo;
+    let ctl = null;
+    const go = h("button", { class: "btn sm", type: "button" }, saved() ? "Rewrite today's brief" : "Write today's brief");
+    const paint = (b) => {
+      if (!b) { out.replaceChildren(h("p", { class: "small muted" }, "A short daily read of your portfolio, the news behind its moves, upcoming catalysts and what changed among the people you follow on Smart Money. Takes about a minute.")); return; }
+      out.replaceChildren(h("strong", {}, b.headline), h("p", { class: "small" }, b.market),
+        b.holdings && b.holdings.length ? h("ul", { class: "small", style: "margin:0;padding-left:1.1em;display:grid;gap:3px" }, b.holdings.map(x => h("li", {}, h("b", {}, x.symbol + ": "), x.note))) : null,
+        A().list("Today", b.today), A().list("Risks", b.risks), A().reviewBadge(b.review),
+        h("div", { class: "row between" }, h("span", { class: "tiny muted" }, "Written " + U.fmtTs(b.at) + " · confidence " + b.confidence), A().sources(b.sources)));
+    };
+    go.onclick = async () => {
+      if (!app.caps.sample) { out.replaceChildren(U.errorBox({ message: "Claude isn't available in this view." })); return; }
+      ctl = new AbortController(); go.disabled = true; log.clear();
+      const S = A().session((e) => log.add(e));
+      try { const b = await writeBrief(app, S, ctl.signal); paint(b); go.textContent = "Rewrite today's brief"; }
+      catch (e) { log.add({ at: Date.now(), kind: "fail", text: A().errText(e) }); }
+      go.disabled = false; ctl = null;
+    };
+    paint(saved());
+    box.append(out, h("div", { class: "row" }, go), log);
+  }
+  async function writeBrief(app, S, signal) {
+    const vp = S.step("run", "Valuing your portfolio");
+    const pv = await app.valuePortfolio().catch(() => null);
+    const total = pv ? Number(pv.totals.valueR) || 0 : 0;
+    const holdings = pv ? pv.rows.filter(r => r.p.qty.gt(0)).map(r => ({ symbol: r.p.symbol, name: r.p.name, class: r.p.assetClass, weightPct: total ? +(Number(r.v.valueR || 0) / total * 100).toFixed(1) : null, todayPct: r.q && r.q.changePct != null ? +Number(r.q.changePct).toFixed(2) : null, gainPct: r.v.pnlPctN != null ? +Number(r.v.pnlPctN).toFixed(1) : null })).sort((a, b) => (b.weightPct || 0) - (a.weightPct || 0)).slice(0, 15) : [];
+    S.done(vp, "ok", " → " + holdings.length + " holdings");
+    const in14 = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10);
+    const catalysts = app.store.cached("catalysts").filter(c => !c.done && c.date >= today() && c.date <= in14).map(c => ({ date: c.date, symbol: c.symbol, event: c.title })).slice(0, 10);
+    const dueSoon = app.store.cached("forecasts").filter(f => f.dueAt > Date.now() && f.dueAt < Date.now() + 7 * 864e5).map(f => ({ symbol: f.symbol, source: f.source, direction: f.direction, due: new Date(f.dueAt).toISOString().slice(0, 10) })).slice(0, 8);
+    const follows = app.store.cached("follows").map(f => f.name);
+    const smartNew = app.store.cached("inbox").filter(i => i.kind === "smart" && Date.now() - (i.at || 0) < 3 * 864e5).map(i => i.title).slice(0, 6);
+    const openBets = app.store.cached("bets").filter(b => b.status === "open").length;
+    const lim = await app.caps.sample.limits().catch(() => null);
+    const tools = lim && lim.tools ? A().tools(app, S, ["search_news", "crypto_news", "stock_snapshot", "smart_money", "search_web"]) : undefined;
+    const facts = { reportingCurrency: pv && pv.R, holdings, catalystsNext14Days: catalysts, forecastsDueThisWeek: dueSoon, followingOnSmartMoney: follows, smartMoneyNoticesLast3Days: smartNew, openBets, demo: !!app.demo };
+    const prompt = `Today is ${today()}. Write the investor's short morning brief from the measured data below. ${tools ? "Use 2 to 6 tool calls: search_news for the market backdrop today (one query) and for the one or two holdings with the biggest moves or weights; crypto_news if they hold coins. Cite only URLs the tools returned." : ""}
+Be specific and brief. Explain moves only with evidence; say "no clear news" when there is none. No advice to trade; "nothing to do today" is fine.
+Data: ${JSON.stringify(facts)}
+Reply with ONLY JSON: {"headline": "one line", "market": "2 sentences on the backdrop", "holdings": [{"symbol": "...", "note": "what moved it or what matters, one sentence"}], "today": ["2-4 things to look at today, dated where possible"], "risks": ["1-3"], "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`;
+    const r = await app.caps.sample.json(prompt, Object.assign({ modelTier: "default", signal }, tools ? { tools } : { cache: false }));
+    if (!r || !r.headline) throw Object.assign(new Error("The answer came back unreadable; try again."), { code: "invalid_json" });
+    const b = { headline: String(r.headline), market: String(r.market || ""), holdings: (r.holdings || []).slice(0, 6).map(x => ({ symbol: String(x.symbol || ""), note: String(x.note || "") })), today: (r.today || []).slice(0, 5).map(String), risks: (r.risks || []).slice(0, 4).map(String), sources: S.verify(r.sources), at: Date.now() };
+    const rv = await A().review(app, { task: "A morning brief for this investor", S, signal, facts, items: [{ id: "brief", headline: b.headline, market: b.market, holdings: b.holdings, today: b.today, confidence: Number(r.confidence) || 0, sources: b.sources.map(s => s.url) }] });
+    const rev = rv && rv.reviews.find(x => x.id === "brief"); if (rev) b.review = rev;
+    b.confidence = A().blend([{ value: rev && rev.adjustedConfidence != null ? rev.adjustedConfidence : Number(r.confidence) || 0, weight: 0.7 }, { value: Math.min(100, b.sources.filter(s => s.verified).length * 25 + 20), weight: 0.3 }]);
+    if (app.demo) { brief._demo = b; return b; }
+    await app.store.put("briefs", today(), JSON.parse(JSON.stringify(b))).catch(() => {});
+    for (const old of app.store.cached("briefs").filter(d => d.id < new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10))) app.store.remove("briefs", old.id).catch(() => {});
+    return b;
+  }
+
+  MD.aiTake = { card, brief, levelsFrom };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -9356,6 +9521,7 @@ When asked for the most likely result, give the probability and a confidence lev
 Rules: use the tools for every price, statistic, odds figure, holding and calculation; never invent numbers or sources; cite the URLs and sources the tools return (attribute Zacks data to Zacks with its URL); separate facts from opinion; quantify uncertainty; mention the strongest counterargument; "do nothing", "wait", "no bet" or "research further" are valid answers; you never execute trades or place bets.
 Investing: consider costs, currency effects, liquidity, concentration and the investor's existing holdings; price ranges from project_price are statistical, not forecasts.
 Betting: start from the fair (no-vig) probabilities, which are the market's best estimate; only claim value when a price beats the fair line or there is concrete evidence; use bet_math for odds arithmetic; say how stale the odds may be and that the user must confirm prices in the sportsbook; suggest small stakes (around 1-2% of bankroll at most) and never chasing losses; parlays compound the margin; if the user shows signs of problem gambling, point to 1-800-GAMBLER (US) or BeGambleAware (UK) kindly and without lecturing.
+How to think for any decision question: (1) gather the evidence with tools first; (2) start from the base rate or the market's own view (fair odds, options-implied move, consensus target) before your own; (3) weigh the strongest counterargument; (4) give a conclusion with a probability or a confidence level and say what would change it. When confidence matters, check track_record and be more modest if past calls were overconfident. smart_money shows which tracked members of Congress and investors hold a stock (disclosures lag; never imply wrongdoing).
 Plain text, short paragraphs, no markdown headings.${app.demo ? " The portfolio is DEMO data; say so if you discuss it." : ""}`;
     send.onclick = async () => {
       const text = input.value.trim(); if (!text) return;
@@ -9364,16 +9530,27 @@ Plain text, short paragraphs, no markdown headings.${app.demo ? " The portfolio 
       const bubble = h("div", { class: "msg-a" }, "Thinking…"); chat.append(bubble); send.disabled = true;
       const ctx = { app, asset: null, question: text, log: [], sources: [], stats: {}, onLog: (e) => log.append(h("div", { class: e.kind }, e.text)) };
       const base = RS.makeTools(ctx).filter(t => ["search_web", "read_page", "search_news", "crypto_news", "get_portfolio_context", "compare_alternatives", "calc_reward_risk"].includes(t.name));
+      const kitS = MD.ai.session((e) => ctx.onLog(e)); kitS.sources = ctx.sources;
+      const kit = MD.ai.tools(app, kitS, ["smart_money", "options_move", "track_record"]);
       try {
-        const r = await s([{ role: "user", content: RULES }, ...turns.slice(-12)], { cache: false, tools: [...base, ...advisorTools(app, ctx)], onText: ({ text }) => { bubble.textContent = text; } });
+        const r = await s([{ role: "user", content: RULES }, ...turns.slice(-12)], { cache: false, tools: [...base, ...advisorTools(app, ctx), ...kit], onText: ({ text }) => { bubble.textContent = text; } });
         turns.push({ role: "assistant", content: r.text }); paint();
+        // Offer an independent check of this answer against the evidence the tools returned.
+        const checkBox = h("div", { class: "stack" });
+        const chk = h("button", { class: "btn ghost sm", type: "button", onclick: async () => {
+          chk.disabled = true; chk.textContent = "Checking…";
+          const S = MD.ai.session((e) => ctx.onLog(e)); S.sources = ctx.sources;
+          try { const rv = await MD.ai.review(app, { task: text, S, facts: { toolSteps: ctx.log.map(e => e.kind + ": " + e.text) }, items: [{ id: "answer", answer: r.text }] }); const one = rv && rv.reviews[0]; checkBox.replaceChildren(one ? MD.ai.reviewBadge(one) : h("p", { class: "small muted" }, "The check didn't complete."), rv && rv.overall ? h("p", { class: "tiny muted" }, rv.overall) : null); }
+          catch (e2) { checkBox.replaceChildren(h("p", { class: "small warn-t" }, MD.ai.errText(e2))); }
+        } }, "Double-check this answer");
+        checkBox.append(chk); chat.append(checkBox);
       } catch (e) { turns.pop(); paint(); chat.append(U.errorBox({ message: sampleErr(e) })); input.value = text; }
       send.disabled = false;
     };
     // Enter sends; Shift+Enter adds a line break. Ignored while an input method is composing text.
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); if (!send.disabled) send.click(); } });
     root.append(U.section("Conversation", h("div", { class: "stack" }, chat, input, h("div", { class: "row between" }, h("span", { class: "small muted" }, "Enter to send · Shift+Enter for a new line. Not investment or betting advice."), h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => { turns.length = 0; log.replaceChildren(); paint(); } }, "Clear"), send)), ideas,
-      h("details", {}, h("summary", { class: "label" }, "What the advisor can look up"), h("p", { class: "small muted" }, "Live quotes and 1-year statistics · technical indicators (trend, RSI, MACD, moving-average crosses, 52-week range) · statistical price ranges and target odds · Zacks Rank and broker ratings · Bigdata.com and web news · your portfolio's risk, correlations and holdings · sportsbook odds with fair probabilities and edges for NFL, NBA, MLB, NHL, college, WNBA and the five big European soccer leagues · the Statz soccer model · exact odds, payout, EV and Kelly maths · your tracked bets.")),
+      h("details", {}, h("summary", { class: "label" }, "What the advisor can look up"), h("p", { class: "small muted" }, "Smart-money ownership (Congress and 13F investors) · options-implied moves · the app's own AI track record · live quotes and 1-year statistics · technical indicators (trend, RSI, MACD, moving-average crosses, 52-week range) · statistical price ranges and target odds · Zacks Rank and broker ratings · Bigdata.com and web news · your portfolio's risk, correlations and holdings · sportsbook odds with fair probabilities and edges for NFL, NBA, MLB, NHL, college, WNBA and the five big European soccer leagues · the Statz soccer model · exact odds, payout, EV and Kelly maths · your tracked bets.")),
       h("details", {}, h("summary", { class: "label" }, "Tool activity"), log))));
   };
 

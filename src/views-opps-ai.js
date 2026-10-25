@@ -138,9 +138,9 @@ Reply with ONLY JSON: {"summary": "2-3 sentences on the theme and how to approac
       const res = await app.caps.sample.json(prompt, Object.assign({ modelTier: "complex", signal }, tools ? { tools } : { cache: false }));
       let ideas = (res.ideas || []).filter(x => x && x.symbol).slice(0, Number(n.value) + 2).map(x => ({ symbol: String(x.symbol).toUpperCase().trim(), name: String(x.name || ""), role: ["core", "satellite", "speculative"].includes(x.role) ? x.role : "satellite", thesis: String(x.thesis || ""), whyNow: String(x.whyNow || ""), risks: String(x.risks || ""), confidence: Math.max(0, Math.min(100, Number(x.confidence) || 0)), sources: S.verify(x.sources) }));
       if (!ideas.length) throw Object.assign(new Error("The answer came back unreadable; try again."), { code: "invalid_json" });
-      S.step("run", "Verifying " + ideas.length + " tickers against exchange data");
+      const vs = S.step("run", "Verifying " + ideas.length + " tickers against exchange data");
       await Promise.all(ideas.map(async (x) => { const v = await verifyIdea(app, x); if (v.error) x.verifyError = v.error; else { x.asset = MD.common.slim(Object.assign({}, v.asset, { name: x.name || v.asset.name })); x.measured = v.measured; } }));
-      S.step("ok", ideas.filter(x => x.measured).length + " of " + ideas.length + " verified");
+      S.done(vs, "ok", " → " + ideas.filter(x => x.measured).length + " of " + ideas.length + " verified");
       const rv = await A().review(app, { task: "Ideas for: " + t + " (" + HORIZONS[hz.value] + ", " + RISKS[rk.value] + ")", S, signal, facts: ideas.map(x => ({ symbol: x.symbol, measured: x.measured ? A().rnd(x.measured) : "could not verify ticker" })), items: ideas.map(x => ({ id: x.symbol, role: x.role, thesis: x.thesis, whyNow: x.whyNow, risks: x.risks, confidence: x.confidence, sources: x.sources.map(s => s.url) })) });
       applyReview(ideas, rv);
       for (const x of ideas) x.blended = A().blend([{ value: x.review && x.review.adjustedConfidence != null ? x.review.adjustedConfidence : x.confidence, weight: 0.6 }, { value: x.measured ? 80 : 0, weight: 0.2 }, { value: Math.min(100, x.sources.filter(s => s.verified).length * 30 + 10), weight: 0.2 }]);

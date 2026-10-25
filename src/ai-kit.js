@@ -87,6 +87,9 @@
     my_portfolio: { description: "The user's current holdings in their reporting currency: each holding's weight, class, currency and gain since purchase, plus the watchlist.", props: {}, req: [],
       label: () => "Your portfolio",
       async run(app) { const pv = await app.valuePortfolio(); const total = Number(pv.totals.valueR) || 0; return rnd({ reportingCurrency: pv.R, totalValue: total, holdings: pv.rows.filter(r => r.p.qty.gt(0)).map(r => ({ symbol: r.p.symbol, name: r.p.name, class: r.p.assetClass, weightPct: total ? Number(r.v.valueR || 0) / total * 100 : null, gainPct: r.v.pnlPctN != null ? Number(r.v.pnlPctN) : null })), watchlist: app.store.cached("watch").map(w => w.symbol).slice(0, 30), demo: !!app.demo }); } },
+    track_record: { description: "How the app's own past AI calls turned out, from the forecast journal: Recommendations picks and AI quick takes, each with the number scored, hit rate, Brier score and hit rate by stated probability. Use it to calibrate how confident to be.", props: {}, req: [],
+      label: () => "AI track record",
+      async run(app) { return rnd({ recommendations: trackRecord(app, "ai-picks"), quickTakes: trackRecord(app, "ai-take"), allForecasts: trackRecord(app) }); } },
     compare_returns: { description: "Measured 1-year return, volatility, max drawdown and Sharpe ratio for up to 5 tickers or coins side by side (e.g. against SPY or SGOV as baselines).", props: { symbols: { type: "array", items: { type: "string" } } }, req: ["symbols"],
       label: (i) => "Compare " + (i.symbols || []).join(", "),
       async run(app, S, i) { const syms = (Array.isArray(i.symbols) ? i.symbols : []).slice(0, 5).map(String); return Promise.all(syms.map(async (s) => { try { const a = await findAsset(s); const hs = await D.historyFor(a, "1Y"); const st = C.seriesStats(hs.points, hs.ppy || 252); return rnd({ symbol: a.symbol, returnPct: st.changePct, volPct: st.volPct, maxDrawdownPct: st.maxDrawdownPct, sharpe: st.sharpe }); } catch (e) { return { symbol: s, error: U.errorText(e) }; } })); } }
@@ -104,7 +107,7 @@
   // How past calls from one source turned out, bucketed by the probability Claude stated.
   function trackRecord(app, source) {
     const fcs = app.store.cached("forecasts").filter(f => !source || f.source === source), evals = app.store.cached("evals");
-    const scored = fcs.map(f => { const e = evals.find(v => v.forecastId === f.id); return e ? { p: Number(f.probability) || 0.5, hit: !!e.hit } : null; }).filter(Boolean);
+    const scored = fcs.map(f => { const e = evals.find(v => v.forecastId === f.id); return e ? { p: Number(f.probability) || 0.5, hit: !!e.directionHit } : null; }).filter(Boolean);
     const buckets = [[0.5, 0.6], [0.6, 0.7], [0.7, 1.01]].map(([lo, hi]) => { const xs = scored.filter(x => x.p >= lo && x.p < hi); return { range: Math.round(lo * 100) + "–" + Math.min(100, Math.round(hi * 100)) + "%", n: xs.length, hitPct: xs.length ? xs.filter(x => x.hit).length / xs.length * 100 : null }; });
     const n = scored.length, hits = scored.filter(x => x.hit).length;
     const brier = n ? scored.reduce((s, x) => s + Math.pow(x.p - (x.hit ? 1 : 0), 2), 0) / n : null;
@@ -120,7 +123,7 @@
      actually retrieved: unsupported claims, ignored risks, overconfidence. Returns per-item verdicts. */
   async function review(app, { task, items, facts, S, signal }) {
     const s = app.caps.sample; if (!s || !items.length) return null;
-    S.step("run", "Independent review of " + items.length + " item" + (items.length > 1 ? "s" : ""));
+    const st = S.step("run", "Independent review of " + items.length + " item" + (items.length > 1 ? "s" : ""));
     const prompt = `You are a skeptical independent reviewer checking an analyst's draft before an investor sees it. Task the draft answers: ${task}
 Check each item ONLY against the measured data and the list of sources that were actually retrieved. Flag: claims not supported by the data or sources, figures that contradict the measured data, risks ignored, confidence that is too high for the evidence, and anything that reads like advice to act. Be concrete. Keep items that hold up.
 Measured data: ${JSON.stringify(facts).slice(0, 60000)}
@@ -130,9 +133,9 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
     try {
       const r = await s.json(prompt, { modelTier: "complex", signal, cache: false });
       const reviews = (Array.isArray(r.reviews) ? r.reviews : []).filter(x => x && x.id != null).map(x => ({ id: String(x.id), verdict: ["keep", "revise", "drop"].includes(x.verdict) ? x.verdict : "keep", issues: (x.issues || []).slice(0, 4).map(String), adjustedConfidence: x.adjustedConfidence == null ? null : Math.max(0, Math.min(100, Number(x.adjustedConfidence) || 0)), note: String(x.note || "") }));
-      S.step("ok", "Review: " + reviews.filter(x => x.verdict === "keep").length + " kept, " + reviews.filter(x => x.verdict === "revise").length + " revised, " + reviews.filter(x => x.verdict === "drop").length + " dropped");
+      S.done(st, "ok", " → " + reviews.filter(x => x.verdict === "keep").length + " kept, " + reviews.filter(x => x.verdict === "revise").length + " revised, " + reviews.filter(x => x.verdict === "drop").length + " dropped");
       return { reviews, overall: String(r.overall || "") };
-    } catch (e) { if (e && e.code === "cancelled") throw e; S.step("fail", "Review didn't complete; showing the draft unreviewed"); return null; }
+    } catch (e) { if (e && e.code === "cancelled") throw e; S.done(st, "fail", " → didn't complete; showing the draft unreviewed"); return null; }
   }
 
   /* Overall confidence from parts (0–100 each) with weights; parts missing are skipped. */
