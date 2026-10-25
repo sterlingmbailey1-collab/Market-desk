@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 12; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 13; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors) and a Sports Betting tab.
@@ -70,8 +70,10 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   The page computes every number; Claude reasons over tool results. Citations are checked against URLs
   actually retrieved. AI quick takes log their 3-month lean in the forecast journal (source `ai-take`).
   `scoreDue()` scores due forecasts automatically (boot + every 30 min); `scorecard()` renders the calibration view;
-  `profileNote()` adds the investor profile (`settings.profile`) to prompts. Collections added in v10–v12: follows,
-  smcache, smai, ideas, aitakes, briefs, proppicks.
+  `profileNote()` adds the investor profile (`settings.profile`) to prompts. `learn()` has Claude study scored calls and save lessons
+  (`ailessons`); `trackRecord()` attaches the latest lessons, filtered by feature, so `calibrationNote()` carries
+  them into every forecasting prompt. Collections added in v10–v13: follows, smcache, smai, ideas, aitakes, briefs,
+  proppicks, ailessons.
 
 ## Source map (src/)
 

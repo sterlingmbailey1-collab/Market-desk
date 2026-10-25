@@ -109,16 +109,58 @@
   /* ---------- track record (forecast journal) ---------- */
   // How past calls from one source turned out, bucketed by the probability Claude stated.
   function trackRecord(app, source) {
-    const fcs = app.store.cached("forecasts").filter(f => !source || f.source === source), evals = app.store.cached("evals");
+    const fcs = app.store.cached("forecasts").filter(f => !source || (f.source || "user") === source), evals = app.store.cached("evals");
     const scored = fcs.map(f => { const e = evals.find(v => v.forecastId === f.id); return e ? { p: Number(f.probability) || 0.5, hit: !!e.directionHit } : null; }).filter(Boolean);
     const buckets = [[0.5, 0.6], [0.6, 0.7], [0.7, 1.01]].map(([lo, hi]) => { const xs = scored.filter(x => x.p >= lo && x.p < hi); return { range: Math.round(lo * 100) + "–" + Math.min(100, Math.round(hi * 100)) + "%", n: xs.length, hitPct: xs.length ? xs.filter(x => x.hit).length / xs.length * 100 : null }; });
     const n = scored.length, hits = scored.filter(x => x.hit).length;
     const brier = n ? scored.reduce((s, x) => s + Math.pow(x.p - (x.hit ? 1 : 0), 2), 0) / n : null;
-    return { logged: fcs.length, scored: n, hitPct: n ? hits / n * 100 : null, brier, buckets };
+    const L = latestLessons(app), label = source && SOURCE_LABEL[source];
+    const lessons = L ? { at: L.createdAt, items: L.lessons.filter(l => !l.appliesTo || l.appliesTo === "all" || !label || l.appliesTo === label).map(l => l.lesson) } : null;
+    return { logged: fcs.length, scored: n, hitPct: n ? hits / n * 100 : null, brier, buckets, lessons };
   }
   function calibrationNote(tr) {
-    if (!tr || tr.scored < 5) return "Track record: fewer than 5 of your past calls have been scored, so there is no calibration evidence yet; keep stated probabilities modest.";
-    return "Track record of your past calls of this kind: " + tr.scored + " scored, " + tr.hitPct.toFixed(0) + "% came true (Brier " + tr.brier.toFixed(3) + "). By stated probability: " + tr.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join("; ") + ". If calls at a stated level came true less often than stated, state lower probabilities this time.";
+    const learned = tr && tr.lessons && tr.lessons.items.length ? " Lessons you wrote on " + new Date(tr.lessons.at).toISOString().slice(0, 10) + " after studying your scored calls; apply them: " + tr.lessons.items.join(" ") : "";
+    if (!tr || tr.scored < 5) return "Track record: fewer than 5 of your past calls have been scored, so there is no calibration evidence yet; keep stated probabilities modest." + learned;
+    return "Track record of your past calls of this kind: " + tr.scored + " scored, " + tr.hitPct.toFixed(0) + "% came true (Brier " + tr.brier.toFixed(3) + "). By stated probability: " + tr.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join("; ") + ". If calls at a stated level came true less often than stated, state lower probabilities this time." + learned;
+  }
+
+  /* ---------- lessons from the record ---------- */
+  /* Claude studies its own scored calls (what it said, how sure, why, and what happened) and writes lessons.
+     The latest lessons ride along with every track-record note, so outcomes feed back into later prompts. */
+  const latestLessons = (app) => app.store.cached("ailessons").slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0] || null;
+  function scoredCalls(app) {
+    const evals = app.store.cached("evals");
+    return app.store.cached("forecasts").map(f => { const e = evals.find(v => v.forecastId === f.id); return e ? { symbol: f.symbol, by: SOURCE_LABEL[f.source] || f.source || "user", madeOn: f.createdAt ? new Date(f.createdAt).toISOString().slice(0, 10) : null, horizonDays: f.horizonDays, predicted: f.direction === "move" ? "a move of " + f.movePct + "%+ either way" : f.direction, statedProbabilityPct: f.probability != null ? Math.round(f.probability * 100) : null, thesis: String(f.thesis || "").slice(0, 300), priceAtCall: f.priceAtCreation, priceAtDue: e.priceAtDue, returnPct: e.realizedReturnPct != null ? +Number(e.realizedReturnPct).toFixed(1) : null, cameTrue: !!e.directionHit } : null; })
+      .filter(Boolean).sort((a, b) => String(b.madeOn).localeCompare(String(a.madeOn))).slice(0, 60);
+  }
+  async function learn(app, opts = {}) {
+    const s = app.caps.sample; if (!s) throw Object.assign(new Error(ERR.no_sample), { code: "no_sample" });
+    const calls = scoredCalls(app), tr = trackRecord(app), prev = latestLessons(app);
+    if (calls.length < 5) throw new Error("At least 5 scored forecasts are needed; " + calls.length + " so far.");
+    const r = await s.json(`You are reviewing your own track record as Market Desk's market analyst, to get better at forecasting. Below are your past forecasts that were scored against the actual close on their due date: what you predicted, the probability you stated, your thesis at the time, and what happened. Overall: ${tr.scored} scored, ${tr.hitPct.toFixed(0)}% came true, Brier ${tr.brier.toFixed(3)} (0.25 is what always saying 50% earns).
+Find the patterns behind the misses and the hits: overconfidence at some stated levels, directions or kinds of asset you get wrong, horizons that don't work, kinds of thesis that failed (momentum, valuation, news, analyst ratings). Every lesson must be supported by specific calls in the list (name their symbols); with few calls, say the evidence is thin instead of over-generalising. Do not invent calls, prices or outcomes.${prev ? " Your previous lessons were: " + prev.lessons.map(l => l.lesson).join(" | ") + ". Keep the ones the record still supports and drop the rest." : ""}
+Scored calls: ${JSON.stringify(calls)}
+Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been and the main weakness", "lessons": [{"lesson": "one-sentence instruction to your future self", "evidence": "the calls that show it, by symbol", "appliesTo": "all"|"Recommendations"|"AI quick takes"|"Deep Research"}], "biases": ["short names of systematic biases seen"], "keepDoing": ["what worked"]}`, { modelTier: "complex", signal: opts.signal, cache: false });
+    const strs = (xs, n) => (Array.isArray(xs) ? xs : []).slice(0, n).map(x => String(x).slice(0, 200));
+    const doc = { basedOn: calls.length, hitPct: tr.hitPct, brier: tr.brier, summary: String(r.summary || "").slice(0, 600), biases: strs(r.biases, 5), keepDoing: strs(r.keepDoing, 4),
+      lessons: (Array.isArray(r.lessons) ? r.lessons : []).filter(l => l && l.lesson).slice(0, 6).map(l => ({ lesson: String(l.lesson).slice(0, 300), evidence: String(l.evidence || "").slice(0, 300), appliesTo: Object.values(SOURCE_LABEL).includes(l.appliesTo) ? l.appliesTo : "all" })) };
+    if (!doc.lessons.length) throw new Error("The review came back without lessons; try again.");
+    return app.store.create("ailessons", doc);
+  }
+  function lessonsPanel(app) {
+    const box = h("div", { class: "stack" }), scored = scoredCalls(app).length;
+    const paint = (d) => box.replaceChildren(d ? h("div", { class: "stack", style: "gap:8px" }, d.summary ? h("p", { class: "small" }, d.summary) : null,
+      list("Lessons (told to every AI that forecasts)", d.lessons.map(l => l.lesson + (l.appliesTo !== "all" ? " [" + l.appliesTo + "]" : "") + (l.evidence ? " — " + l.evidence : ""))),
+      list("Biases seen", d.biases), list("Keep doing", d.keepDoing),
+      h("p", { class: "tiny muted" }, "Written " + new Date(d.createdAt).toLocaleDateString() + " from " + d.basedOn + " scored calls" + (scored > d.basedOn ? "; " + (scored - d.basedOn) + " more scored since" : "") + "."))
+      : h("p", { class: "small muted" }, scored < 5 ? "Once 5 forecasts are scored (" + scored + " so far), the AI can study its hits and misses and write lessons that every later forecast is told." : "The AI hasn't studied its record yet."));
+    paint(latestLessons(app));
+    const btn = h("button", { class: "btn ghost sm", type: "button", disabled: scored < 5 || !app.caps.sample, onclick: async () => {
+      btn.disabled = true; btn.textContent = "Studying the record…";
+      try { paint(await learn(app)); } catch (e) { box.append(U.errorBox({ message: errText(e) })); }
+      btn.disabled = false; btn.textContent = "Study the record again";
+    } }, latestLessons(app) ? "Study the record again" : "Study the misses and write lessons");
+    return h("div", { class: "stack" }, h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("span", { class: "label" }, "What the AI learned from its record"), btn), box);
   }
 
   // The investor profile from Settings, told to every AI feature so its judgements fit this person.
@@ -155,7 +197,7 @@
   function scorecard(app) {
     const fcs = app.store.cached("forecasts"), evals = app.store.cached("evals");
     const srcs = [...new Set(fcs.map(f => f.source || "user"))];
-    const rows = srcs.map(s => Object.assign({ source: s, label: SOURCE_LABEL[s] || s }, trackRecord(app, s === "user" ? null : s))).filter(r => r.logged);
+    const rows = srcs.map(s => Object.assign({ source: s, label: SOURCE_LABEL[s] || s }, trackRecord(app, s))).filter(r => r.logged);
     const all = trackRecord(app);
     const W = 300, H = 150, pad = 26;
     const pts = all.buckets.filter(b => b.n);
@@ -169,6 +211,7 @@
     return h("div", { class: "stack" },
       rows.length ? U.table([{ t: "Source", v: "label" }, { t: "Logged", v: (r) => String(r.logged), n: true }, { t: "Scored", v: (r) => String(r.scored), n: true }, { t: "Came true", v: (r) => r.hitPct != null ? r.hitPct.toFixed(0) + "%" : "—", n: true }, { t: "Brier (lower is better)", v: (r) => r.brier != null ? r.brier.toFixed(3) : "—", n: true }, { t: "By stated probability", v: (r) => r.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join(" · ") || "—" }], rows) : h("div", { class: "empty" }, "No forecasts logged yet."),
       all.scored ? h("div", { class: "row", style: "gap:16px;flex-wrap:wrap;align-items:center" }, h("div", { html: svg, style: "color:var(--muted);flex:1 1 260px;min-width:0" }), h("p", { class: "small muted", style: "flex:1 1 220px" }, "Each dot is a band of stated probability; its height is how often those calls came true. Dots below the dashed line mean the AI was overconfident in that band. Every AI that logs forecasts is told this record and asked to calibrate.")) : null,
+      lessonsPanel(app),
       h("p", { class: "tiny muted" }, "Due forecasts are scored automatically while the page is open, from the close on their due date. A Brier score of 0.25 is what always saying 50% would earn."));
   }
 
@@ -224,5 +267,5 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { findAsset, session, tools, TOOLS, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { findAsset, session, tools, TOOLS, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

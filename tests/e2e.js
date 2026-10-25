@@ -319,6 +319,16 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.click("text=/Score \\d+ due forecast/"); await page.waitForTimeout(2000);
   const ev = await page.evaluate(() => MD.app.store.cached("evals"));
   check("due forecast scored with Brier", ev.length === 1 && typeof ev[0].brier === "number", JSON.stringify(ev[0] || {}));
+  // Lessons from the record: seed scored calls, let the AI study them, and check later prompts are told
+  await page.evaluate(async () => { const st = MD.app.store; for (const [sym, src, dir, p, hit] of [["AAPL", "ai-picks", "up", 0.75, false], ["MSFT", "ai-picks", "up", 0.75, false], ["NVDA", "ai-picks", "up", 0.7, false], ["SPY", "ai-take", "flat", 0.6, true], ["BTC", "ai-take", "up", 0.6, false]]) { const f = await st.create("forecasts", { assetId: "stock:" + sym, asset: { id: "stock:" + sym, cls: "stock", symbol: sym }, symbol: sym, source: src, direction: dir, probability: p, horizonDays: 90, dueAt: Date.now() - 864e5, priceAtCreation: 100, currency: "USD", thesis: sym + " momentum", flatBandPct: 1 }); await st.create("evals", { forecastId: f.id, evaluatedAt: Date.now(), priceAtDue: hit ? 100.5 : 95, probability: p, source: src, realizedReturnPct: hit ? 0.5 : -5, directionHit: hit, brier: Math.pow(p - (hit ? 1 : 0), 2) }); } });
+  await page.evaluate(() => MD.app.go("research", {})); await page.waitForTimeout(800);
+  await page.click("button:has-text('Study the misses and write lessons')"); await page.waitForTimeout(2500);
+  const lessonTxt = await page.locator("#content").innerText();
+  await page.locator("text=What the AI learned from its record").scrollIntoViewIfNeeded().catch(() => {}); await page.screenshot({ path: path.join(shots, "e2e-lessons.png") });
+  check("AI studies its scored calls and writes lessons", /Cap stated probabilities at 65%/.test(lessonTxt) && /overconfident above 70%/.test(lessonTxt) && /from 6 scored calls/.test(lessonTxt), lessonTxt.slice(-700));
+  const notes = await page.evaluate(() => ({ picks: MD.ai.calibrationNote(MD.ai.trackRecord(MD.app, "ai-picks")), take: MD.ai.calibrationNote(MD.ai.trackRecord(MD.app, "ai-take")), saved: MD.app.store.cached("ailessons").length }));
+  check("scorecard counts your own forecasts separately", /Your own forecasts\s+1\s+1\s/.test(lessonTxt), (lessonTxt.match(/Your own forecasts[^\n]*/) || [""])[0]);
+  check("lessons are fed to later prompts, filtered by feature", notes.saved === 1 && /Cap stated probabilities/.test(notes.picks) && /Weight valuation more/.test(notes.picks) && !/Weight valuation more/.test(notes.take) && /keep leans flat/.test(notes.take), JSON.stringify(notes).slice(0, 600));
 
   // ---- Strategies
   await page.evaluate(() => MD.app.go("strategies", { tab: "backtest" })); await page.waitForTimeout(2500);

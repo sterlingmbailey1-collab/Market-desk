@@ -1,5 +1,13 @@
 # Changelog
 
+## Version 13 (2026-10-25)
+- The AI learns from its own record: in any AI scorecard (Deep Research → Forecast journal, Recommendations), "Study
+  the misses and write lessons" has Claude study every scored forecast (what it predicted, how sure it was, its thesis,
+  what happened), name its biases and write lessons backed by specific calls. The latest lessons are told to every
+  AI that forecasts (Recommendations, quick takes, debates, earnings previews, Deep Research, Opportunities), filtered
+  to the feature they apply to. Restudying keeps the lessons the record still supports.
+- Fix: the scorecard's "Your own forecasts" row counted every forecast instead of only yours.
+
 ## Version 12 (2026-10-25)
 
 Deeper AI and new features, built in one improvement pass on top of v10.
