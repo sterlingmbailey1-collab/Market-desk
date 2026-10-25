@@ -379,7 +379,7 @@
     for (const w of app.store.cached("watch")) items.push({ group: "Watchlist", title: w.symbol + " — " + w.name, sub: "Watchlist · " + w.cls, kind: "watch", text: w.symbol + " " + w.name, run: () => app.openAsset(Object.assign({ id: w.assetId }, w)) });
     for (const r of app.store.cached("reports")) items.push({ group: "Research reports", title: (r.assetName || r.question || "Report").slice(0, 80), sub: "Report · " + U.fmtDate(r.createdAt), kind: "report", text: (r.assetName || "") + " " + (r.question || ""), run: () => app.go("research", Object.assign({}, app.ctx.research || {}, { openReport: r.id })) });
     for (const s of app.store.cached("searches")) items.push({ group: "Saved searches", title: s.query, sub: "Saved search", kind: "saved", text: s.query, run: () => openCommand(s.query) });
-    for (const a of app.store.cached("alerts")) items.push({ group: "Alerts", title: a.symbol + " " + a.kind + " " + a.threshold, sub: "Alert", kind: "alert", text: a.symbol + " alert", run: () => app.go("inbox") });
+    for (const a of app.store.cached("alerts")) items.push({ group: "Alerts", title: a.symbol + " " + (MD.quant ? MD.quant.alertText(a) : a.kind + " " + a.threshold), sub: "Alert", kind: "alert", text: a.symbol + " alert", run: () => app.go("inbox") });
     for (const c of app.store.cached("catalysts")) items.push({ group: "Catalysts", title: c.title, sub: c.date + " · " + (c.symbol || ""), kind: "catalyst", text: c.title + " " + (c.symbol || ""), run: () => app.go("calendar") });
     return items;
   }
@@ -491,14 +491,23 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
       for (const a of app.store.cached("alerts")) {
         if (a.paused) continue;
         let q; try { q = await app.quote(Object.assign({ id: a.assetId }, a), manual ? 0 : 60000); } catch { continue; }
-        const value = a.kind === "move" ? q.changePct : q.price;
-        if (value == null) continue;
-        const r = C.evaluateAlert(a, value, a.state);
+        const tech = !!(MD.quant && MD.quant.TECH_ALERTS[a.kind]);
+        let r, value;
+        if (tech) {
+          // Technical alerts measure the live price against the daily history (cached for six hours).
+          let ts = null; try { const hs = await D.historyCached(Object.assign({ id: a.assetId }, a), "1Y"); ts = MD.quant.techState(hs.points, q.price); } catch {}
+          if (!ts) continue;
+          r = MD.quant.evaluateTechAlert(a, ts, a.state); value = r.value != null ? r.value : q.price;
+        } else {
+          value = a.kind === "move" ? q.changePct : q.price;
+          if (value == null) continue;
+          r = C.evaluateAlert(a, value, a.state);
+        }
         if (JSON.stringify(r.state) !== JSON.stringify(a.state || {})) await app.store.put("alerts", a.id, Object.assign({}, a, { state: r.state, lastValue: value, lastCheckedAt: Date.now() })).catch(() => {});
         if (r.triggered) {
           const mat = C.materiality(q.changePct || 0, a.volPct);
-          const title = a.symbol + (a.kind === "above" ? " rose to " : a.kind === "below" ? " fell to " : " moved ") + (a.kind === "move" ? U.pct(value) : C.fmtNum(value, Math.abs(value) >= 1 ? 2 : 6) + " " + (q.currency || ""));
-          await app.store.create("inbox", { kind: "alert", alertId: a.id, title, body: (a.note || "") + " Threshold " + a.threshold + ". Source: " + (q.source || "") + ".", materiality: mat, read: false, at: Date.now() });
+          const title = tech ? a.symbol + " " + r.detail + " (price " + C.fmtNum(q.price, Math.abs(q.price) >= 1 ? 2 : 6) + " " + (q.currency || "") + ")" : a.symbol + (a.kind === "above" ? " rose to " : a.kind === "below" ? " fell to " : " moved ") + (a.kind === "move" ? U.pct(value) : C.fmtNum(value, Math.abs(value) >= 1 ? 2 : 6) + " " + (q.currency || ""));
+          await app.store.create("inbox", { kind: "alert", alertId: a.id, title, body: (a.note ? a.note + " " : "") + (tech ? MD.quant.alertText(a) + (a.kind.startsWith("rsi") ? "" : " (level " + C.fmtNum(value, Math.abs(value) >= 1 ? 2 : 6) + ")") + ". Measured from daily closes plus the live price." : "Threshold " + a.threshold + ".") + " Source: " + (q.source || "") + ".", materiality: mat, read: false, at: Date.now() });
           fired.push(title);
           if (app.settings.notify.toasts && !C.inQuietHours(new Date(), app.settings.quiet) && mat >= (app.settings.notify.minMateriality || 0)) U.toast("Alert: " + title, a.note || "");
         }

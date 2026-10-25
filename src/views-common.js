@@ -278,15 +278,19 @@
   /* ---------- alert modal ---------- */
   function alertModal(asset, quote, preset) {
     const app = A();
-    const kind = h("select", {}, [["above", "Price rises to or above"], ["below", "Price falls to or below"], ["move", "Daily move of at least (±%)"]].map(([v, l]) => h("option", { value: v, selected: !!(preset && preset.kind === v) }, l)));
+    const techOk = ["stock", "etf", "crypto", "metal", "fx"].includes(asset.cls || String(asset.id || "").split(":")[0]);
+    const kind = h("select", {}, [["above", "Price rises to or above"], ["below", "Price falls to or below"], ["move", "Daily move of at least (±%)"]].concat(techOk ? Object.entries(MD.quant.TECH_ALERTS) : []).map(([v, l]) => h("option", { value: v, selected: !!(preset && preset.kind === v) }, l)));
     const th = h("input", { type: "text", inputmode: "decimal", value: preset && preset.threshold ? String(preset.threshold) : quote && quote.price ? String(quote.price) : "" });
     const note = h("input", { type: "text", placeholder: "Why this matters (optional)", value: preset && preset.note || null });
-    const err = h("div", { class: "err" });
+    const err = h("div", { class: "err" }), thField = U.field("Threshold", th, quote ? "Now " + C.fmtNum(quote.price, quote.price >= 1 ? 2 : 6) + " " + (quote.currency || "") : null);
+    const noTh = (k) => ["xma50", "xma200", "high52", "low52"].includes(k);
+    kind.addEventListener("change", () => { thField.hidden = noTh(kind.value); if (kind.value === "rsi_above") th.value = "70"; else if (kind.value === "rsi_below") th.value = "30"; else if (!noTh(kind.value) && quote && quote.price && Number(th.value) <= 100 && kind.value !== "move") th.value = String(quote.price); });
     const m = U.modal("Create alert · " + (asset.symbol || asset.name), h("div", { class: "stack" },
-      h("div", { class: "form" }, U.field("Condition", kind), U.field("Threshold", th, quote ? "Now " + C.fmtNum(quote.price, quote.price >= 1 ? 2 : 6) + " " + (quote.currency || "") : null), h("div", { class: "wide" }, U.field("Note", note))),
-      h("p", { class: "small muted" }, "Alerts are checked every two minutes while Market Desk is open, then once each time you return. An alert fires once and re-arms only after the price moves back past the threshold."),
+      h("div", { class: "form" }, U.field("Condition", kind), thField, h("div", { class: "wide" }, U.field("Note", note))),
+      h("p", { class: "small muted" }, "Alerts are checked every two minutes while Market Desk is open, then once each time you return. An alert fires once and re-arms only after the price moves back past the threshold. Technical alerts compare the live price with daily closes (moving averages, RSI, the prior 52-week range)."),
       err, h("div", { class: "row end" }, h("button", { class: "btn", type: "button", onclick: async () => {
-        const v = Number(th.value.replace(/,/g, "")); if (!isFinite(v) || v <= 0) { err.textContent = "Enter a positive threshold."; return; }
+        const v = noTh(kind.value) ? 0 : Number(th.value.replace(/,/g, "")); if (!noTh(kind.value) && (!isFinite(v) || v <= 0)) { err.textContent = "Enter a positive threshold."; return; }
+        if (kind.value.startsWith("rsi") && v >= 100) { err.textContent = "RSI runs from 0 to 100."; return; }
         // The asset's own id must not become the alert's id, or a second alert on the same asset would replace the first.
         const doc = Object.assign(slim(asset), { assetId: asset.id, kind: kind.value, threshold: v, note: note.value, state: { armed: true } }); delete doc.id;
         await app.store.create("alerts", doc);

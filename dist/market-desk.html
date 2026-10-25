@@ -1770,6 +1770,39 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     else { const s = v * Math.sqrt(barsLeft); p = dir > 0 ? 1 - C.normCdf((need - x) / s) : C.normCdf((need - x) / s); }
     return { movePct: (b / a - 1) * 100, zFor, oddsNowPct: p * 100 };
   }
+  /* Technical alerts. techState measures the live price against daily history (the live price replaces today's bar
+     or extends the series): 50/200-day averages, RSI(14), and the prior 52-week high and low. evaluateTechAlert
+     fires once per event: on a cross of an average (the first check only records the side), when RSI reaches its
+     threshold (re-arming 3 points back), or on a new 52-week high or low (re-arming once price is back inside). */
+  const TECH_ALERTS = { xma50: "Crosses its 50-day average", xma200: "Crosses its 200-day average", rsi_above: "RSI(14) at or above", rsi_below: "RSI(14) at or below", high52: "Makes a new 52-week high", low52: "Makes a new 52-week low" };
+  function techState(points, price, nowSec) {
+    const day = (t) => Math.floor(t / 86400), now = day(nowSec || Date.now() / 1000), p = Number(price);
+    const past = (points || []).filter(x => (x.close ?? x.value) > 0 && day(x.time) < now).map(x => x.close ?? x.value);
+    if (past.length < 30 || !(p > 0)) return null;
+    const closes = past.concat([p]), avg = (n) => closes.length >= n ? closes.slice(-n).reduce((s, x) => s + x, 0) / n : null, prior = past.slice(-252);
+    return { price: p, ma50: avg(50), ma200: avg(200), rsi14: C.rsi(closes, 14), high52: Math.max(...prior), low52: Math.min(...prior) };
+  }
+  function evaluateTechAlert(alert, ts, state) {
+    const st = Object.assign({ armed: true }, state || {}), k = alert.kind, th = Number(alert.threshold);
+    if (!ts) return { triggered: false, state: st };
+    if (k === "xma50" || k === "xma200") {
+      const ma = k === "xma50" ? ts.ma50 : ts.ma200; if (ma == null) return { triggered: false, state: st };
+      const side = ts.price >= ma ? "above" : "below", crossed = st.side && st.side !== side;
+      return { triggered: !!crossed, value: ma, detail: "crossed " + side + " its " + (k === "xma50" ? "50" : "200") + "-day average", state: Object.assign({}, st, { side }, crossed ? { lastTriggeredAt: Date.now() } : {}) };
+    }
+    let cond, back, value, detail;
+    if (k === "rsi_above" || k === "rsi_below") { if (ts.rsi14 == null) return { triggered: false, state: st }; value = ts.rsi14; cond = k === "rsi_above" ? value >= th : value <= th; back = k === "rsi_above" ? value < th - 3 : value > th + 3; detail = "RSI(14) reached " + value.toFixed(0); }
+    else if (k === "high52") { value = ts.high52; cond = ts.price > value; back = !cond; detail = "made a new 52-week high"; }
+    else if (k === "low52") { value = ts.low52; cond = ts.price < value; back = !cond; detail = "made a new 52-week low"; }
+    else return { triggered: false, state: st };
+    if (cond && st.armed) return { triggered: true, value, detail, state: Object.assign({}, st, { armed: false, lastTriggeredAt: Date.now() }) };
+    if (!st.armed && back) return { triggered: false, value, detail, state: Object.assign({}, st, { armed: true }) };
+    return { triggered: false, value, detail, state: st };
+  }
+  function alertText(a) {
+    if (TECH_ALERTS[a.kind]) return TECH_ALERTS[a.kind] + (a.kind.startsWith("rsi") ? " " + a.threshold : "");
+    return ({ above: "≥ ", below: "≤ ", move: "daily move ≥ ±" }[a.kind] || a.kind + " ") + a.threshold + (a.kind === "move" ? "%" : "");
+  }
   /* What buying would have done to the portfolio over the same days: `values` is the portfolio's value path (today's
      holdings held throughout) and `prices` the asset's closes on those days. Bought today for `amount` (paid from cash
      already in the portfolio, or new money), the position's path is its prices scaled to `amount` today. `existing` is
@@ -1884,7 +1917,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { TECH_ALERTS, techState, evaluateTechAlert, alertText, tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);
 
@@ -2194,6 +2227,18 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     const short = Q.barrierOdds({ entry: 100, stop: 101, target: 98, side: "short", dailyVolPct: 6, minutesLeft: 1440, paths: 4000 }); near(short.pTarget, Math.log(101 / 100) / Math.log(101 / 98), 0.03);
     const late = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 1, minutesLeft: 10 }); ok(late.pNeither > 0.9, "ten quiet minutes rarely reach either level");
     eq(Q.barrierOdds({ entry: 100, stop: 101, target: 102, dailyVolPct: 2, minutesLeft: 60 }), null);
+  });
+  test("technical alerts: average crosses, RSI thresholds, 52-week high and low, each firing once", () => {
+    const Q = MD.quant, now = 400 * 86400, pts = Array.from({ length: 300 }, (_, i) => ({ time: (i + 90) * 86400, close: 100 + Math.sin(i / 9) * 5 }));
+    const ts = Q.techState(pts, 120, now); ok(ts.ma50 > 0 && ts.ma200 > 0 && ts.rsi14 > 50 && ts.high52 <= 105.0001 && ts.low52 >= 94.9999, JSON.stringify(ts));
+    const x = { kind: "xma50" }; let r = Q.evaluateTechAlert(x, Q.techState(pts, 90, now), null); eq(r.triggered, false); eq(r.state.side, "below");
+    r = Q.evaluateTechAlert(x, ts, r.state); ok(r.triggered && /crossed above its 50-day/.test(r.detail)); r = Q.evaluateTechAlert(x, ts, r.state); eq(r.triggered, false);
+    const hi = { kind: "high52" }; let s = Q.evaluateTechAlert(hi, ts, null); ok(s.triggered); s = Q.evaluateTechAlert(hi, ts, s.state); eq(s.triggered, false);
+    s = Q.evaluateTechAlert(hi, Q.techState(pts, 100, now), s.state); eq(s.state.armed, true); ok(Q.evaluateTechAlert(hi, ts, s.state).triggered, "re-armed after falling back inside the range");
+    ok(Q.evaluateTechAlert({ kind: "low52" }, Q.techState(pts, 80, now), null).triggered);
+    const ra = { kind: "rsi_above", threshold: 70 }; ok(Q.evaluateTechAlert(ra, ts, null).triggered === (ts.rsi14 >= 70));
+    eq(Q.evaluateTechAlert({ kind: "rsi_below", threshold: 30 }, Object.assign({}, ts, { rsi14: 25 }), null).triggered, true);
+    eq(Q.techState(pts.slice(0, 10), 100, now), null); eq(Q.alertText({ kind: "rsi_below", threshold: 30 }), "RSI(14) at or below 30"); eq(Q.alertText({ kind: "above", threshold: 5 }), "≥ 5");
   });
   test("trade preview: a diversifier lowers volatility, a copy of the portfolio doesn't, weights and cash handled", () => {
     const Q = MD.quant, n = 120;
@@ -5179,7 +5224,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     for (const w of app.store.cached("watch")) items.push({ group: "Watchlist", title: w.symbol + " — " + w.name, sub: "Watchlist · " + w.cls, kind: "watch", text: w.symbol + " " + w.name, run: () => app.openAsset(Object.assign({ id: w.assetId }, w)) });
     for (const r of app.store.cached("reports")) items.push({ group: "Research reports", title: (r.assetName || r.question || "Report").slice(0, 80), sub: "Report · " + U.fmtDate(r.createdAt), kind: "report", text: (r.assetName || "") + " " + (r.question || ""), run: () => app.go("research", Object.assign({}, app.ctx.research || {}, { openReport: r.id })) });
     for (const s of app.store.cached("searches")) items.push({ group: "Saved searches", title: s.query, sub: "Saved search", kind: "saved", text: s.query, run: () => openCommand(s.query) });
-    for (const a of app.store.cached("alerts")) items.push({ group: "Alerts", title: a.symbol + " " + a.kind + " " + a.threshold, sub: "Alert", kind: "alert", text: a.symbol + " alert", run: () => app.go("inbox") });
+    for (const a of app.store.cached("alerts")) items.push({ group: "Alerts", title: a.symbol + " " + (MD.quant ? MD.quant.alertText(a) : a.kind + " " + a.threshold), sub: "Alert", kind: "alert", text: a.symbol + " alert", run: () => app.go("inbox") });
     for (const c of app.store.cached("catalysts")) items.push({ group: "Catalysts", title: c.title, sub: c.date + " · " + (c.symbol || ""), kind: "catalyst", text: c.title + " " + (c.symbol || ""), run: () => app.go("calendar") });
     return items;
   }
@@ -5291,14 +5336,23 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
       for (const a of app.store.cached("alerts")) {
         if (a.paused) continue;
         let q; try { q = await app.quote(Object.assign({ id: a.assetId }, a), manual ? 0 : 60000); } catch { continue; }
-        const value = a.kind === "move" ? q.changePct : q.price;
-        if (value == null) continue;
-        const r = C.evaluateAlert(a, value, a.state);
+        const tech = !!(MD.quant && MD.quant.TECH_ALERTS[a.kind]);
+        let r, value;
+        if (tech) {
+          // Technical alerts measure the live price against the daily history (cached for six hours).
+          let ts = null; try { const hs = await D.historyCached(Object.assign({ id: a.assetId }, a), "1Y"); ts = MD.quant.techState(hs.points, q.price); } catch {}
+          if (!ts) continue;
+          r = MD.quant.evaluateTechAlert(a, ts, a.state); value = r.value != null ? r.value : q.price;
+        } else {
+          value = a.kind === "move" ? q.changePct : q.price;
+          if (value == null) continue;
+          r = C.evaluateAlert(a, value, a.state);
+        }
         if (JSON.stringify(r.state) !== JSON.stringify(a.state || {})) await app.store.put("alerts", a.id, Object.assign({}, a, { state: r.state, lastValue: value, lastCheckedAt: Date.now() })).catch(() => {});
         if (r.triggered) {
           const mat = C.materiality(q.changePct || 0, a.volPct);
-          const title = a.symbol + (a.kind === "above" ? " rose to " : a.kind === "below" ? " fell to " : " moved ") + (a.kind === "move" ? U.pct(value) : C.fmtNum(value, Math.abs(value) >= 1 ? 2 : 6) + " " + (q.currency || ""));
-          await app.store.create("inbox", { kind: "alert", alertId: a.id, title, body: (a.note || "") + " Threshold " + a.threshold + ". Source: " + (q.source || "") + ".", materiality: mat, read: false, at: Date.now() });
+          const title = tech ? a.symbol + " " + r.detail + " (price " + C.fmtNum(q.price, Math.abs(q.price) >= 1 ? 2 : 6) + " " + (q.currency || "") + ")" : a.symbol + (a.kind === "above" ? " rose to " : a.kind === "below" ? " fell to " : " moved ") + (a.kind === "move" ? U.pct(value) : C.fmtNum(value, Math.abs(value) >= 1 ? 2 : 6) + " " + (q.currency || ""));
+          await app.store.create("inbox", { kind: "alert", alertId: a.id, title, body: (a.note ? a.note + " " : "") + (tech ? MD.quant.alertText(a) + (a.kind.startsWith("rsi") ? "" : " (level " + C.fmtNum(value, Math.abs(value) >= 1 ? 2 : 6) + ")") + ". Measured from daily closes plus the live price." : "Threshold " + a.threshold + ".") + " Source: " + (q.source || "") + ".", materiality: mat, read: false, at: Date.now() });
           fired.push(title);
           if (app.settings.notify.toasts && !C.inQuietHours(new Date(), app.settings.quiet) && mat >= (app.settings.notify.minMateriality || 0)) U.toast("Alert: " + title, a.note || "");
         }
@@ -5634,15 +5688,19 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
   /* ---------- alert modal ---------- */
   function alertModal(asset, quote, preset) {
     const app = A();
-    const kind = h("select", {}, [["above", "Price rises to or above"], ["below", "Price falls to or below"], ["move", "Daily move of at least (±%)"]].map(([v, l]) => h("option", { value: v, selected: !!(preset && preset.kind === v) }, l)));
+    const techOk = ["stock", "etf", "crypto", "metal", "fx"].includes(asset.cls || String(asset.id || "").split(":")[0]);
+    const kind = h("select", {}, [["above", "Price rises to or above"], ["below", "Price falls to or below"], ["move", "Daily move of at least (±%)"]].concat(techOk ? Object.entries(MD.quant.TECH_ALERTS) : []).map(([v, l]) => h("option", { value: v, selected: !!(preset && preset.kind === v) }, l)));
     const th = h("input", { type: "text", inputmode: "decimal", value: preset && preset.threshold ? String(preset.threshold) : quote && quote.price ? String(quote.price) : "" });
     const note = h("input", { type: "text", placeholder: "Why this matters (optional)", value: preset && preset.note || null });
-    const err = h("div", { class: "err" });
+    const err = h("div", { class: "err" }), thField = U.field("Threshold", th, quote ? "Now " + C.fmtNum(quote.price, quote.price >= 1 ? 2 : 6) + " " + (quote.currency || "") : null);
+    const noTh = (k) => ["xma50", "xma200", "high52", "low52"].includes(k);
+    kind.addEventListener("change", () => { thField.hidden = noTh(kind.value); if (kind.value === "rsi_above") th.value = "70"; else if (kind.value === "rsi_below") th.value = "30"; else if (!noTh(kind.value) && quote && quote.price && Number(th.value) <= 100 && kind.value !== "move") th.value = String(quote.price); });
     const m = U.modal("Create alert · " + (asset.symbol || asset.name), h("div", { class: "stack" },
-      h("div", { class: "form" }, U.field("Condition", kind), U.field("Threshold", th, quote ? "Now " + C.fmtNum(quote.price, quote.price >= 1 ? 2 : 6) + " " + (quote.currency || "") : null), h("div", { class: "wide" }, U.field("Note", note))),
-      h("p", { class: "small muted" }, "Alerts are checked every two minutes while Market Desk is open, then once each time you return. An alert fires once and re-arms only after the price moves back past the threshold."),
+      h("div", { class: "form" }, U.field("Condition", kind), thField, h("div", { class: "wide" }, U.field("Note", note))),
+      h("p", { class: "small muted" }, "Alerts are checked every two minutes while Market Desk is open, then once each time you return. An alert fires once and re-arms only after the price moves back past the threshold. Technical alerts compare the live price with daily closes (moving averages, RSI, the prior 52-week range)."),
       err, h("div", { class: "row end" }, h("button", { class: "btn", type: "button", onclick: async () => {
-        const v = Number(th.value.replace(/,/g, "")); if (!isFinite(v) || v <= 0) { err.textContent = "Enter a positive threshold."; return; }
+        const v = noTh(kind.value) ? 0 : Number(th.value.replace(/,/g, "")); if (!noTh(kind.value) && (!isFinite(v) || v <= 0)) { err.textContent = "Enter a positive threshold."; return; }
+        if (kind.value.startsWith("rsi") && v >= 100) { err.textContent = "RSI runs from 0 to 100."; return; }
         // The asset's own id must not become the alert's id, or a second alert on the same asset would replace the first.
         const doc = Object.assign(slim(asset), { assetId: asset.id, kind: kind.value, threshold: v, note: note.value, state: { armed: true } }); delete doc.id;
         await app.store.create("alerts", doc);
@@ -12905,7 +12963,7 @@ ${rows.map(r => `<tr><td>${esc(r.p.symbol)} — ${esc(r.p.name)}</td><td>${esc(r
       items.some(i => !i.read) ? h("button", { class: "btn ghost sm", type: "button", onclick: async () => { for (const i of items.filter(i => !i.read)) await app.store.put("inbox", i.id, Object.assign({}, i, { read: true })); app.rerender(); } }, "Mark all read") : null,
       h("p", { class: "small muted" }, "Materiality = today's move divided by the asset's typical daily move (σ). Quiet hours (Settings) silence pop-ups but still record alerts here."))));
     const alerts = app.store.cached("alerts");
-    root.append(U.section("Alerts", U.table([{ t: "Asset", v: "symbol" }, { t: "Condition", v: (a) => ({ above: "≥ ", below: "≤ ", move: "daily move ≥ ±" }[a.kind] || a.kind) + a.threshold + (a.kind === "move" ? "%" : "") }, { t: "State", v: (a) => a.paused ? "Paused" : (a.state && a.state.armed === false ? "Fired · waiting to re-arm" : "Armed") }, { t: "Last value", v: (a) => a.lastValue != null ? C.fmtNum(a.lastValue, 4) : "—", n: true }, { t: "Last checked", v: (a) => a.lastCheckedAt ? U.fmtTs(a.lastCheckedAt) : "—" }, { t: "Note", v: "note" },
+    root.append(U.section("Alerts", U.table([{ t: "Asset", v: "symbol" }, { t: "Condition", v: (a) => MD.quant.alertText(a) }, { t: "State", v: (a) => a.paused ? "Paused" : (a.state && a.state.armed === false ? "Fired · waiting to re-arm" : "Armed") }, { t: "Last value", v: (a) => a.lastValue != null ? C.fmtNum(a.lastValue, 4) : "—", n: true }, { t: "Last checked", v: (a) => a.lastCheckedAt ? U.fmtTs(a.lastCheckedAt) : "—" }, { t: "Note", v: "note" },
       { t: "", v: (a) => h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: async () => { await app.store.put("alerts", a.id, Object.assign({}, a, { paused: !a.paused })); app.rerender(); } }, a.paused ? "Resume" : "Pause"), h("button", { class: "btn ghost sm", type: "button", onclick: async () => { await app.store.remove("alerts", a.id); app.rerender(); } }, "Delete")) }], alerts, { empty: "No alerts. Create one from any asset page." })));
     const tasks = app.store.cached("tasks").slice().sort((a, b) => (a.status === "done") - (b.status === "done") || String(a.due || "").localeCompare(String(b.due || "")));
     const reps = app.store.cached("reports");

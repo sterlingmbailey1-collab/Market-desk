@@ -294,6 +294,39 @@
     else { const s = v * Math.sqrt(barsLeft); p = dir > 0 ? 1 - C.normCdf((need - x) / s) : C.normCdf((need - x) / s); }
     return { movePct: (b / a - 1) * 100, zFor, oddsNowPct: p * 100 };
   }
+  /* Technical alerts. techState measures the live price against daily history (the live price replaces today's bar
+     or extends the series): 50/200-day averages, RSI(14), and the prior 52-week high and low. evaluateTechAlert
+     fires once per event: on a cross of an average (the first check only records the side), when RSI reaches its
+     threshold (re-arming 3 points back), or on a new 52-week high or low (re-arming once price is back inside). */
+  const TECH_ALERTS = { xma50: "Crosses its 50-day average", xma200: "Crosses its 200-day average", rsi_above: "RSI(14) at or above", rsi_below: "RSI(14) at or below", high52: "Makes a new 52-week high", low52: "Makes a new 52-week low" };
+  function techState(points, price, nowSec) {
+    const day = (t) => Math.floor(t / 86400), now = day(nowSec || Date.now() / 1000), p = Number(price);
+    const past = (points || []).filter(x => (x.close ?? x.value) > 0 && day(x.time) < now).map(x => x.close ?? x.value);
+    if (past.length < 30 || !(p > 0)) return null;
+    const closes = past.concat([p]), avg = (n) => closes.length >= n ? closes.slice(-n).reduce((s, x) => s + x, 0) / n : null, prior = past.slice(-252);
+    return { price: p, ma50: avg(50), ma200: avg(200), rsi14: C.rsi(closes, 14), high52: Math.max(...prior), low52: Math.min(...prior) };
+  }
+  function evaluateTechAlert(alert, ts, state) {
+    const st = Object.assign({ armed: true }, state || {}), k = alert.kind, th = Number(alert.threshold);
+    if (!ts) return { triggered: false, state: st };
+    if (k === "xma50" || k === "xma200") {
+      const ma = k === "xma50" ? ts.ma50 : ts.ma200; if (ma == null) return { triggered: false, state: st };
+      const side = ts.price >= ma ? "above" : "below", crossed = st.side && st.side !== side;
+      return { triggered: !!crossed, value: ma, detail: "crossed " + side + " its " + (k === "xma50" ? "50" : "200") + "-day average", state: Object.assign({}, st, { side }, crossed ? { lastTriggeredAt: Date.now() } : {}) };
+    }
+    let cond, back, value, detail;
+    if (k === "rsi_above" || k === "rsi_below") { if (ts.rsi14 == null) return { triggered: false, state: st }; value = ts.rsi14; cond = k === "rsi_above" ? value >= th : value <= th; back = k === "rsi_above" ? value < th - 3 : value > th + 3; detail = "RSI(14) reached " + value.toFixed(0); }
+    else if (k === "high52") { value = ts.high52; cond = ts.price > value; back = !cond; detail = "made a new 52-week high"; }
+    else if (k === "low52") { value = ts.low52; cond = ts.price < value; back = !cond; detail = "made a new 52-week low"; }
+    else return { triggered: false, state: st };
+    if (cond && st.armed) return { triggered: true, value, detail, state: Object.assign({}, st, { armed: false, lastTriggeredAt: Date.now() }) };
+    if (!st.armed && back) return { triggered: false, value, detail, state: Object.assign({}, st, { armed: true }) };
+    return { triggered: false, value, detail, state: st };
+  }
+  function alertText(a) {
+    if (TECH_ALERTS[a.kind]) return TECH_ALERTS[a.kind] + (a.kind.startsWith("rsi") ? " " + a.threshold : "");
+    return ({ above: "≥ ", below: "≤ ", move: "daily move ≥ ±" }[a.kind] || a.kind + " ") + a.threshold + (a.kind === "move" ? "%" : "");
+  }
   /* What buying would have done to the portfolio over the same days: `values` is the portfolio's value path (today's
      holdings held throughout) and `prices` the asset's closes on those days. Bought today for `amount` (paid from cash
      already in the portfolio, or new money), the position's path is its prices scaled to `amount` today. `existing` is
@@ -408,6 +441,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { TECH_ALERTS, techState, evaluateTechAlert, alertText, tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

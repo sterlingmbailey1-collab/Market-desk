@@ -333,6 +333,22 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const fired1 = await page.evaluate(() => MD.app.checkAlerts(true));
   const fired2 = await page.evaluate(() => MD.app.checkAlerts(true));
   check("alert fires once then dedupes", fired1.length === 1 && fired2.length === 0, JSON.stringify([fired1, fired2]));
+  await page.click("text=Create alert");
+  await page.selectOption(".modal select", "xma50"); await page.waitForTimeout(150);
+  const techModal = { options: await page.locator(".modal select option").allInnerTexts(), thHidden: await page.locator(".modal input[inputmode=decimal]").isHidden() };
+  await page.click(".modal button:has-text(\"Create alert\")"); await page.waitForTimeout(300);
+  const ta = await page.evaluate(async () => {
+    const app = MD.app, mine = app.store.cached("alerts").find(x => x.kind === "xma50");
+    const a = { id: mine.assetId, cls: mine.cls, symbol: mine.symbol, name: mine.name };
+    const hs = await MD.data.historyCached(a, "1Y"), q = await app.quote(a, 0), ts = MD.quant.techState(hs.points, q.price), side = ts.price >= ts.ma50 ? "above" : "below";
+    const first = (await app.checkAlerts(true)).filter(t => /average/.test(t)).length;
+    const cur = app.store.cached("alerts").find(x => x.id === mine.id);
+    await app.store.put("alerts", cur.id, Object.assign({}, cur, { state: { armed: true, side: side === "above" ? "below" : "above" } }));
+    await app.store.create("alerts", { assetId: a.id, cls: a.cls, symbol: a.symbol, name: a.name, kind: "rsi_above", threshold: 1, state: { armed: true } });
+    const fired = await app.checkAlerts(true), again = await app.checkAlerts(true);
+    return { symbol: a.symbol, side, first, fired: fired.filter(t => /average|RSI/.test(t)), again: again.filter(t => /average|RSI/.test(t)).length, body: (app.store.cached("inbox").find(i => /50-day average/.test(i.title)) || {}).body };
+  });
+  check("technical alerts: average cross and RSI fire once each (the first check only records the side), with the measured level", techModal.options.some(o => /50-day average/.test(o)) && techModal.options.some(o => /52-week high/.test(o)) && techModal.thHidden && ta.first === 0 && ta.fired.some(t => t.startsWith(ta.symbol + " crossed " + ta.side + " its 50-day average")) && ta.fired.some(t => /RSI\(14\) reached \d+/.test(t)) && ta.again === 0 && /Crosses its 50-day average \(level [\d.,]+\)/.test(ta.body || ""), JSON.stringify({ techModal, ta }));
 
   // ---- Add transaction through the modal
   await page.click(".nav a[href='#portfolio']"); await page.waitForTimeout(1200);

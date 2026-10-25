@@ -302,6 +302,18 @@
     const late = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 1, minutesLeft: 10 }); ok(late.pNeither > 0.9, "ten quiet minutes rarely reach either level");
     eq(Q.barrierOdds({ entry: 100, stop: 101, target: 102, dailyVolPct: 2, minutesLeft: 60 }), null);
   });
+  test("technical alerts: average crosses, RSI thresholds, 52-week high and low, each firing once", () => {
+    const Q = MD.quant, now = 400 * 86400, pts = Array.from({ length: 300 }, (_, i) => ({ time: (i + 90) * 86400, close: 100 + Math.sin(i / 9) * 5 }));
+    const ts = Q.techState(pts, 120, now); ok(ts.ma50 > 0 && ts.ma200 > 0 && ts.rsi14 > 50 && ts.high52 <= 105.0001 && ts.low52 >= 94.9999, JSON.stringify(ts));
+    const x = { kind: "xma50" }; let r = Q.evaluateTechAlert(x, Q.techState(pts, 90, now), null); eq(r.triggered, false); eq(r.state.side, "below");
+    r = Q.evaluateTechAlert(x, ts, r.state); ok(r.triggered && /crossed above its 50-day/.test(r.detail)); r = Q.evaluateTechAlert(x, ts, r.state); eq(r.triggered, false);
+    const hi = { kind: "high52" }; let s = Q.evaluateTechAlert(hi, ts, null); ok(s.triggered); s = Q.evaluateTechAlert(hi, ts, s.state); eq(s.triggered, false);
+    s = Q.evaluateTechAlert(hi, Q.techState(pts, 100, now), s.state); eq(s.state.armed, true); ok(Q.evaluateTechAlert(hi, ts, s.state).triggered, "re-armed after falling back inside the range");
+    ok(Q.evaluateTechAlert({ kind: "low52" }, Q.techState(pts, 80, now), null).triggered);
+    const ra = { kind: "rsi_above", threshold: 70 }; ok(Q.evaluateTechAlert(ra, ts, null).triggered === (ts.rsi14 >= 70));
+    eq(Q.evaluateTechAlert({ kind: "rsi_below", threshold: 30 }, Object.assign({}, ts, { rsi14: 25 }), null).triggered, true);
+    eq(Q.techState(pts.slice(0, 10), 100, now), null); eq(Q.alertText({ kind: "rsi_below", threshold: 30 }), "RSI(14) at or below 30"); eq(Q.alertText({ kind: "above", threshold: 5 }), "≥ 5");
+  });
   test("trade preview: a diversifier lowers volatility, a copy of the portfolio doesn't, weights and cash handled", () => {
     const Q = MD.quant, n = 120;
     const V = [], P = [], S = []; let v = 1000, p = 50, s = 50;
