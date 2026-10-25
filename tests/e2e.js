@@ -14,7 +14,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await ctx.route(/fonts\.(googleapis|gstatic)\.com/, r => r.fulfill({ body: "", contentType: "text/css" }));
   await ctx.route(/assets\.tcgdex\.net|images\.ygoprodeck\.com|cardchain\.example/, r => r.fulfill({ status: 404, body: "" }));
   await ctx.addInitScript({ path: path.join(__dirname, "bet-fixtures.js") });
-  await ctx.addInitScript({ content: "window.__smartFixtures = " + JSON.stringify(Object.fromEntries(["capitol-pelosi-p1", "capitol-pelosi-p2", "dataroma-brk", "dataroma-brk-activity"].map(f => [f, require("fs").readFileSync(path.join(__dirname, "real", f + ".md"), "utf8")]))) });
+  await ctx.addInitScript({ content: "window.__smartFixtures = " + JSON.stringify(Object.fromEntries(["capitol-pelosi-p1", "capitol-pelosi-p2", "dataroma-brk", "dataroma-brk-activity", "vi-nba-props", "espn-nba-gamelog", "espn-nba-gamelog-2026"].map(f => [f, require("fs").readFileSync(path.join(__dirname, "real", f + ".md"), "utf8")]))) });
   await ctx.addInitScript({ path: path.join(__dirname, "mock-runtime.js") });
   const page = await ctx.newPage();
   const errors = [];
@@ -535,6 +535,21 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("latest filings from FMP with official links", /Tuberville|Nancy Pelosi/.test(lat) && /NVDA/.test(lat) && await page.locator("a:has-text('Official record')").count() >= 1, lat.slice(0, 300));
   await page.evaluate(() => { MD.app.ls.set("sm.tab", "leaders"); MD.app.go("dashboard", null, { fromNav: true }); }); await page.waitForTimeout(1500);
   check("dashboard: Smart Money card", /Top measured returns/i.test(await page.locator("#content").innerText()));
+
+  // ---- Player props (NBA points)
+  await page.evaluate(() => { MD.app.ls.set("bet.sport", "nba"); MD.app.ls.set("bet.tab", "props"); MD.app.go("betting", null, { fromNav: true }); }); await page.waitForTimeout(2500);
+  const prTxt = await page.locator("#content").innerText();
+  check("props: players, consensus lines and best prices from the real props page", /NBA points props/i.test(prTxt) && /Giannis Antetokounmpo/.test(prTxt) && /8 books/.test(prTxt) && /1-800-GAMBLER/.test(prTxt), prTxt.slice(0, 400));
+  await page.click("button:has-text('Analyze the 12 most-listed players')"); await page.waitForTimeout(6000);
+  const analyzed = await page.evaluate(() => [...MD.propsState.an.values()].filter(a => a.model).length);
+  check("props: game logs read from ESPN and modelled for 12 players", analyzed === 12, String(analyzed));
+  const prDet = await page.locator("#content").innerText();
+  check("props detail: model over %, best price EV, hit rates, every book's line", /Model: over/i.test(prDet) && /Went over/i.test(prDet) && /Breakeven/i.test(prDet) && /pick'em/i.test(prDet), prDet.slice(-900));
+  await page.click("button:has-text('Pick props with AI')"); await page.waitForTimeout(3000);
+  const pkProps = await page.locator("#content").innerText();
+  check("AI prop picks: picks with model vs Claude probability, passes and the review", /Claude 58% · model/i.test(pkProps) && /Passed on/i.test(pkProps) && /Review:/i.test(pkProps), pkProps.slice(-700));
+  await page.screenshot({ path: path.join(shots, "e2e-props.png"), fullPage: false });
+  await page.evaluate(() => { MD.app.ls.set("bet.tab", "games"); MD.app.ls.set("bet.sport", "nfl"); });
 
   // ---- AI Advisor: Enter sends, Shift+Enter adds a line
   await page.evaluate(() => MD.app.go("advisor", null, { fromNav: true })); await page.waitForTimeout(800);

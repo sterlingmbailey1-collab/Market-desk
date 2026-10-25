@@ -3250,6 +3250,126 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
 
 </script>
 <script>
+/* ---- props.js ---- */
+/* Player props (NBA points): sportsbook lines from VegasInsider, each player's game logs from ESPN (this season
+   and last), a recency-weighted model of the chance of going over the line, the next opponent and injury status
+   from ESPN. Every probability is computed here; the AI reads these numbers and the news. */
+(function (G) {
+  const MD = (G.MD = G.MD || {});
+  const D = MD.data, O = MD.odds;
+  const PROPS_URL = "https://www.vegasinsider.com/nba/odds/player-props/";
+  const DFS = new Set(["PrizePicks", "Sleeper", "Underdog"]); // pick'em sites: lines count, prices don't
+  const cellsOf = (line) => line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim());
+  const slug = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const median = (xs) => { const a = xs.slice().sort((x, y) => x - y); return a.length ? (a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2) : null; };
+
+  /* VegasInsider props table: one row per player, one column per book, cells like "o28.5 -110". */
+  function parseVIProps(text) {
+    const t = String(text || ""); let books = null; const out = [];
+    const um = t.match(/Updated on (\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    for (const line of t.split(/\r?\n/)) {
+      if (!/^\s*\|/.test(line)) continue;
+      const c = cellsOf(line);
+      if (/^Time$|^Player$/i.test(c[0]) && c.length > 2) { books = c.slice(1); continue; }
+      if (!books || /^-+$/.test(c[0]) || /^Filter/i.test(c[0]) || !c[0]) continue;
+      const row = { player: c[0], books: {} };
+      books.forEach((b, i) => {
+        const m = String(c[i + 1] || "").match(/^([ou])\s*(\d+(?:\.\d+)?)\s+([+-]\d+|even)$/i); if (!m) return;
+        const am = /even/i.test(m[3]) ? 100 : Number(m[3]), dec = O.amToDec(am);
+        row.books[b] = { side: m[1].toLowerCase() === "o" ? "over" : "under", line: Number(m[2]), am, dec, dfs: DFS.has(b) };
+      });
+      const lines = Object.values(row.books).map(x => x.line); if (!lines.length) continue;
+      row.consensusLine = median(lines);
+      const priced = Object.entries(row.books).filter(([, x]) => !x.dfs && x.side === "over" && x.line === row.consensusLine);
+      const best = priced.reduce((b, [book, x]) => !b || x.dec > b.dec ? Object.assign({ book }, x) : b, null);
+      row.bestOver = best; row.bookCount = Object.keys(row.books).length;
+      row.lowLine = Math.min(...lines); row.highLine = Math.max(...lines);
+      out.push(row);
+    }
+    return { props: out, books: books || [], updated: um ? new Date(Date.UTC(+(um[3].length === 2 ? "20" + um[3] : um[3]), +um[1] - 1, +um[2])).getTime() : null, url: PROPS_URL };
+  }
+  async function loadProps(force) { return parseVIProps(await D.fetchRaw(force ? D.bust(PROPS_URL) : PROPS_URL, 60000, 5 * 60e3)); }
+
+  /* ESPN game log: team, season, and regular-season rows (newest first). */
+  function parseGameLog(text) {
+    const t = String(text || "");
+    const team = (t.match(/^# [^\n]+\n+- ([^\n]+)$/m) || [])[1] || null;
+    const name = (t.match(/^# ([^\n]+?)(?: \d{4}-\d{2} Stats.*)?$/m) || [])[1] || null;
+    let startYear = null, regular = false, hdr = null; const games = [];
+    for (const line of t.split(/\r?\n/)) {
+      const sm = line.match(/^(\d{4})-(\d{2}) (Regular Season|Preseason|Postseason|Play-?In)/i);
+      if (sm) { startYear = +sm[1]; regular = /Regular/i.test(sm[3]); hdr = null; continue; }
+      if (!/^\s*\|/.test(line)) continue;
+      const c = cellsOf(line);
+      if (c[0] === "Date") { hdr = c; continue; }
+      if (!hdr || !regular || !startYear) continue;
+      const dm = c[0].match(/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(\d{1,2})\/(\d{1,2})$/); if (!dm) continue;
+      const mo = +dm[1], y = mo >= 8 ? startYear : startYear + 1;
+      const col = (k) => c[hdr.indexOf(k)];
+      const opp = String(col("OPP") || ""), res = String(col("Result") || "");
+      const g = { date: y + "-" + String(mo).padStart(2, "0") + "-" + dm[2].padStart(2, "0"), home: /^vs/i.test(opp), opp: opp.replace(/^(vs|@)\s*/i, ""), win: /^W/.test(res), min: Number(col("MIN")) || 0, pts: Number(col("PTS")), reb: Number(col("REB")), ast: Number(col("AST")) };
+      if (isFinite(g.pts)) games.push(g);
+    }
+    games.sort((a, b) => b.date.localeCompare(a.date));
+    return { name, team, games };
+  }
+  const idsKey = "md.espn.nba.ids";
+  const idCache = () => { try { return JSON.parse(localStorage.getItem(idsKey) || "{}"); } catch { return {}; } };
+  // Find a player's ESPN id with one web search, remembered in this browser.
+  async function espnId(name) {
+    const k = slug(name), cache = idCache(); if (cache[k]) return cache[k];
+    const r = await D.webSearch(name + " ESPN NBA game log", "The player's ESPN NBA game log or player page", 5);
+    const hits = [...r.text.matchAll(/espn\.com\/nba\/player\/(?:gamelog\/|stats\/|bio\/)?_\/id\/(\d+)\/([a-z0-9-]+)/g)].map(m => ({ id: m[1], slug: m[2] }));
+    const hit = hits.find(x => x.slug === k) || hits.find(x => x.slug.includes(k.split("-").pop())) || null;
+    if (!hit) throw new D.DataError("not_found", "Couldn't find " + name + " on ESPN.", "espn");
+    cache[k] = hit; try { localStorage.setItem(idsKey, JSON.stringify(cache)); } catch {}
+    return hit;
+  }
+  async function playerLogs(name) {
+    const { id, slug: s } = await espnId(name);
+    const now = new Date(), seasonEnd = now.getUTCMonth() >= 7 ? now.getUTCFullYear() + 1 : now.getUTCFullYear();
+    const [cur, prev] = await Promise.all([
+      D.fetchRaw("https://www.espn.com/nba/player/gamelog/_/id/" + id + "/" + s, 40000, 30 * 60e3).then(parseGameLog),
+      D.fetchRaw("https://www.espn.com/nba/player/gamelog/_/id/" + id + "/type/nba/year/" + (seasonEnd - 1), 40000, 24 * 3600e3).then(parseGameLog).catch(() => ({ games: [] }))]);
+    return { id, slug: s, team: cur.team || prev.team, games: cur.games.concat(prev.games), current: cur.games.length, url: "https://www.espn.com/nba/player/gamelog/_/id/" + id + "/" + s };
+  }
+
+  /* Model: recency-weighted normal for points (recent games count more, 6% decay per game back), with a floor on
+     the spread; plus plain hit rates. For whole-number lines a push is possible and reported. */
+  function model(games, line, opts = {}) {
+    const g = games.filter(x => x.min > 0).slice(0, opts.n || 40);
+    if (g.length < 3) return null;
+    let W = 0, S = 0; g.forEach((x, i) => { const w = Math.pow(0.94, i); W += w; S += w * x.pts; });
+    const mean = S / W;
+    let V = 0; g.forEach((x, i) => { V += Math.pow(0.94, i) * Math.pow(x.pts - mean, 2); });
+    const sd = Math.max(Math.sqrt(V / W), 2.5, 0.18 * mean);
+    const z = (x) => (x - mean) / sd, Phi = MD.core.normCdf;
+    const whole = Number.isInteger(line);
+    const pOver = 1 - Phi(z(whole ? line + 0.5 : line)), pPush = whole ? Phi(z(line + 0.5)) - Phi(z(line - 0.5)) : 0;
+    const hit = (n) => { const xs = g.slice(0, n); return xs.length ? xs.filter(x => x.pts > line).length / xs.length : null; };
+    const avg = (xs, k) => xs.length ? xs.reduce((s, x) => s + x[k], 0) / xs.length : null;
+    const home = g.filter(x => x.home), away = g.filter(x => !x.home);
+    return { n: g.length, mean, sd, pOver, pUnder: 1 - pOver - pPush, pPush, hit5: hit(5), hit10: hit(10), hit20: hit(20), avg5: avg(g.slice(0, 5), "pts"), avg20: avg(g.slice(0, 20), "pts"), min5: avg(g.slice(0, 5), "min"), min20: avg(g.slice(0, 20), "min"), homeAvg: avg(home, "pts"), awayAvg: avg(away, "pts"), last: g.slice(0, 10).map(x => ({ date: x.date, opp: x.opp, home: x.home, pts: x.pts, min: x.min })) };
+  }
+  // Model probability against the best sportsbook over price: expected value per unit staked.
+  function edge(p, dec) { return p != null && dec > 1 ? p * dec - 1 : null; }
+
+  // Next game for the player's team today (ESPN scoreboard, Eastern date) and the player's injury status.
+  async function context(team, name) {
+    const B = MD.bet; if (!B || !team) return {};
+    const nick = String(team).split(" ").pop();
+    const [sb, inj] = await Promise.all([B.scoreboard("nba", B.etYmd()).catch(() => ({ games: [] })), B.injuries("nba").catch(() => ({ list: [] }))]);
+    const g = (sb.games || []).find(x => x.home && x.away && (B.teamMatch(x.home.name, nick) || B.teamMatch(x.away.name, nick)));
+    const me = (inj.list || []).find(x => slug(x.name) === slug(name));
+    const isHome = g ? B.teamMatch(g.home.name, nick) : null;
+    return { game: g ? { home: isHome, opponent: isHome ? g.away.name : g.home.name, status: g.status || null, date: g.date || null } : null, injury: me ? { status: me.status, comment: me.comment } : null };
+  }
+
+  MD.props = { PROPS_URL, DFS, parseVIProps, loadProps, parseGameLog, espnId, playerLogs, model, edge, context, slug };
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
 /* ---- smartmoney.js ---- */
 /* Smart Money data: what members of Congress and well-known investors disclose buying and selling, and
    how those disclosed positions have done. Congress trades come from Capitol Trades (STOCK Act filings),
@@ -8999,7 +9119,7 @@ When asked for the most likely result, give the probability and a confidence lev
     return h("details", { class: "rg" }, h("summary", { class: "tiny" }, h("strong", {}, "Bet responsibly."), " Only stake what you can afford to lose. Help: ", h("b", { class: "mono" }, "1-800-GAMBLER"), " (US) · Market Desk never places bets."),
       h("p", { class: "small" }, "Check that sports betting is legal where you are and that you meet the age limit (21+ in most US states, 18+ in the UK and EU). Help is free and confidential: call or text ", h("b", { class: "mono" }, "1-800-GAMBLER"), " (US), or visit ", h("a", { href: "https://www.begambleaware.org/", target: "_blank", rel: "noopener noreferrer" }, "BeGambleAware"), " (UK). You can set a daily loss limit and a stake cap under My bets."));
   }
-  const VIEWS = [["games", "Games"], ["picks", "AI picks"], ["value", "Value & arbitrage"], ["bets", "My bets"], ["calc", "Calculators"], ["assistant", "AI assistant"]];
+  const VIEWS = [["games", "Games"], ["picks", "AI picks"], ["props", "Player props"], ["value", "Value & arbitrage"], ["bets", "My bets"], ["calc", "Calculators"], ["assistant", "AI assistant"]];
   function listView(root, app) {
     let sport = app.ls.get("bet.sport", "nfl"); if (!B.SPORTS.some(s => s.id === sport)) sport = "nfl";
     let tab = app.ls.get("bet.tab", "games"); if (!VIEWS.some(v => v[0] === tab)) tab = "games";
@@ -9012,6 +9132,7 @@ When asked for the most likely result, give the probability and a confidence lev
       body._loadId = (body._loadId || 0) + 1; // drop any odds load still in flight for the previous view
       body.replaceChildren();
       if (tab === "bets") return betsView(body, app);
+      if (tab === "props") return MD.propsView(body, app, sport);
       if (tab === "calc") return calcView(body, app);
       if (tab === "assistant") return body.append(U.section("AI betting assistant", MD.betAI.assistant(app, () => ({ league: sport }))));
       const sp = B.sportOf(sport);
@@ -9745,6 +9866,117 @@ When asked for the most likely result, give the probability and a confidence lev
       h("div", { class: "row", style: "margin-top:8px" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("betting", null, { fromNav: true }) }, "Open Sports Betting")));
   }
   MD.betting = { legOf, addLeg, slip, setSlip, profit, settled, roundRobin, dashboardCard, suggestSettlements };
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* ---- views-props.js ---- */
+/* Player props view (Sports Betting → Player props): NBA points lines by book, a game-log model per player
+   loaded on demand, and an AI pick list that reads the model, injuries and news and gets the review pass. */
+(function (G) {
+  const MD = (G.MD = G.MD || {});
+  const C = MD.core, U = MD.ui, D = MD.data, O = MD.odds, h = U.h, P = () => MD.props, A = () => MD.ai;
+  const S = { an: new Map() }; // player -> {status, logs, model, ctx, err}
+  const pctTxt = (p, dp = 0) => p == null ? "—" : (p * 100).toFixed(dp) + "%";
+  const evTxt = (e) => e == null ? "—" : h("span", { class: "num " + (e > 0.02 ? "up" : e < -0.02 ? "down" : "") }, (e > 0 ? "+" : "") + (e * 100).toFixed(1) + "%");
+  async function pool(items, n, fn) { let i = 0; await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; try { await fn(items[k]); } catch {} } })); }
+
+  async function analyze(row) {
+    const cur = S.an.get(row.player); if (cur && (cur.status === "ready" || cur.status === "loading")) return cur;
+    const a = { status: "loading" }; S.an.set(row.player, a);
+    try {
+      a.logs = await P().playerLogs(row.player);
+      a.model = P().model(a.logs.games, row.consensusLine);
+      a.ctx = await P().context(a.logs.team, row.player).catch(() => ({}));
+      a.edge = a.model && row.bestOver ? P().edge(a.model.pOver, row.bestOver.dec) : null;
+      a.status = a.model ? "ready" : "thin";
+    } catch (e) { a.status = "error"; a.err = U.errorText(e); }
+    return a;
+  }
+  function sparkBars(games, line) {
+    const xs = games.slice(0, 10).reverse(); if (!xs.length) return null;
+    const max = Math.max(line * 1.4, ...xs.map(g => g.pts)), W = 260, H = 80, bw = W / xs.length;
+    const y = (v) => H - 14 - v / max * (H - 20);
+    const bars = xs.map((g, i) => '<rect x="' + (i * bw + 2) + '" y="' + y(g.pts) + '" width="' + (bw - 4) + '" height="' + (H - 14 - y(g.pts)) + '" rx="2" fill="' + (g.pts > line ? "var(--up)" : "var(--down)") + '" fill-opacity="0.75"><title>' + g.date + " " + (g.home ? "vs " : "@ ") + g.opp + ": " + g.pts + " pts in " + g.min + " min</title></rect>").join("");
+    return h("div", { html: '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" style="max-width:420px" role="img" aria-label="Points in the last ' + xs.length + ' games against the line">' + bars + '<line x1="0" x2="' + W + '" y1="' + y(line) + '" y2="' + y(line) + '" stroke="currentColor" stroke-dasharray="4 3" stroke-opacity="0.7"/><text x="2" y="' + (y(line) - 3) + '" font-size="9" fill="currentColor" opacity="0.7">line ' + line + '</text></svg>', style: "color:var(--muted)" });
+  }
+  function detail(app, row) {
+    const a = S.an.get(row.player);
+    if (!a || a.status === "loading") return h("div", { class: "skeleton" }, "Reading " + row.player + "'s game logs on ESPN…");
+    if (a.status === "error") return U.errorBox({ message: a.err });
+    const m = a.model;
+    return h("div", { class: "stack" },
+      h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("div", { class: "stack", style: "gap:2px" }, h("strong", { style: "font-size:1.05rem" }, row.player), h("span", { class: "small muted" }, (a.logs.team || "") + (a.ctx && a.ctx.game ? " · next: " + (a.ctx.game.home ? "vs " : "@ ") + a.ctx.game.opponent : " · no game found on today's ESPN scoreboard") + (a.ctx && a.ctx.injury ? " · " + a.ctx.injury.status : ""))),
+        h("a", { href: a.logs.url, target: "_blank", rel: "noopener noreferrer", class: "small" }, "ESPN game log ↗")),
+      m ? h("div", { class: "kpis k4" },
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Model: over " + row.consensusLine), h("span", { class: "v" }, pctTxt(m.pOver)), h("span", { class: "s" }, "mean " + m.mean.toFixed(1) + " ± " + m.sd.toFixed(1) + " pts, " + m.n + " games" + (m.pPush ? " · push " + pctTxt(m.pPush) : ""))),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Best over price"), h("span", { class: "v" }, row.bestOver ? O.fmtAm(row.bestOver.dec) + " " + row.bestOver.book : "—"), h("span", { class: "s" }, row.bestOver ? "breakeven " + pctTxt(1 / row.bestOver.dec, 1) + " · model EV " + (a.edge != null ? (a.edge * 100).toFixed(1) + "%" : "—") : "no sportsbook price at the consensus line")),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Went over"), h("span", { class: "v" }, pctTxt(m.hit10)), h("span", { class: "s" }, "last 10 · last 5 " + pctTxt(m.hit5) + " · last 20 " + pctTxt(m.hit20))),
+        h("div", { class: "kpi" }, h("span", { class: "label" }, "Recent form"), h("span", { class: "v" }, (m.avg5 != null ? m.avg5.toFixed(1) : "—") + " pts"), h("span", { class: "s" }, "last 5 · " + (m.min5 != null ? m.min5.toFixed(0) : "—") + " min vs " + (m.min20 != null ? m.min20.toFixed(0) : "—") + " over 20 · home " + (m.homeAvg != null ? m.homeAvg.toFixed(1) : "—") + " / away " + (m.awayAvg != null ? m.awayAvg.toFixed(1) : "—")))) : h("p", { class: "small warn-t" }, "Fewer than three games with minutes; no model yet."),
+      m ? sparkBars(m.last, row.consensusLine) : null,
+      h("div", { class: "tbl-wrap" }, U.table([{ t: "Book", v: (x) => x.book + (x.dfs ? " (pick'em)" : "") }, { t: "Line", v: (x) => (x.side === "over" ? "o" : "u") + x.line, n: true }, { t: "Price", v: (x) => x.dfs ? h("span", { class: "faint", title: "Pick'em sites pay by entry, not per-pick odds" }, O.fmtAm(x.dec)) : O.fmtAm(x.dec), n: true }, { t: "Breakeven", v: (x) => pctTxt(1 / x.dec, 1), n: true }, { t: "Model at this line", v: (x) => { if (!m) return "—"; const mm = P().model(a.logs.games, x.line); return mm ? pctTxt(x.side === "over" ? mm.pOver : mm.pUnder) : "—"; }, n: true }], Object.entries(row.books).map(([book, x]) => Object.assign({ book }, x)).sort((p, q) => p.line - q.line || q.dec - p.dec))),
+      h("p", { class: "tiny muted" }, "Model: recency-weighted normal fit to points in this season's and last season's regular-season games (ESPN), each game back counting 6% less. It knows nothing about tonight's matchup, minutes limits or lineup news beyond the injury report; the AI picks below check those. Lines: VegasInsider, read " + (row._updated ? U.fmtDate(row._updated) : "today") + "; confirm in the sportsbook."));
+  }
+
+  function view(body, app, sport) {
+    body.append(h("div", { class: "banner warn" }, h("p", {}, "Player props carry a bigger margin than game lines, and one-player outcomes swing a lot. Bet small, never chase losses. If gambling stops being fun, call or text 1-800-GAMBLER.")));
+    if (sport !== "nba") { body.append(U.section("Player props", h("div", { class: "empty" }, "Player props cover NBA points for now. Pick NBA above to see them."))); return; }
+    const box = h("div", { class: "stack" });
+    body.append(U.section("NBA points props", box));
+    U.async(box, () => P().loadProps(), (r) => {
+      for (const p of r.props) p._updated = r.updated;
+      let sel = null;
+      const detailBox = h("div", { class: "stack" });
+      const show = (row) => { sel = row; detailBox.replaceChildren(detail(app, row)); };
+      const cols = [
+        { t: "Player", sort: (x) => x.player, v: (x) => h("strong", {}, x.player) },
+        { t: "Line", n: true, sort: (x) => x.consensusLine, v: (x) => h("span", { class: "projcell" }, h("b", {}, String(x.consensusLine)), x.lowLine !== x.highLine ? h("span", { class: "tiny muted" }, x.lowLine + "–" + x.highLine) : null) },
+        { t: "Best over", n: true, sort: (x) => x.bestOver ? x.bestOver.dec : null, v: (x) => x.bestOver ? h("span", { class: "projcell" }, h("b", {}, O.fmtAm(x.bestOver.dec)), h("span", { class: "tiny muted" }, x.bestOver.book)) : "—" },
+        { t: "Books", n: true, sort: (x) => x.bookCount, v: (x) => String(x.bookCount) },
+        { t: "Model over", n: true, sort: (x) => { const a = S.an.get(x.player); return a && a.model ? a.model.pOver : null; }, v: (x) => { const a = S.an.get(x.player); return !a ? h("button", { class: "btn ghost sm", type: "button", onclick: async (ev) => { ev.stopPropagation(); ev.target.disabled = true; ev.target.textContent = "…"; await analyze(x); table.update(r.props); if (sel === x || !sel) show(x); } }, "Analyze") : a.status === "loading" ? h("span", { class: "tiny muted" }, "…") : a.status === "error" ? h("span", { class: "tiny warn-t", title: a.err }, "n/a") : a.model ? h("b", {}, pctTxt(a.model.pOver)) : "—"; } },
+        { t: "EV at best", n: true, sort: (x) => { const a = S.an.get(x.player); return a ? a.edge : null; }, v: (x) => { const a = S.an.get(x.player); return a ? evTxt(a.edge) : "—"; } },
+        { t: "Over, last 10", n: true, sort: (x) => { const a = S.an.get(x.player); return a && a.model ? a.model.hit10 : null; }, v: (x) => { const a = S.an.get(x.player); return a && a.model ? pctTxt(a.model.hit10) : "—"; } },
+        { t: "Next", v: (x) => { const a = S.an.get(x.player); return a && a.ctx ? h("span", { class: "tiny" }, a.ctx.game ? (a.ctx.game.home ? "vs " : "@ ") + a.ctx.game.opponent : "—", a.ctx.injury ? h("span", { class: "injb" }, a.ctx.injury.status) : null) : ""; } }];
+      const table = U.dataTable(cols, r.props, { key: "props.nba", sort: [3, -1], noun: "players", placeholder: "Filter by player…", text: (x) => x.player, onRow: async (x) => { show(x); if (!S.an.get(x.player)) { await analyze(x); table.update(r.props); show(x); } } });
+      const topBtn = h("button", { class: "btn", type: "button", onclick: async () => {
+        topBtn.disabled = true; const top = r.props.slice().sort((a, b) => b.bookCount - a.bookCount || b.consensusLine - a.consensusLine).slice(0, 12).filter(x => !S.an.get(x.player));
+        let n = 0; topBtn.textContent = "Analyzing 0 of " + top.length + "…";
+        await pool(top, 3, async (x) => { await analyze(x); n++; topBtn.textContent = "Analyzing " + n + " of " + top.length + "…"; table.update(r.props); });
+        topBtn.textContent = "Analyzed"; if (!sel && top[0]) show(top[0]);
+      } }, "Analyze the 12 most-listed players");
+      box.append(h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("span", { class: "small muted" }, r.props.length + " players · " + r.books.length + " books · VegasInsider" + (r.updated ? ", updated " + U.fmtDate(r.updated) : "")), topBtn), table, detailBox,
+        U.section("AI prop picks", h("div", { class: "stack" }, h("p", { class: "small muted" }, "Claude reads the model numbers for the players you've analyzed, checks injury, minutes and role news, and picks the few with the best evidence (or none). A second review checks each pick against the numbers."), MD.oppAI.runner(app, "Pick props with AI", (Sx, signal) => aiPicks(app, r, Sx, signal), picksView(app)))));
+    }, { loading: "Reading NBA player props from VegasInsider…" });
+  }
+
+  async function aiPicks(app, r, Sx, signal) {
+    const rows = r.props.filter(x => { const a = S.an.get(x.player); return a && a.model; }).slice(0, 20);
+    if (rows.length < 2) throw new Error("Analyze some players first (the button above analyzes the 12 most-listed).");
+    const facts = rows.map(x => { const a = S.an.get(x.player), m = a.model; return A().rnd({ player: x.player, team: a.logs.team, line: x.consensusLine, lineRange: [x.lowLine, x.highLine], bestOver: x.bestOver ? { book: x.bestOver.book, american: O.fmtAm(x.bestOver.dec), breakevenPct: 100 / x.bestOver.dec } : null, modelOverPct: m.pOver * 100, modelUnderPct: m.pUnder * 100, evAtBestPct: a.edge != null ? a.edge * 100 : null, mean: m.mean, sd: m.sd, gamesUsed: m.n, thisSeasonGames: a.logs.current, last5Avg: m.avg5, minutesLast5: m.min5, minutesLast20: m.min20, overRateLast10Pct: m.hit10 != null ? m.hit10 * 100 : null, next: a.ctx && a.ctx.game ? (a.ctx.game.home ? "vs " : "@ ") + a.ctx.game.opponent : null, injury: a.ctx && a.ctx.injury || null }); });
+    const lim = await app.caps.sample.limits().catch(() => null);
+    const tools = lim && lim.tools ? A().tools(app, Sx, ["search_news", "search_web"]) : undefined;
+    const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are a disciplined NBA player-props analyst. The app measured these points props: sportsbook lines (VegasInsider) and a model fitted to each player's ESPN game logs.
+${tools ? "Use 2 to 6 tool calls (search_news or search_web) on the players you're leaning toward: injuries, minutes restrictions, role or lineup changes, and the opponent's defence. Cite only URLs the tools returned." : ""}
+Rules: the model ignores matchup and lineup news, early-season samples are small, and prop margins are large, so an edge under ~3% is noise. "No bet" is often right. Only the over is priced on this page; for an under, say there is no under price here. Never invent numbers. Suggest at most 1% of bankroll per pick.
+Props: ${JSON.stringify(facts)}
+Reply with ONLY JSON: {"summary": "2 sentences", "picks": [{"player": "...", "side": "over"|"under", "line": number, "book": "best book or empty", "probabilityPct": number, "why": "1-2 sentences with the numbers", "risk": "...", "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}], "passes": [{"player": "...", "reason": "why no bet"}]}`;
+    const res = await app.caps.sample.json(prompt, Object.assign({ modelTier: "complex", signal }, tools ? { tools } : { cache: false }));
+    const known = new Map(rows.map(x => [x.player, x]));
+    const picks = (res.picks || []).filter(p => known.has(p.player)).slice(0, 5).map(p => { const x = known.get(p.player), a = S.an.get(p.player); return { player: p.player, side: p.side === "under" ? "under" : "over", line: Number(p.line) || x.consensusLine, book: String(p.book || (x.bestOver && x.bestOver.book) || ""), probabilityPct: Math.max(40, Math.min(80, Number(p.probabilityPct) || 50)), modelPct: (p.side === "under" ? a.model.pUnder : a.model.pOver) * 100, why: String(p.why || ""), risk: String(p.risk || ""), confidence: Math.max(0, Math.min(100, Number(p.confidence) || 0)), sources: Sx.verify(p.sources), price: x.bestOver && p.side !== "under" ? x.bestOver.dec : null }; });
+    const rv = await A().review(app, { task: "NBA points prop picks", S: Sx, signal, facts, items: picks.map(p => ({ id: p.player, side: p.side, line: p.line, probabilityPct: p.probabilityPct, modelPct: p.modelPct, why: p.why, confidence: p.confidence })) });
+    for (const p of picks) { const rr = rv && rv.reviews.find(x => x.id === p.player); if (rr) p.review = rr; p.ev = p.price ? (p.probabilityPct / 100) * p.price - 1 : null; }
+    return { summary: String(res.summary || ""), picks: picks.filter(p => !(p.review && p.review.verdict === "drop")), dropped: picks.filter(p => p.review && p.review.verdict === "drop"), passes: (res.passes || []).slice(0, 8), overall: rv && rv.overall };
+  }
+  const picksView = (app) => (res) => h("div", { class: "stack" }, h("p", {}, res.summary), res.overall ? h("p", { class: "small muted" }, h("strong", {}, "Review: "), res.overall) : null,
+    res.picks.length ? res.picks.map(p => h("div", { class: "card aicard", style: "padding:10px 12px" },
+      h("div", { class: "row between", style: "flex-wrap:wrap;gap:6px" }, h("strong", {}, p.player + " " + p.side + " " + p.line), h("span", { class: "small" }, "Claude " + p.probabilityPct.toFixed(0) + "% · model " + p.modelPct.toFixed(0) + "%" + (p.price ? " · " + O.fmtAm(p.price) + " " + p.book + " · EV " + (p.ev * 100).toFixed(1) + "%" : " · no price on this page"))),
+      h("p", { class: "small", style: "margin:6px 0" }, p.why), p.risk ? h("p", { class: "small" }, h("strong", {}, "Risk: "), p.risk) : null, A().reviewBadge(p.review), A().sources(p.sources))) : h("div", { class: "empty" }, "No bet: nothing clears the bar today."),
+    res.dropped.length ? h("p", { class: "small muted" }, "Dropped by the review: " + res.dropped.map(p => p.player + " (" + (p.review.note || "") + ")").join("; ")) : null,
+    res.passes.length ? A().list("Passed on", res.passes.map(x => x.player + ": " + x.reason)) : null,
+    h("p", { class: "tiny muted" }, "Claude's picks from the measured model and the news it retrieved, checked by a second review. Confirm the price in your sportsbook; Market Desk never places bets."));
+
+  MD.propsView = view;
+  MD.propsState = S;
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>

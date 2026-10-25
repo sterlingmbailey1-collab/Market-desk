@@ -64,7 +64,7 @@
     return h("details", { class: "rg" }, h("summary", { class: "tiny" }, h("strong", {}, "Bet responsibly."), " Only stake what you can afford to lose. Help: ", h("b", { class: "mono" }, "1-800-GAMBLER"), " (US) · Market Desk never places bets."),
       h("p", { class: "small" }, "Check that sports betting is legal where you are and that you meet the age limit (21+ in most US states, 18+ in the UK and EU). Help is free and confidential: call or text ", h("b", { class: "mono" }, "1-800-GAMBLER"), " (US), or visit ", h("a", { href: "https://www.begambleaware.org/", target: "_blank", rel: "noopener noreferrer" }, "BeGambleAware"), " (UK). You can set a daily loss limit and a stake cap under My bets."));
   }
-  const VIEWS = [["games", "Games"], ["picks", "AI picks"], ["value", "Value & arbitrage"], ["bets", "My bets"], ["calc", "Calculators"], ["assistant", "AI assistant"]];
+  const VIEWS = [["games", "Games"], ["picks", "AI picks"], ["props", "Player props"], ["value", "Value & arbitrage"], ["bets", "My bets"], ["calc", "Calculators"], ["assistant", "AI assistant"]];
   function listView(root, app) {
     let sport = app.ls.get("bet.sport", "nfl"); if (!B.SPORTS.some(s => s.id === sport)) sport = "nfl";
     let tab = app.ls.get("bet.tab", "games"); if (!VIEWS.some(v => v[0] === tab)) tab = "games";
@@ -77,6 +77,7 @@
       body._loadId = (body._loadId || 0) + 1; // drop any odds load still in flight for the previous view
       body.replaceChildren();
       if (tab === "bets") return betsView(body, app);
+      if (tab === "props") return MD.propsView(body, app, sport);
       if (tab === "calc") return calcView(body, app);
       if (tab === "assistant") return body.append(U.section("AI betting assistant", MD.betAI.assistant(app, () => ({ league: sport }))));
       const sp = B.sportOf(sport);
