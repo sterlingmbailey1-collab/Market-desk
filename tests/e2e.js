@@ -188,6 +188,10 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("clear crypto keeps stock picks", await page.locator("button.pickrm").count() === picks[0].picks.filter(p => p.asset.cls !== "crypto").length);
   await page.click("button:has-text('Restore cleared')"); await page.waitForTimeout(500);
 
+  // Set check: three tech picks that all lean up.
+  await page.evaluate(async () => { const mk = (s) => ({ symbol: s, asset: { id: "stock:" + s, cls: "stock", symbol: s, name: s }, upPct: 60, downPct: 40, lean: "up", leanProbabilityPct: 60, ifUpPct: 9, ifDownPct: 7, moveLow: 6, moveHigh: 12, timeframeDays: 30, timeframeLabel: "a month", why: ["x"], sources: [], confidence: 50, priceAtPick: 100, currency: "USD", probs: { claude: 60, model: 55, blended: 58, final: 60 }, moveExplained: { sectorEtf: "XLK" } }); await MD.app.store.create("picks", { window: "3m", windowLabel: "1–3 months", scope: {}, summary: "tech", candidates: 3, sourcesRetrieved: 0, toolCalls: 0, picks: ["MSFT", "NVDA", "ORCL"].map(mk) }); MD.app.ls.set("picksOpen", null); MD.app.rerender(); }); await page.waitForTimeout(1500);
+  check("set check flags a set concentrated in one sector and all leaning the same way", /Set check: 3 of 3 picks are Technology/.test(await page.locator("#content").innerText()) && /Every pick leans up/.test(await page.locator("#content").innerText()));
+
   // ---- Market Brain: measured pulse, a studied session, a scored playbook, and the note every AI gets
   await page.evaluate(() => MD.app.go("brain", null, { fromNav: true })); await page.waitForTimeout(4000);
   const brTxt = await page.locator("#content").innerText();
@@ -286,6 +290,9 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const decFc = await page.evaluate(() => MD.app.store.cached("forecasts").filter(f => f.source === "ai-decide"));
   check("AI decision: a decision for the investor's profile, odds, expected value, size ceiling, entry and exit, reviewed and logged", /Add slowly/i.test(decTxt) && /Expected value/i.test(decTxt) && /Size ceiling/i.test(decTxt) && /Entry:/.test(decTxt) && /Exit:/.test(decTxt) && /Review:/i.test(decTxt) && decFc.length === 1 && decFc[0].horizonDays >= 91, decTxt.slice(0, 700));
   check("Claude's size above what the maths supports is flagged", /above what the odds and payoff support/.test(decTxt));
+  const al0 = await page.evaluate(() => MD.app.store.cached("alerts").length);
+  await page.click("#sec-decide button:has-text('Alerts at the stop and take-profit')"); await page.waitForTimeout(600);
+  check("one click sets alerts at the decision's stop and take-profit", await page.evaluate((n) => { const a = MD.app.store.cached("alerts"); return a.length === n + 2 && a.some(x => /AI decision on AAPL: the level where it's wrong/.test(x.note) && x.kind === "below"); }, al0));
   await page.click("#sec-why button:has-text('Explain the move')"); await page.waitForTimeout(4000);
   const whyTxt = await page.locator("#sec-why").innerText();
   check("why it's moving: market, sector, rates, dollar, oil and the asset's own part", /Asset-specific/.test(whyTxt) && /S&P 500 \(β/.test(whyTxt) && /Technology \(β/.test(whyTxt) && /Last 5 days/i.test(whyTxt) && /Factor model fitted on/i.test(whyTxt), whyTxt.slice(0, 600));

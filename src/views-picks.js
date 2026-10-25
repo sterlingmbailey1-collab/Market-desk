@@ -385,6 +385,17 @@ Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"b
       { t: "Chance up / down", v: (p) => p.upPct == null ? "—" : h("span", { class: "row", style: "gap:6px;align-items:center;justify-content:flex-end" }, h("span", { class: "up num" }, "▲ " + p.upPct + "%"), h("span", { class: "down num" }, "▼ " + (100 - p.upPct) + "%")), n: true },
       { t: "If up / if down", v: (p) => p.upPct == null ? "±" + C.fmtNum(p.moveLow, 0) + "–" + C.fmtNum(p.moveHigh, 0) + "%" : "+" + C.fmtNum(p.ifUpPct, 0) + "% / −" + C.fmtNum(p.ifDownPct, 0) + "%", n: true },
       { t: "Window", v: (p) => p.timeframeLabel }, { t: "Confidence", v: (p) => p.confidence + "/100", n: true }], set.picks, { onRow: (p) => app.openAsset(p.asset) }));
+    // Set check: sector concentration across the picks and overlap with what the investor already holds.
+    (() => {
+      const secs = {}; for (const p of set.picks) { const s = p.moveExplained && p.moveExplained.sectorEtf ? (MD.brain.NAME[p.moveExplained.sectorEtf] || p.moveExplained.sectorEtf) : p.asset.cls === "crypto" ? "Crypto" : null; if (s) (secs[s] = secs[s] || []).push(p.symbol); }
+      const top = Object.entries(secs).sort((a, b) => b[1].length - a[1].length)[0], held = myAssets(app).filter(a => a.held).map(a => a.symbol), overlap = set.picks.filter(p => held.includes(p.symbol)).map(p => p.symbol);
+      const leanUp = set.picks.filter(p => p.upPct != null && p.upPct >= 50).length, withOdds = set.picks.filter(p => p.upPct != null).length;
+      const notes = [];
+      if (top && top[1].length >= Math.max(2, Math.ceil(set.picks.length / 2))) notes.push(top[1].length + " of " + set.picks.length + " picks are " + top[0] + " (" + top[1].join(", ") + "): they tend to move together, so the set is less diversified than it looks.");
+      if (overlap.length) notes.push("You already hold " + overlap.join(", ") + ": a pick there adds to an existing position.");
+      if (withOdds >= 3 && (leanUp === withOdds || leanUp === 0)) notes.push("Every pick leans " + (leanUp ? "up" : "down") + ": the set is a bet on the market's direction as much as on each name.");
+      if (notes.length) wrap.append(h("div", { class: "banner info" }, h("p", { class: "small" }, h("strong", {}, "Set check: "), notes.join(" "))));
+    })();
     const grid = h("div", { class: "grid g2" });
     const priceEls = new Map();
     for (const p of set.picks) {

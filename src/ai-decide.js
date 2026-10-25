@@ -74,6 +74,13 @@ Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoi
       MD.ai.list("Why", d.reasons), MD.ai.list("Risks", d.risks), d.changeMyMind ? h("p", { class: "small" }, h("strong", {}, "Would change the decision: "), d.changeMyMind) : null,
       h("p", { class: "tiny muted" }, "Claude " + d.probs.claude + "%" + (d.probs.model != null ? " · the asset's own history " + d.probs.model + "%" : "") + (d.probs.reviewer != null ? " · reviewer " + d.probs.reviewer + "%" : "") + (d.calibration ? " · calibrated from " + d.calibration.scored + " graded decisions" : "") + " · final " + d.upPct + "%."),
       MD.ai.reviewBadge(d.review), MD.ai.sources(d.sources),
+      d.price > 0 && d.exitPlan && (d.exitPlan.stopPct || d.exitPlan.takeProfitPct) ? h("button", { class: "btn ghost sm", type: "button", onclick: async (ev) => {
+        const a = { id: d.assetId, cls: String(d.assetId).split(":")[0], symbol: d.symbol }, base = { assetId: d.assetId, cls: a.cls, symbol: d.symbol, state: { armed: true } };
+        const stop = d.exitPlan.stopPct ? +(d.price * (1 - Math.abs(d.exitPlan.stopPct) / 100)).toPrecision(6) : null, tp = d.exitPlan.takeProfitPct ? +(d.price * (1 + Math.abs(d.exitPlan.takeProfitPct) / 100)).toPrecision(6) : null;
+        if (stop) await app.store.create("alerts", Object.assign({}, base, { kind: "below", threshold: stop, note: "AI decision on " + d.symbol + ": the level where it's wrong (" + (d.exitPlan.wrongIf || "stop") + ")" }));
+        if (tp) await app.store.create("alerts", Object.assign({}, base, { kind: "above", threshold: tp, note: "AI decision on " + d.symbol + ": take-profit area" }));
+        ev.currentTarget.disabled = true; ev.currentTarget.textContent = "Alerts set"; U.toast("Alerts set for " + d.symbol, [stop && "below " + stop, tp && "above " + tp].filter(Boolean).join(" and "));
+      } }, "Alerts at the stop and take-profit") : null,
       h("p", { class: "tiny muted" }, d.forecastId ? "Logged in the forecast journal and graded in " + d.days + " days. Not advice: you decide and place any order yourself." : "Not advice: you decide and place any order yourself."));
   }
   function card(app, asset) {
