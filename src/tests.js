@@ -288,6 +288,13 @@
     const st = Q.tradeStats([{ side: "long", entry: 10, exit: 11, shares: 100, stop: 9.5 }, { side: "short", entry: 20, exit: 21, shares: 50, stop: 21 }, { side: "long", entry: 5, exit: 5.5, shares: 100 }]);
     eq(st.n, 3); near(st.net, 100, 1e-9); near(st.winRatePct, 200 / 3, 1e-9); near(st.profitFactor, 3, 1e-9); near(st.avgR, 0.5, 1e-9);
   });
+  test("barrier odds: target before stop matches the driftless result, and shorts mirror longs", () => {
+    const Q = MD.quant, long = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 6, minutesLeft: 1440, paths: 4000 });
+    near(long.pTarget, Math.log(100 / 99) / Math.log(102 / 99), 0.03); ok(long.pNeither < 0.05, "plenty of time: " + long.pNeither); near(long.rr, 2, 1e-9);
+    const short = Q.barrierOdds({ entry: 100, stop: 101, target: 98, side: "short", dailyVolPct: 6, minutesLeft: 1440, paths: 4000 }); near(short.pTarget, Math.log(101 / 100) / Math.log(101 / 98), 0.03);
+    const late = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 1, minutesLeft: 10 }); ok(late.pNeither > 0.9, "ten quiet minutes rarely reach either level");
+    eq(Q.barrierOdds({ entry: 100, stop: 101, target: 102, dailyVolPct: 2, minutesLeft: 60 }), null);
+  });
   test("decision maths: expected value, payoff, Kelly and a capped quarter-Kelly ceiling", () => {
     const Q = MD.quant, d = Q.decisionMath({ upPct: 60, upMovePct: 20, downMovePct: 10, capPct: 10 });
     near(d.evPct, 8, 1e-9); near(d.payoff, 2, 1e-9); near(d.kellyPct, 40, 1e-9); near(d.ceilingPct, 10, 1e-9); near(d.breakEvenUpPct, 33.3, 1e-9);

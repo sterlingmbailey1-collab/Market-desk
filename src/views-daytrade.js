@@ -67,6 +67,8 @@
     L.prior = pd ? { date: iso(pd.time), high: pd.high, low: pd.low, close: pd.close, open: pd.open } : null;
     L.pivots = pd ? Q.pivots(pd) : null;
     const a = Q.atr(prior, 14); L.atr = a ? a.atr : null; L.atrPct = a ? a.atrPct : null;
+    const lr = C.returnsFrom(prior.slice(-61).map(p => p.close)); L.dailyVolPct = lr.length > 10 ? C.stdev(lr) * 100 : null;
+    L.minutesLeft = isStock ? (L.clock.phase === "open" ? L.clock.minutesToClose : L.clock.phase === "pre" || (L.clock.tradingDay && L.clock.nyMinutes < 570) ? 390 : 0) : Math.round((Math.floor(Date.now() / 864e5) + 1) * 1440 - Date.now() / 60000);
     L.rangeUsedPct = L.atr && hi != null && lo != null ? (hi - lo) / L.atr * 100 : null;
     const vw = today.length ? Q.vwap(today) : null; L.vwap = vw ? { value: vw.last, upper: vw.upper, lower: vw.lower } : null; L.vwapSeries = vw ? vw.series : [];
     L.vsVwapPct = vw && L.last ? (L.last / vw.last - 1) * 100 : null;
@@ -114,10 +116,24 @@
     const input = h("input", { type: "text", placeholder: "Add a ticker", "aria-label": "Add to board", style: "max-width:150px" });
     const addBtn = h("button", { class: "btn ghost sm", type: "button", onclick: () => { const v = input.value.trim().toUpperCase(); if (!v) return; if (!get().includes(v)) set(get().concat(v)); input.value = ""; refresh(true); } }, "Add");
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") addBtn.click(); });
-    let seen = null;
+    let seen = null, lastRows = [];
+    const aiOut = h("div", { class: "stack" });
+    const aiBtn = h("button", { class: "btn ghost sm", type: "button", disabled: !app.caps.sample, onclick: async () => {
+      const rows = lastRows.filter(r => !r.error); if (!rows.length) return;
+      aiBtn.disabled = true; aiOut.replaceChildren(h("div", { class: "skeleton" }, "Reading the board…"));
+      try {
+        const r = await app.caps.sample.json(`You are a disciplined intraday analyst. Below is the user's watch board, measured by the app: price, change, gap, position in the day's range, relative volume and the setups detected (with since-when). The US market is ${Q.session().phase}. Say which one or two setups look cleanest right now and why (trend, volume, clean levels), with a plan in levels already on the board; which names to leave alone; and when the honest answer is "nothing clean, wait". Use only the board's data; no orders.
+${MD.ai.contextNote(app)}
+Board: ${JSON.stringify(rows.map(x => ({ symbol: x.symbol, last: x.last, changePct: r2(x.chgPct), gapPct: r2(x.gapPct), gapIndicatedByPremarket: x.gapIndicated, dayRangePositionPct: x.posPct != null ? Math.round(x.posPct) : null, relativeVolume: r2(x.rvol), dayHigh: x.high, dayLow: x.low, setups: x.signals.map(sg => sg.name + " (" + sg.detail + ")") })))}
+Reply with ONLY JSON: {"summary": "1-2 sentences", "best": [{"symbol": "...", "setup": "...", "why": "...", "plan": "trigger, stop and target from the board's levels"}], "avoid": [{"symbol": "...", "why": "..."}], "waitIf": "when to stand aside"}`, { modelTier: "complex", cache: false });
+        aiOut.replaceChildren(h("div", { class: "aicard" }, h("p", {}, r.summary), (r.best || []).length ? h("div", {}, h("span", { class: "label" }, "Cleanest now"), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:4px" }, r.best.slice(0, 2).map(b => h("li", {}, h("strong", {}, b.symbol + " · " + b.setup + ": "), b.why + " ", h("em", {}, b.plan))))) : null,
+          (r.avoid || []).length ? MD.ai.list("Leave alone", r.avoid.slice(0, 4).map(a => a.symbol + ": " + a.why)) : null, r.waitIf ? h("p", { class: "small muted" }, "Stand aside if: " + r.waitIf) : null, h("p", { class: "tiny muted" }, "Claude's read of the measured board · " + new Date().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) + ". Not advice.")));
+      } catch (e) { aiOut.replaceChildren(U.errorBox({ message: MD.ai.errText(e) })); }
+      aiBtn.disabled = false;
+    } }, "AI: which setup is cleanest now?");
     async function refresh(quiet) {
       const syms = get(); stamp.textContent = "Updating…";
-      const rows = await Promise.all(syms.map(s => boardRow(app, s).catch(e => ({ symbol: s, error: U.errorText(e) }))));
+      const rows = await Promise.all(syms.map(s => boardRow(app, s).catch(e => ({ symbol: s, error: U.errorText(e) })))); lastRows = rows;
       // A signal that wasn't there at the last refresh pops a notice.
       if (seen && !quiet && app.settings.notify && app.settings.notify.toasts !== false) for (const r of rows) { if (!r.signals) continue; const fresh = r.signals.filter(x => x.side !== "neutral" && !(seen.get(r.symbol) || []).includes(x.name)); if (fresh.length) U.toast(r.symbol + ": " + fresh.map(x => x.name).join(", "), fresh.map(x => x.detail).join(" · ")); }
       seen = new Map(rows.filter(r => r.signals).map(r => [r.symbol, r.signals.map(x => x.name)]));
@@ -128,7 +144,7 @@
         { t: "", v: (r) => h("button", { class: "btn ghost sm", type: "button", "aria-label": "Remove " + r.symbol, onclick: (e) => { e.stopPropagation(); set(get().filter(x => x !== r.symbol)); refresh(true); } }, "×") }], rows, { onRow: (r) => r.asset && load(r.asset) }));
       stamp.textContent = "Updated " + new Date().toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) + " · every minute while US markets trade · * gap indicated by pre-market";
     }
-    box.append(h("div", { class: "row", style: "gap:6px;flex-wrap:wrap;align-items:center" }, input, addBtn, app.store.cached("watch").length ? h("button", { class: "btn ghost sm", type: "button", onclick: () => { const w = app.store.cached("watch").filter(x => ["stock", "etf"].includes(x.cls)).map(x => x.symbol); set([...new Set(get().concat(w))]); refresh(true); } }, "Add my watchlist") : null), tbl, stamp);
+    box.append(h("div", { class: "row", style: "gap:6px;flex-wrap:wrap;align-items:center" }, input, addBtn, aiBtn, app.store.cached("watch").length ? h("button", { class: "btn ghost sm", type: "button", onclick: () => { const w = app.store.cached("watch").filter(x => ["stock", "etf"].includes(x.cls)).map(x => x.symbol); set([...new Set(get().concat(w))]); refresh(true); } }, "Add my watchlist") : null), tbl, stamp, aiOut);
     refresh(true);
     const timer = setInterval(() => { if (!document.body.contains(box)) { clearInterval(timer); return; } if (!document.hidden && ["pre", "open", "after"].includes(Q.session().phase)) refresh(false); }, 60000);
     return box;
@@ -138,7 +154,7 @@
     return { signals: (L.signals || []).map(s => s.name + ": " + s.detail), symbol: L.symbol, name: L.name, class: L.cls, session: L.sessionLabel, clock: { phase: L.clock.phase, minutesToClose: L.clock.minutesToClose, minutesToOpen: L.clock.minutesToOpen }, last: L.last, previousClose: L.previousClose, changePct: r2(L.changePct),
       gapPct: r2(L.gapPct), gapIsIndicatedFromPremarket: !!L.gapIndicated, preMarket: L.pre, open: L.open, sessionHigh: L.high, sessionLow: L.low, priorDay: L.prior, atr14: r2(L.atr), atrPct: r2(L.atrPct), rangeUsedOfAtrPct: r2(L.rangeUsedPct),
       vwap: L.vwap, vsVwapPct: r2(L.vsVwapPct), barsAboveVwapPct: r2(L.barsAboveVwapPct), openingRange15: L.or15, openingRange30: L.or30, relativeVolume: r2(L.rvol), volumeToday: L.volumeToday, avgVolume: L.avgVolume,
-      gapHistory: L.gapStats, closedAboveOpenPctLastYear: r2(L.closeAboveOpenPct), pivots: L.pivots, levels: L.levels.map(x => ({ label: x.label, price: x.price, distancePct: r2(x.distancePct) })), sector: L.sector || null, notes: L.notes, sources: L.sources };
+      gapHistory: L.gapStats, closedAboveOpenPctLastYear: r2(L.closeAboveOpenPct), dailyVolPct: r2(L.dailyVolPct), minutesLeftInSession: L.minutesLeft, pivots: L.pivots, levels: L.levels.map(x => ({ label: x.label, price: x.price, distancePct: r2(x.distancePct) })), sector: L.sector || null, notes: L.notes, sources: L.sources };
   }
 
   /* ---------- AI day-trade plan (logged as a same-day call and graded at the close) ---------- */
@@ -170,7 +186,8 @@ Reply with ONLY JSON:
       setups: (Array.isArray(r.setups) ? r.setups : []).slice(0, 2).map(x => {
         const side = x.side === "short" ? "short" : "long", entry = Number(x.entry), stop = Number(x.stop), targets = (Array.isArray(x.targets) ? x.targets : []).map(Number).filter(t => t > 0).slice(0, 3);
         const ok = entry > 0 && stop > 0 && (side === "long" ? stop < entry : stop > entry), rr = ok && targets[0] ? Math.abs(targets[0] - entry) / Math.abs(entry - stop) : null;
-        return { side, name: String(x.name || ""), trigger: String(x.trigger || ""), entry, stop, targets, reachFirstTargetPct: x.reachFirstTargetPct == null ? null : Math.max(0, Math.min(100, Number(x.reachFirstTargetPct))), invalidation: String(x.invalidation || ""), valid: ok, rewardRisk: rr, expectancyR: rr != null && x.reachFirstTargetPct != null ? (Number(x.reachFirstTargetPct) / 100) * rr - (1 - Number(x.reachFirstTargetPct) / 100) : null };
+        const geo = ok && targets[0] && L.dailyVolPct ? Q.barrierOdds({ entry, stop, target: targets[0], side, dailyVolPct: L.dailyVolPct, minutesLeft: L.minutesLeft || 390 }) : null;
+        return { geometryPct: geo ? Math.round(geo.pTarget * 100) : null, side, name: String(x.name || ""), trigger: String(x.trigger || ""), entry, stop, targets, reachFirstTargetPct: x.reachFirstTargetPct == null ? null : Math.max(0, Math.min(100, Number(x.reachFirstTargetPct))), invalidation: String(x.invalidation || ""), valid: ok, rewardRisk: rr, expectancyR: rr != null && x.reachFirstTargetPct != null ? (Number(x.reachFirstTargetPct) / 100) * rr - (1 - Number(x.reachFirstTargetPct) / 100) : null };
       }),
       noTradeIf: (r.noTradeIf || []).slice(0, 5).map(String), keyTimes: (r.keyTimes || []).slice(0, 5).map(String), risks: (r.risks || []).slice(0, 4).map(String), confidence: Math.max(0, Math.min(100, Number(r.confidence) || 0)), sources: S.verify(r.sources), toolCalls: S.calls };
     // Second reader checks the plan against the measured levels.
@@ -351,8 +368,10 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
       if (!r) { out.replaceChildren(h("p", { class: "small muted" }, "Enter the account size, risk per trade, entry and stop.")); return; }
       if (r.error) { out.replaceChildren(h("p", { class: "small warn-t" }, r.error)); return; }
       const stopAtr = L.atr ? Math.abs(f.entry.value - f.stop.value) / L.atr * 100 : null;
+      const odds = f.target.value && L.dailyVolPct ? Q.barrierOdds({ entry: f.entry.value, stop: f.stop.value, target: f.target.value, side: f.side.value, dailyVolPct: L.dailyVolPct, minutesLeft: L.minutesLeft || 390 }) : null;
       out.replaceChildren(h("div", { class: "kpis k4" }, kpi("Shares", String(r.shares), r.cappedBySize ? "capped by max position size" : "from risk per trade"), kpi("At risk", U.money(r.dollarsAtRisk, "USD"), C.fmtNum(r.perShareRisk, 2) + " a share"), kpi("Position", U.money(r.positionValue, "USD"), r.positionPct.toFixed(0) + "% of the account"), kpi("Reward : risk", r.rewardRisk == null ? "—" : r.rewardRisk.toFixed(2) + " R", r.targetOnWrongSide ? "target is on the wrong side" : r.dollarsAtTarget ? U.money(r.dollarsAtTarget, "USD") + " at target" : null)),
-        h("p", { class: "small muted" }, "1R / 2R / 3R targets: " + r.targets.map(t => px(t.price)).join(" / ") + (stopAtr != null ? ". The stop is " + stopAtr.toFixed(0) + "% of a normal day's range (ATR)" + (stopAtr < 10 ? ", tight enough that ordinary noise may hit it" : "") + "." : ".") + " Fees and slippage not included."));
+        h("p", { class: "small muted" }, "1R / 2R / 3R targets: " + r.targets.map(t => px(t.price)).join(" / ") + (stopAtr != null ? ". The stop is " + stopAtr.toFixed(0) + "% of a normal day's range (ATR)" + (stopAtr < 10 ? ", tight enough that ordinary noise may hit it" : "") + "." : ".") + " Fees and slippage not included."),
+        odds ? h("p", { class: "small" }, h("strong", {}, "Geometry alone: "), Math.round(odds.pTarget * 100) + "% chance the target comes before the stop" + (L.minutesLeft ? " by the close" : " in a full session") + ", " + Math.round(odds.pStop * 100) + "% stop first, " + Math.round(odds.pNeither * 100) + "% neither; expectancy " + (() => { const x = odds.pTarget * odds.rr - odds.pStop; return (x > 0 ? "+" : "") + x.toFixed(2); })() + " R. ", h("span", { class: "muted" }, "A random walk with " + (L.dailyVolPct ? L.dailyVolPct.toFixed(1) + "%" : "—") + " daily volatility over " + odds.minutes + " minutes: no trend or news, so a setup needs an edge beyond this to be worth taking.")) : null);
     };
     for (const el of Object.values(f)) el.addEventListener("input", calc);
     f.side.addEventListener("change", calc);
@@ -381,7 +400,7 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
       P.probs ? h("p", { class: "tiny muted" }, "Claude " + P.probs.claude + "%" + (P.probs.reviewer != null ? " · reviewer's own estimate " + P.probs.reviewer + "%" : "") + (P.calibration ? " · calibrated from " + P.calibration.scored + " graded plans: " + P.probs.final + "%" : "") + " · final " + P.upPct + "%") : null,
       h("p", {}, P.summary), MD.ai.list("What's moving it", P.drivers),
       P.setups.length ? h("div", { class: "grid g2" }, P.setups.map(s => h("div", { class: "bb " + (s.side === "long" ? "up" : "down") }, h("span", { class: "label" }, (s.side === "long" ? "Long" : "Short") + " · " + s.name), h("p", { class: "small" }, s.trigger),
-        h("p", { class: "small num" }, "Entry " + px(s.entry) + " · stop " + px(s.stop) + " · targets " + s.targets.map(px).join(" / ")), s.valid ? h("p", { class: "tiny muted" }, (s.rewardRisk != null ? s.rewardRisk.toFixed(2) + " R to the first target" : "") + (s.reachFirstTargetPct != null ? " · " + s.reachFirstTargetPct + "% chance of reaching it before the stop" : "") + (s.expectancyR != null ? " · expectancy " + (s.expectancyR > 0 ? "+" : "") + s.expectancyR.toFixed(2) + " R" : "")) : h("p", { class: "tiny warn-t" }, "The stop is on the wrong side of the entry; ignore this setup."),
+        h("p", { class: "small num" }, "Entry " + px(s.entry) + " · stop " + px(s.stop) + " · targets " + s.targets.map(px).join(" / ")), s.valid ? h("p", { class: "tiny muted" }, (s.rewardRisk != null ? s.rewardRisk.toFixed(2) + " R to the first target" : "") + (s.reachFirstTargetPct != null ? " · Claude: " + s.reachFirstTargetPct + "% chance of reaching it before the stop" : "") + (s.geometryPct != null ? " · geometry alone: " + s.geometryPct + "%" : "") + (s.expectancyR != null ? " · expectancy " + (s.expectancyR > 0 ? "+" : "") + s.expectancyR.toFixed(2) + " R" : "")) : h("p", { class: "tiny warn-t" }, "The stop is on the wrong side of the entry; ignore this setup."),
         s.invalidation ? h("p", { class: "tiny" }, "Invalidated if: " + s.invalidation) : null, s.valid ? h("button", { class: "btn ghost sm", type: "button", onclick: () => { sizer(sizerBox, app, L, s); sizerBox.scrollIntoView({ behavior: "smooth", block: "center" }); } }, "Size this setup") : null))) : h("p", { class: "small" }, "No setup worth taking."),
       MD.ai.list("Stay out if", P.noTradeIf), MD.ai.list("Key times", P.keyTimes), MD.ai.list("Risks", P.risks), MD.ai.reviewBadge(P.review), MD.ai.sources(P.sources),
       P.dueAt ? h("p", { class: "tiny muted" }, "Logged in the forecast journal; graded from the close on " + new Date(P.dueAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) + ".") : null));

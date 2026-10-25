@@ -257,6 +257,19 @@
     if (t > 0) { out.rewardRisk = Math.abs(t - e) / perShare; out.dollarsAtTarget = shares * Math.abs(t - e); out.targetOnWrongSide = (t - e) * dir <= 0; }
     return out;
   }
+  /* Chance a trade reaches its target before its stop by the end of the session, from a driftless random walk in
+     1-minute steps with the asset's daily volatility (log scale). A baseline, not a forecast: it knows nothing about
+     trend or news, so it shows what the setup's geometry alone implies. */
+  function barrierOdds({ entry, stop, target, side = "long", dailyVolPct, minutesLeft, paths = 2000, seed = 7 }) {
+    const e = Number(entry), s = Number(stop), t = Number(target), v = Number(dailyVolPct) / 100, n = Math.max(1, Math.min(1440, Math.round(Number(minutesLeft) || 0)));
+    if (!(e > 0 && s > 0 && t > 0 && v > 0)) return null;
+    const dir = side === "short" ? -1 : 1;
+    if ((t - e) * dir <= 0 || (e - s) * dir <= 0) return null;
+    const up = Math.log(t / e) * dir, dn = Math.log(s / e) * dir, sd = v / Math.sqrt(390), r = C.rng(seed);
+    let hitT = 0, hitS = 0;
+    for (let i = 0; i < paths; i++) { let x = 0; for (let k = 0; k < n; k++) { x += sd * C.gauss(r); if (x >= up) { hitT++; break; } if (x <= dn) { hitS++; break; } } }
+    return { pTarget: hitT / paths, pStop: hitS / paths, pNeither: (paths - hitT - hitS) / paths, minutes: n, rr: Math.abs(t - e) / Math.abs(e - s) };
+  }
   // Expectancy and other stats of logged day trades {side, entry, exit, shares, stop?, fees?}.
   function tradeStats(trades) {
     const rows = trades.filter(t => t.entry > 0 && t.exit > 0 && t.shares > 0).map(t => { const dir = t.side === "short" ? -1 : 1, pnl = dir * (t.exit - t.entry) * t.shares - (Number(t.fees) || 0), risk = t.stop > 0 ? Math.abs(t.entry - t.stop) * t.shares : null; return Object.assign({}, t, { pnl, r: risk ? pnl / risk : null }); });
@@ -339,6 +352,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);
