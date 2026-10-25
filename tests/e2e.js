@@ -156,6 +156,12 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.waitForTimeout(800);
   const logTxt = await page.locator("#prediction-log").innerText();
   check("prediction log lists each pick with time, prices then/now, projection and target date", await page.locator("#prediction-log table.tbl tbody tr").count() === 2 && /Price then/i.test(logTxt) && /Projected for target date/i.test(logTxt) && /\d{1,2}:\d{2}/.test(logTxt) && !/…/.test(await page.locator("#prediction-log tbody").innerText()), logTxt.slice(0, 400));
+  const foc = await page.evaluate(async () => {
+    const lines = [], set = await MD.picks.generate(MD.app, { stocks: true, crypto: false, mine: false, window: "3m", count: 3, focus: "AI chips" }, (k, t) => lines.push(t), new AbortController().signal, () => {});
+    const pr = (window.__mock.fullPrompts || []).filter(x => /LARGE price move/.test(x)).pop() || "";
+    return { focus: set.focus, focusPicks: set.picks.filter(p => p.focus).map(p => p.symbol), all: set.picks.map(p => p.symbol), log: lines.filter(t => /focus/i.test(t)), prompt: /asked to focus on: "AI chips"/.test(pr) && /"fitsFocus":"AI chips"/.test(pr), fake: /"symbol":"ZZZZ"/.test(pr) };
+  });
+  check("recommendations focus: Claude names assets for the theme, the app verifies them (a fake ticker drops out) and the picks lead with them", foc.focus === "AI chips" && foc.focusPicks.length >= 1 && foc.focusPicks.every(s => ["AMD", "NVDA"].includes(s)) && foc.prompt && !foc.fake && foc.log.some(t => /2 of 3 focus names verified/.test(t)), JSON.stringify(foc));
   const pkTxt = await page.locator("#content").innerText();
   check("pick explains why, up/down odds and time window (no 'either way')", /Why it could move/i.test(pkTxt) && /Time window/i.test(pkTxt) && /% chance up/i.test(pkTxt) && /Chance up \/ down/i.test(pkTxt) && !/either way/i.test(pkTxt) && await page.locator(".probbar").count() >= 2, pkTxt.slice(0, 400));
   check("pick sources: retrieved news verified, invented URL flagged", picks[0] && picks[0].picks[0].sources.find(x => /bigdata/.test(x.url)).verified === true && picks[0].picks[0].sources.find(x => /invented/.test(x.url)).verified === false);

@@ -24,6 +24,20 @@
     const days = WINDOWS[opts.window][1];
     const today = new Date();
     const cands = [];
+    // A focus (theme, sector or style) asks Claude which assets fit; the app then verifies and measures each one.
+    const focus = { stocks: new Map(), crypto: new Map() };
+    if (opts.focus && app.caps.sample) {
+      log("run", "Asking Claude which assets fit your focus: “" + opts.focus + "”");
+      try {
+        const r = await app.caps.sample.json(`An investor wants large-move candidates focused on: "${opts.focus.replace(/"/g, "'")}". List the assets that genuinely fit${opts.stocks ? ": up to 10 US-listed stocks or ETFs" : ""}${opts.crypto ? (opts.stocks ? " and" : ":") + " up to 5 coins (no stablecoins or wrapped tokens)" : ""}. Prefer liquid names. Only real, currently traded tickers; never invent one; leave a list empty when nothing fits.
+Reply with ONLY JSON: {"stocks": [{"symbol": "TICKER", "why": "a few words on the fit"}], "crypto": [{"symbol": "SYMBOL", "why": "..."}]}`, { modelTier: "default", signal: opts.signal, cache: false });
+        for (const x of (opts.stocks && Array.isArray(r.stocks) ? r.stocks : []).slice(0, 10)) { const sym = String(x && x.symbol || "").toUpperCase().trim(); if (/^[A-Z][A-Z.\-]{0,5}$/.test(sym)) focus.stocks.set(sym, String(x.why || "")); }
+        for (const x of (opts.crypto && Array.isArray(r.crypto) ? r.crypto : []).slice(0, 5)) { const sym = String(x && x.symbol || "").toUpperCase().trim(); if (/^[A-Z0-9]{2,10}$/.test(sym) && !SKIP_COINS.has(sym)) focus.crypto.set(sym, String(x.why || "")); }
+        const named = [...focus.stocks.keys(), ...focus.crypto.keys()];
+        log(named.length ? "ok" : "fail", named.length ? "Fit the focus (to be verified): " + named.join(", ") : "Claude named nothing that fits; using the usual pool");
+      } catch (e) { if (e && e.code === "cancelled") throw e; log("fail", "Couldn't get assets for the focus (" + U.errorText(e) + "); using the usual pool"); }
+    }
+    const focused = focus.stocks.size + focus.crypto.size >= 3;
     if (opts.stocks) {
       log("run", "Loading the 200 largest US-listed companies (Nasdaq screener)");
       const [p1, p2] = await Promise.all([D.stocks.screener(0, 100), D.stocks.screener(100, 100).catch(() => [])]);
@@ -39,14 +53,16 @@
       const moverSyms = [...movers.gainers.rows, ...movers.losers.rows].filter(r => big.has(r.symbol)).map(r => r.symbol);
       const byAbs = [...big.values()].sort((a, b) => Math.abs(b.changePct || 0) - Math.abs(a.changePct || 0)).slice(0, 6).map(r => r.symbol);
       const mine = opts.mine ? myAssets(app).filter(a => a.cls !== "crypto").slice(0, 6) : [], mineCls = new Map(mine.map(a => [a.symbol, a]));
-      const short = [...new Set(mine.map(a => a.symbol).concat([...earnBy.keys()].slice(0, 9), moverSyms, byAbs))].slice(0, 14 + mine.length);
+      const foc = [...focus.stocks.keys()].filter(s => !mineCls.has(s));
+      const short = [...new Set(mine.map(a => a.symbol).concat(foc, [...earnBy.keys()].slice(0, focused ? 3 : 9), moverSyms, byAbs))].slice(0, (focused ? 6 : 14) + mine.length + foc.length);
       if (mine.length) log("ok", "Including " + mine.length + " from your watchlist and holdings: " + mine.map(a => a.symbol).join(", "));
       log("run", "Measuring " + short.length + " stocks: options-implied move, volatility, momentum, short interest");
       const measured = await pool(short, 5, async (sym) => {
         const own = mineCls.get(sym);
         let base = big.get(sym);
         if (!base) { const q = await app.quote(own || { id: "stock:" + sym, cls: "stock", symbol: sym }, 60000); base = { name: q.name || sym, price: q.price, changePct: q.changePct, marketCap: null }; }
-        const a = own ? { id: own.id, cls: own.cls, symbol: sym, name: own.name || base.name } : { id: "stock:" + sym, cls: "stock", symbol: sym, name: base.name };
+        const fa = focus.stocks.has(sym) ? await MD.ai.findAsset(sym) : null;
+        const a = own ? { id: own.id, cls: own.cls, symbol: sym, name: own.name || base.name } : { id: (fa ? fa.cls : "stock") + ":" + sym, cls: fa ? fa.cls : "stock", symbol: sym, name: base.name };
         const [hist, si] = await Promise.all([D.historyFor(a, "1Y").catch(() => null), D.stocks.shortInterest(sym).catch(() => null)]);
         let om = null; try { om = await D.stocks.optionMoves(sym, base.price); } catch {}
         const st = hist ? C.seriesStats(hist.points, 252) : null;
@@ -60,15 +76,19 @@
           earnings: e ? { date: e.date, time: e.time, epsForecast: e.epsForecast } : null, shortDaysToCover: si ? si.daysToCover : null, shortDate: si ? si.date : null,
           ret1m: ret(21), ret3m: ret(63), fromHighPct: st ? (closes[closes.length - 1] / st.high - 1) * 100 : null, fromLowPct: st ? (closes[closes.length - 1] / st.low - 1) * 100 : null, source: "Nasdaq" };
       });
-      for (const m of measured) if (m && !m.error) cands.push(m);
-      log("ok", "Measured " + cands.length + " stocks");
+      for (const m of measured) if (m && !m.error) { if (focus.stocks.has(m.asset.symbol)) m.focus = focus.stocks.get(m.asset.symbol) || "named for the focus"; cands.push(m); }
+      log("ok", "Measured " + cands.length + " stocks" + (focus.stocks.size ? " (" + cands.filter(c => c.focus).length + " of " + focus.stocks.size + " focus names verified)" : ""));
     }
     if (opts.crypto) {
       log("run", "Loading the top 60 coins (CoinGecko), excluding stablecoins and wrapped tokens");
       const top = (await D.crypto.top("usd", 60)).filter(c => !SKIP_COINS.has(c.symbol) && c.marketCap > 1e9);
       const myCoins = opts.mine ? new Set(myAssets(app).filter(a => a.cls === "crypto").map(a => a.cgId)) : new Set();
       const scored = top.map(c => Object.assign(c, { score: Math.abs(c.ch7d || 0) + Math.abs(c.ch30d || 0) / 2 + (c.volume24h / (c.marketCap || 1)) * 40 })).sort((a, b) => b.score - a.score);
-      const pick = [...new Set(scored.filter(c => myCoins.has(c.cgId)).slice(0, 3).concat(scored.slice(0, 7)))];
+      const focCoins = scored.filter(c => focus.crypto.has(c.symbol));
+      for (const sym of focus.crypto.keys()) if (!focCoins.some(c => c.symbol === sym)) {
+        try { const a = await MD.ai.findAsset(sym); if (a && a.cls === "crypto") { const q = await D.quoteFor(a); focCoins.push({ id: a.id, cgId: a.cgId, symbol: a.symbol || sym, name: a.name || sym, price: Number(q.price), marketCap: null, changePct: q.changePct ?? null, volume24h: 0 }); } } catch {}
+      }
+      const pick = [...new Set(focCoins.concat(scored.filter(c => myCoins.has(c.cgId)).slice(0, 3), scored.slice(0, focused ? 3 : 7)))];
       log("run", "Measuring " + pick.length + " coins: volatility and momentum");
       const measured = await pool(pick, 4, async (c) => {
         const a = { id: c.id, cls: "crypto", cgId: c.cgId, symbol: c.symbol, name: c.name };
@@ -77,7 +97,7 @@
         return { asset: a, mine: myCoins.has(c.cgId), price: c.price, marketCap: c.marketCap, dayChangePct: c.changePct, volPct: st ? st.volPct : null, expectedMovePct: st ? C.expectedMoveFromVol(st.volPct, days) : null, impliedMovePct: null, earnings: null, shortDaysToCover: null,
           ret1m: c.ch30d, ret7d: c.ch7d, ret1y: c.ch1y, fromHighPct: st ? (st.end / st.high - 1) * 100 : null, fromLowPct: st ? (st.end / st.low - 1) * 100 : null, volumeToCap: c.volume24h / (c.marketCap || 1), source: "CoinGecko / Kraken" };
       });
-      for (const m of measured) if (m && !m.error) cands.push(m);
+      for (const m of measured) if (m && !m.error) { if (focus.crypto.has(m.asset.symbol)) m.focus = focus.crypto.get(m.asset.symbol) || "named for the focus"; cands.push(m); }
       log("ok", "Measured " + measured.filter(m => m && !m.error).length + " coins");
     }
     // Deterministic movement score: the bigger of the market-implied and volatility-implied move, boosted by a dated catalyst or crowded short.
@@ -86,8 +106,8 @@
       c.score = basis * (1 + (c.earnings ? 0.35 : 0) + (c.shortDaysToCover > 5 ? 0.15 : 0) + (Math.abs(c.ret1m || 0) > 20 ? 0.1 : 0));
     }
     // Your own names stay in the pool even when their movement score is lower.
-    const ranked = cands.sort((a, b) => b.score - a.score), own = ranked.filter(c => c.mine);
-    return [...new Set(ranked.slice(0, 14).concat(own))];
+    const ranked = cands.sort((a, b) => b.score - a.score), own = ranked.filter(c => c.mine), fit = ranked.filter(c => c.focus);
+    return [...new Set(fit.concat(ranked.slice(0, fit.length >= 3 ? 6 : 14), own))];
   }
 
   /* ---------- 2. Claude chooses, explains and gets reviewed ---------- */
@@ -131,14 +151,14 @@
       earnings: c.earnings, shortInterestDaysToCover: c.shortDaysToCover != null ? +c.shortDaysToCover.toFixed(1) : null, return1mPct: c.ret1m != null ? +Number(c.ret1m).toFixed(1) : null, return3mPct: c.ret3m != null ? +c.ret3m.toFixed(1) : null, return7dPct: c.ret7d != null ? +Number(c.ret7d).toFixed(1) : null, fromYearHighPct: c.fromHighPct != null ? +c.fromHighPct.toFixed(1) : null,
       zacksRank: c.zacksRank ?? null, zacksTarget: c.zacksTarget ?? null, smartMoney: c.smartMoney.length ? c.smartMoney : null, insiders: c.insiders || null, movementScore: +c.score.toFixed(1),
       baseRates: c.baseRates ? { modelUpPct: c.baseRates.modelUpPct, overallUpPct: c.baseRates.overallUpPct, independentSamples: c.baseRates.independent, typicalIfUpPct: c.baseRates.typicalIfUpPct, typicalIfDownPct: c.baseRates.typicalIfDownPct, conditions: c.baseRates.conditions } : null,
-      last5DaysExplained: c.moveExplained ? c.moveExplained.last5Days : null, onYourWatchlistOrHeld: !!c.mine,
+      last5DaysExplained: c.moveExplained ? c.moveExplained.last5Days : null, onYourWatchlistOrHeld: !!c.mine, fitsFocus: c.focus || null,
       deskPastAiCalls: (() => { const mm = MD.ai.assetMemory(app, c.asset); return mm.calls.length ? mm.calls.length + " logged, " + mm.graded + " graded, " + mm.right + " right; latest " + mm.calls.slice(0, 2).map(x => (x.direction || "") + " " + (x.probabilityPct || "") + "% → " + (x.result ? (x.result.hit ? "right" : "wrong") : "pending")).join(", ") : null; })() }));
     const calib = MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-picks"));
     log("run", "Asking Claude to choose and explain (usually 1–3 minutes)");
     const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are picking assets that could make a LARGE price move within the window "${wLabel}" (about ${days} days), for an investor who wants to watch them closely, and giving the odds of each one going UP or DOWN.
 Use ONLY the measured candidates below (measured by the app from exchange, options, Zacks, disclosure and 5-year price data). ${tools ? "Investigate the strongest candidates with 4 to 12 tool calls before deciding: search_news (Bigdata.com) for stocks, crypto_news for coins, earnings_info when a report falls in the window, explain_move or stock_snapshot for the price picture, options_move, zacks_view or insider_activity where they would change your view, market_memory for what has been driving this market, search_web if a news tool fails. Cite only URLs returned by the tools." : "Web search is unavailable; say so in each pick's risks."}
 Pick the ${opts.count} with the best case for a large move${opts.mine ? " (candidates marked onYourWatchlistOrHeld belong to the investor; include them when the evidence supports it)" : ""}. For EVERY pick give upProbabilityPct: the chance its price is HIGHER at the end of its window than now. Never answer "either way": a near coin-flip is still a number like 52 or 47. Start from the measured base rate (baseRates.modelUpPct, the asset's own history in situations like today's) and move away from it only for evidence history can't know: a dated catalyst, news, estimate revisions, the market regime. Give the typical size of the move if it rises and if it falls. Anchor the expected move size to the options-implied move when present (the market's own estimate) and to the volatility-implied move otherwise; if you expect more than the market prices, say why. Anchor the time window to a dated catalyst (earnings date, options expiry) when there is one. Give the strongest case on each side and what would change your mind. Do not invent prices, dates or figures.
-Market regime (measured): ${JSON.stringify(P && P.regime)}
+${opts.focus ? `The investor asked to focus on: "${opts.focus.replace(/"/g, "'")}". Candidates with fitsFocus were named for it; choose from them first, and include others only when fewer than ${opts.count} focus candidates have a real case (say so in the summary).\n` : ""}Market regime (measured): ${JSON.stringify(P && P.regime)}
 ${calib}
 ${MD.ai.contextNote(app)}
 Measured candidates: ${JSON.stringify(table)}
@@ -161,7 +181,7 @@ Reply with ONLY JSON:
       const modelUp = c.baseRates ? c.baseRates.modelUpPct : null, claudeRaw = Number(p.upProbabilityPct), claudeUp = isFinite(claudeRaw) && claudeRaw > 0 ? Math.max(5, Math.min(95, claudeRaw)) : (modelUp ?? 50);
       // Claude's judgement blended with the measured history; the review below can pull it toward 50%.
       const bw = MD.ai.blendFor(app, "ai-picks"), up = modelUp != null ? bw.wClaude * claudeUp + (1 - bw.wClaude) * modelUp : claudeUp;
-      return { symbol: p.symbol, asset: c.asset, upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, blended: Math.round(up), weightClaude: Math.round(bw.wClaude * 100), learnedWeights: bw.learned }, ifUpPct: Math.max(0, Number(p.ifUpPct) || hi || lo), ifDownPct: Math.max(0, Number(p.ifDownPct) || hi || lo), moveLow: lo, moveHigh: hi, mine: !!c.mine, baseRates: c.baseRates || null, moveExplained: c.moveExplained || null,
+      return { symbol: p.symbol, asset: c.asset, upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, blended: Math.round(up), weightClaude: Math.round(bw.wClaude * 100), learnedWeights: bw.learned }, ifUpPct: Math.max(0, Number(p.ifUpPct) || hi || lo), ifDownPct: Math.max(0, Number(p.ifDownPct) || hi || lo), moveLow: lo, moveHigh: hi, mine: !!c.mine, focus: c.focus || null, baseRates: c.baseRates || null, moveExplained: c.moveExplained || null,
         timeframeDays: Math.max(1, Math.min(400, Math.round(Number(p.timeframe && p.timeframe.days) || days))), timeframeLabel: (p.timeframe && p.timeframe.label) || wLabel, anchor: (p.timeframe && p.timeframe.anchor) || "trend",
         why: Array.isArray(p.why) ? p.why.slice(0, 6).map(String) : [], catalyst: p.catalyst || null, invalidation: p.invalidation || "", risks: p.risks || "", confidence: Math.max(0, Math.min(100, Number(p.confidence) || 0)),
         bullCase: String(p.bullCase || ""), bearCase: String(p.bearCase || ""), changeMyMind: String(p.changeMyMind || ""),
@@ -197,7 +217,7 @@ Reply with ONLY JSON:
     log("run", "Recording current prices");
     await pool(picks, 5, async (p) => { try { const q = await app.quote(p.asset, 0); p.priceAtPick = q.price; p.currency = q.currency || "USD"; p.priceSource = q.source; } catch { p.priceAtPick = p.measured.price; p.currency = "USD"; p.priceSource = "screener snapshot"; } });
     log("ok", "Done");
-    return { window: opts.window, windowLabel: wLabel, scope: { stocks: !!opts.stocks, crypto: !!opts.crypto }, summary: r.summary || "", picks, excluded: (Array.isArray(r.excluded) ? r.excluded.slice(0, 8) : []).concat(dropped.map(p => ({ symbol: p.symbol, reason: "Dropped by the review: " + (p.review.note || p.review.issues.join("; ")) }))),
+    return { focus: opts.focus || null, window: opts.window, windowLabel: wLabel, scope: { stocks: !!opts.stocks, crypto: !!opts.crypto }, summary: r.summary || "", picks, excluded: (Array.isArray(r.excluded) ? r.excluded.slice(0, 8) : []).concat(dropped.map(p => ({ symbol: p.symbol, reason: "Dropped by the review: " + (p.review.note || p.review.issues.join("; ")) }))),
       review: rv ? { overall: rv.overall, kept: rv.reviews.filter(x => x.verdict === "keep").length, revised: rv.reviews.filter(x => x.verdict === "revise").length, dropped: dropped.length } : null,
       candidates: cands.length, sourcesRetrieved: S.sources.length, toolCalls: S.calls, demo: !!app.demo };
   }
@@ -271,25 +291,27 @@ Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"b
     root.append(MD.marketsHelpers.head("Recommendations", "Claude's watchlist of assets that could make a large move, with why, which way it leans and roughly how long it may take. Built from measured market data; every pick is logged in your forecast journal and scored when its window ends."));
     root.append(h("div", { class: "banner warn" }, h("p", {}, "These are research leads, not advice to buy or sell. Large-move candidates are high risk by nature: a big expected move means big losses are as plausible as big gains, and most calls like these don't play out as described.")));
     const f = { stocks: h("input", { type: "checkbox", checked: app.ls.get("pk.stocks", true) }), crypto: h("input", { type: "checkbox", checked: app.ls.get("pk.crypto", true) }), mine: h("input", { type: "checkbox", checked: app.ls.get("pk.mine", true) }), window: h("select", {}, Object.entries(WINDOWS).map(([k, [l]]) => h("option", { value: k, selected: k === app.ls.get("pk.window", "3m") }, l))), count: h("select", {}, ["4", "6", "8"].map(n => h("option", { value: n, selected: n === app.ls.get("pk.count", "6") }, n + " picks"))) };
+    f.focus = h("input", { type: "text", maxlength: 120, placeholder: "a theme, sector or style, e.g. AI chips, nuclear power, oversold large caps, layer-2 coins", style: "width:100%", value: app.ls.get("pk.focus", ""), "aria-label": "Focus" });
     const log = MD.ai.logBox(), phase = h("div", { class: "label" });
     let ctl = null;
     const go = h("button", { class: "btn", type: "button" }, sets.length ? "Generate a fresh set" : "Generate recommendations");
     const stop = h("button", { class: "btn ghost", type: "button", hidden: true, onclick: () => ctl && ctl.abort() }, "Stop");
     go.onclick = async () => {
       if (!f.stocks.checked && !f.crypto.checked) { U.toast("Pick stocks, crypto or both", null, true); return; }
-      app.ls.set("pk.stocks", f.stocks.checked); app.ls.set("pk.crypto", f.crypto.checked); app.ls.set("pk.mine", f.mine.checked); app.ls.set("pk.window", f.window.value); app.ls.set("pk.count", f.count.value);
+      app.ls.set("pk.stocks", f.stocks.checked); app.ls.set("pk.crypto", f.crypto.checked); app.ls.set("pk.mine", f.mine.checked); app.ls.set("pk.window", f.window.value); app.ls.set("pk.count", f.count.value); app.ls.set("pk.focus", f.focus.value.trim());
       ctl = new AbortController(); go.disabled = true; stop.hidden = false; log.clear(); phase.textContent = "Working…";
       const L = (kind, text) => log.add({ at: Date.now(), kind, text });
       try {
-        const set = await generate(app, { stocks: f.stocks.checked, crypto: f.crypto.checked, mine: f.mine.checked, window: f.window.value, count: Number(f.count.value) }, L, ctl.signal, (e) => log.add(e));
+        const set = await generate(app, { stocks: f.stocks.checked, crypto: f.crypto.checked, mine: f.mine.checked, window: f.window.value, count: Number(f.count.value), focus: f.focus.value.trim().slice(0, 120) || null, signal: ctl.signal }, L, ctl.signal, (e) => log.add(e));
         if (app.demo) { phase.textContent = "Done (demo mode: not saved)"; body.replaceChildren(setView(app, Object.assign({ id: "unsaved", createdAt: Date.now() }, set))); }
         else { const saved = await app.store.create("picks", set); await journal(app, saved); app.ls.set("picksOpen", saved.id); phase.textContent = "Done · saved and logged in your forecast journal"; app.rerender(); }
       } catch (e) { phase.textContent = e && e.code === "cancelled" ? "Stopped." : ""; if (!(e && e.code === "cancelled")) L("fail", ({ no_sample: "Claude isn't available in this view.", not_granted: "Claude access was declined for this page.", rate_limited: "Usage limit reached; try again later.", invalid_json: "The answer came back unreadable; try again." })[e && e.code] || (e && e.message) || "Failed."); }
       go.disabled = false; stop.hidden = true; ctl = null;
     };
     root.append(U.section("Generate", h("div", { class: "stack" },
-      h("div", { class: "form" }, h("label", { class: "chk" }, f.stocks, "US stocks"), h("label", { class: "chk" }, f.crypto, "Crypto"), h("label", { class: "chk" }, f.mine, "Include my watchlist & holdings"), U.field("Window", f.window), U.field("How many", f.count), h("div", { class: "field" }, h("div", { class: "row" }, go, stop))),
-      h("p", { class: "small muted" }, "Takes about 2–4 minutes: the app measures the candidates (including each one's own odds of finishing higher over the window, from 5 years of history), Claude investigates them with news, price, earnings, options, Zacks, insider and smart-money tools and the Market Brain's record, and a second review checks every pick against the evidence before it's shown. Every pick gets a chance of going up and of going down. Uses your Claude usage plus roughly 40–70 data requests through Exa, a few news searches through Bigdata.com and CoinMarketCap, and Zacks lookups when they're connected. Stocks are limited to US-listed companies above $5B market cap and $5 a share; coins to the top 60 above $1B, excluding stablecoins and wrapped tokens."),
+      h("div", { class: "form" }, h("label", { class: "chk" }, f.stocks, "US stocks"), h("label", { class: "chk" }, f.crypto, "Crypto"), h("label", { class: "chk" }, f.mine, "Include my watchlist & holdings"), U.field("Window", f.window), U.field("How many", f.count)),
+      h("div", { class: "row", style: "gap:10px;align-items:flex-end;flex-wrap:wrap" }, h("label", { class: "field", style: "flex:1 1 280px;min-width:0" }, h("span", { class: "label" }, "Focus (optional)"), f.focus), h("div", { class: "row" }, go, stop)),
+      h("p", { class: "small muted" }, "Takes about 2–4 minutes: the app measures the candidates (including each one's own odds of finishing higher over the window, from 5 years of history), Claude investigates them with news, price, earnings, options, Zacks, insider and smart-money tools and the Market Brain's record, and a second review checks every pick against the evidence before it's shown. Every pick gets a chance of going up and of going down. Uses your Claude usage plus roughly 40–70 data requests through Exa, a few news searches through Bigdata.com and CoinMarketCap, and Zacks lookups when they're connected. Without a focus, stocks are limited to US-listed companies above $5B market cap and $5 a share and coins to the top 60 above $1B (no stablecoins or wrapped tokens). A focus adds the names Claude gives for it, each checked with a live quote and measured like the rest; ones that can't be priced are dropped."),
       phase, log,
       allSets.length ? h("div", { class: "row", style: "gap:6px;flex-wrap:wrap;align-items:center" }, h("span", { class: "label" }, "Clear recommendations"),
         h("button", { class: "btn ghost sm", type: "button", onclick: () => clearPicks(app, "cls", { cls: "stock" }) }, "Clear stocks"),
@@ -378,6 +400,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"b
   function setView(app, set) {
     const wrap = h("div", { class: "stack" });
     wrap.append(h("div", { class: "row between" }, h("div", { class: "stack", style: "gap:2px" }, h("h2", { style: "font-size:1.2rem" }, set.picks.length + " picks · " + set.windowLabel + (set.hiddenCount ? " (" + set.hiddenCount + " cleared)" : "")), h("span", { class: "small muted" }, "Generated " + U.fmtTs(set.createdAt) + " from " + set.candidates + " measured candidates, " + set.sourcesRetrieved + " retrieved sources" + (set.toolCalls ? " and " + set.toolCalls + " research steps" : "") + (set.demo ? " · demo" : ""))), h("span", { class: "small muted" }, "Prices refresh every minute")));
+    if (set.focus) wrap.append(h("p", { class: "small" }, h("span", { class: "chip sm" }, "Focus"), " " + set.focus + " · " + set.picks.filter(p => p.focus).length + " of " + set.picks.length + " picks were named for it"));
     if (set.summary) wrap.append(h("p", {}, set.summary));
     if (set.review) wrap.append(h("div", { class: "aireview " + (set.review.dropped ? "neutral" : "positive") }, h("span", { class: "verdict sm " + (set.review.dropped ? "neutral" : "positive") }, "Reviewed"), h("span", { class: "small" }, set.review.kept + " held up, " + set.review.revised + " revised, " + set.review.dropped + " dropped. " + (set.review.overall || ""))));
     // At a glance: the odds, sizes and windows side by side.
