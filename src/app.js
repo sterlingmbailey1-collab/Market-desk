@@ -416,7 +416,7 @@
       }
       const scored = index.map(it => ({ it, s: C.fuzzyScore(q, it.text) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 14).map(x => x.it);
       const words = q.split(/\s+/).length;
-      const ask = (words >= 3 && app.caps.sample) ? [{ group: "Ask", title: "Ask Market Desk: “" + q + "”", sub: "Claude works out what you mean and takes you there", kind: "ai", run: () => routeNatural(q) }] : [];
+      const ask = (words >= 3 && app.caps.sample) ? [{ group: "Ask", title: "Ask AI: “" + q + "”", sub: "Answered with live data tools, your profile and a double-check", kind: "ai", run: () => MD.askAI.open(app, q) }, { group: "Ask", title: "Go to: “" + q + "”", sub: "Claude works out which page you mean and takes you there", kind: "ai", run: () => routeNatural(q) }] : [];
       const save = [{ group: "Ask", title: "Save this search", sub: "Keeps “" + q + "” in saved searches", kind: "save", run: () => app.store.create("searches", { query: q }).then(() => U.toast("Search saved")) }];
       const pair = C.parsePair(q); const pairItem = pair && app.reg.has(pair.base) && app.reg.has(pair.quote) ? [{ group: "Currencies", title: pair.base + "/" + pair.quote, sub: "Open currency pair", kind: "fx", run: () => app.openAsset({ id: "fx:" + pair.base + pair.quote, cls: "fx", base: pair.base, quote: pair.quote, symbol: pair.base + "/" + pair.quote }) }] : [];
       items = [...pairItem, ...scored, ...remote, ...ask, ...save];

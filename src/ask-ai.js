@@ -16,7 +16,7 @@
     return { text: "The user is on the " + label + " page.", subject: label, starters: ["What's moving the market today?", "Find me three ideas that fit my profile", "How accurate have the AI's calls been?"] };
   }
 
-  function open(app) {
+  function open(app, initial) {
     const s = app.caps.sample;
     const ctx0 = context(app), turns = [];
     const chat = h("div", { class: "askchat" }), log = MD.ai.logBox(), input = h("textarea", { rows: 2, placeholder: "Ask about " + ctx0.subject + "…", "aria-label": "Question" });
@@ -51,7 +51,7 @@ Use the tools for every price, statistic, odds figure and holding; never invent 
     };
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!send.disabled) send.click(); } });
     U.modal("Ask AI · " + ctx0.subject, h("div", { class: "stack askai" }, chat, starters, h("div", { class: "row", style: "align-items:flex-end;gap:8px" }, input, send), h("details", {}, h("summary", { class: "label" }, "Research steps"), log), h("p", { class: "tiny muted" }, "Not investment or betting advice. Enter to send.")), { cls: "wide" });
-    setTimeout(() => input.focus(), 50);
+    setTimeout(() => { input.focus(); if (initial) { input.value = initial; send.click(); } }, 50);
   }
 
   MD.askAI = { open, context };

@@ -78,18 +78,20 @@
     const lim = await s.limits().catch(() => null);
     if (!lim || !lim.tools) throw Object.assign(new Error("This view can't run research tools."), { code: "tools_unavailable" });
     const ctx = { app, asset, question, log: [], sources: [], stats: {}, onLog, quote: null };
-    const tools = makeTools(ctx);
+    let tools = makeTools(ctx);
+    // Extra evidence the shared AI kit can gather: smart-money ownership, insider trades, the options-implied move.
+    if (MD.ai && asset && asset.cls === "stock") { const S = MD.ai.session((e) => onLog && onLog(e)); S.sources = ctx.sources; tools = tools.concat(MD.ai.tools(app, S, ["smart_money", "insider_activity", "options_move"])); }
     const R = app.settings.reportingCurrency;
     const today = new Date().toISOString().slice(0, 10);
     const assetLine = asset ? `${asset.name} (${asset.symbol}; class ${asset.cls}${asset.listing ? "; " + asset.listing : ""})` : "no specific asset";
     const base = `Today is ${today}. User's reporting currency: ${R}. Decision horizon: ${horizon}.
 Asset: ${assetLine}.
 User's question / decision: "${question}".
-Rules: never invent prices, figures, sources or research steps. Use get_quote for the current price and the app's tools for any calculation. Cite only URLs returned by your tools. Say plainly when evidence is missing. "No action" or "wait" are valid conclusions.`;
+Rules: never invent prices, figures, sources or research steps. Use get_quote for the current price and the app's tools for any calculation. Cite only URLs returned by your tools. Say plainly when evidence is missing. "No action" or "wait" are valid conclusions.${MD.ai ? "\n" + MD.ai.profileNote(app) + "\n" + MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai")) : ""}`;
     // Phase 1: evidence gathering (tools)
     onPhase && onPhase("Gathering evidence");
     const evPrompt = `${base}
-PHASE: evidence gathering. Call get_quote first${asset && ["stock", "etf"].includes(asset.cls) ? ", then get_fundamentals" + (asset.cls === "stock" ? " and get_zacks" : "") : asset ? ", then get_asset_data" : ""}, then get_price_stats (1Y and one other)${asset && ["stock", "etf", "crypto"].includes(asset.cls) ? " and get_technicals" : ""}, then search ${M.searches} times for recent news, primary sources, competitive and regulatory context, and the strongest bear case: use search_news (Bigdata.com) for company, sector and macro news${asset && asset.cls === "crypto" ? ", crypto_news for this coin's news" : ""}, and search_web for primary sources and anything else. If a news tool fails, carry on with search_web. Use read_page on the most important primary source if one exists. Call compare_alternatives for opportunity cost (include a cash proxy such as SGOV and a broad index).
+PHASE: evidence gathering. Call get_quote first${asset && ["stock", "etf"].includes(asset.cls) ? ", then get_fundamentals" + (asset.cls === "stock" ? " and get_zacks" : "") : asset ? ", then get_asset_data" : ""}, then get_price_stats (1Y and one other)${asset && ["stock", "etf", "crypto"].includes(asset.cls) ? " and get_technicals" : ""}, then${asset && asset.cls === "stock" ? " smart_money, insider_activity and options_move," : ""} search ${M.searches} times for recent news, primary sources, competitive and regulatory context, and the strongest bear case: use search_news (Bigdata.com) for company, sector and macro news${asset && asset.cls === "crypto" ? ", crypto_news for this coin's news" : ""}, and search_web for primary sources and anything else. If a news tool fails, carry on with search_web. Use read_page on the most important primary source if one exists. Call compare_alternatives for opportunity cost (include a cash proxy such as SGOV and a broad index).
 Then reply with ONLY JSON: {"facts": [{"fact": "...", "source_url": "...", "source_date": "...", "strength": "strong|moderate|weak"}], "conflicts": ["..."], "gaps": ["..."]}`;
     const ev = await s.json(evPrompt, { modelTier: M.tier, tools, signal });
     let ev2 = null;

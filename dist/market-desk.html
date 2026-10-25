@@ -4556,7 +4556,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
       }
       const scored = index.map(it => ({ it, s: C.fuzzyScore(q, it.text) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 14).map(x => x.it);
       const words = q.split(/\s+/).length;
-      const ask = (words >= 3 && app.caps.sample) ? [{ group: "Ask", title: "Ask Market Desk: “" + q + "”", sub: "Claude works out what you mean and takes you there", kind: "ai", run: () => routeNatural(q) }] : [];
+      const ask = (words >= 3 && app.caps.sample) ? [{ group: "Ask", title: "Ask AI: “" + q + "”", sub: "Answered with live data tools, your profile and a double-check", kind: "ai", run: () => MD.askAI.open(app, q) }, { group: "Ask", title: "Go to: “" + q + "”", sub: "Claude works out which page you mean and takes you there", kind: "ai", run: () => routeNatural(q) }] : [];
       const save = [{ group: "Ask", title: "Save this search", sub: "Keeps “" + q + "” in saved searches", kind: "save", run: () => app.store.create("searches", { query: q }).then(() => U.toast("Search saved")) }];
       const pair = C.parsePair(q); const pairItem = pair && app.reg.has(pair.base) && app.reg.has(pair.quote) ? [{ group: "Currencies", title: pair.base + "/" + pair.quote, sub: "Open currency pair", kind: "fx", run: () => app.openAsset({ id: "fx:" + pair.base + pair.quote, cls: "fx", base: pair.base, quote: pair.quote, symbol: pair.base + "/" + pair.quote }) }] : [];
       items = [...pairItem, ...scored, ...remote, ...ask, ...save];
@@ -6312,7 +6312,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
   }
 
   /* ================= Dashboard ================= */
-  const WIDGETS = { brief: "AI morning brief", changes: "What changed today", portfolio: "Portfolio", fx: "Currency exposure", watch: "Watchlist", alerts: "Alerts & inbox", catalysts: "Upcoming catalysts", smart: "Smart Money", betting: "Betting today", data: "Data health" };
+  const WIDGETS = { brief: "AI morning brief", aiscore: "AI scorecard", changes: "What changed today", portfolio: "Portfolio", fx: "Currency exposure", watch: "Watchlist", alerts: "Alerts & inbox", catalysts: "Upcoming catalysts", smart: "Smart Money", betting: "Betting today", data: "Data health" };
   V.dashboard = function (root, app) {
     const R = app.settings.reportingCurrency;
     root.append(head("Dashboard", new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) + " · reporting in " + R, [h("button", { class: "btn ghost sm", type: "button", onclick: () => customize(app) }, "Customize")]));
@@ -6326,7 +6326,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       const sec = U.section(WIDGETS[w] || w, box);
       if (w === "changes") sec.style.gridColumn = "1 / -1";
       grid.append(sec);
-      ({ changes: wChanges, portfolio: wPortfolio, fx: wFx, watch: wWatch, alerts: wAlerts, catalysts: wCatalysts, smart: (b) => MD.smartView.dashboardCard(b, app), brief: (b) => MD.aiTake.brief(b, app), betting: (b) => MD.betting.dashboardCard(b, app), data: wData }[w] || (() => {}))(box, app, pvP, R, sec);
+      ({ changes: wChanges, portfolio: wPortfolio, fx: wFx, watch: wWatch, alerts: wAlerts, catalysts: wCatalysts, smart: (b) => MD.smartView.dashboardCard(b, app), brief: (b) => MD.aiTake.brief(b, app), aiscore: (b) => b.append(MD.ai.scorecard(app)), betting: (b) => MD.betting.dashboardCard(b, app), data: wData }[w] || (() => {}))(box, app, pvP, R, sec);
     }
     return app.on("explainToday", () => { const b = root.querySelector("[data-explain]"); if (b) b.click(); });
   };
@@ -6907,18 +6907,20 @@ Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "
     const lim = await s.limits().catch(() => null);
     if (!lim || !lim.tools) throw Object.assign(new Error("This view can't run research tools."), { code: "tools_unavailable" });
     const ctx = { app, asset, question, log: [], sources: [], stats: {}, onLog, quote: null };
-    const tools = makeTools(ctx);
+    let tools = makeTools(ctx);
+    // Extra evidence the shared AI kit can gather: smart-money ownership, insider trades, the options-implied move.
+    if (MD.ai && asset && asset.cls === "stock") { const S = MD.ai.session((e) => onLog && onLog(e)); S.sources = ctx.sources; tools = tools.concat(MD.ai.tools(app, S, ["smart_money", "insider_activity", "options_move"])); }
     const R = app.settings.reportingCurrency;
     const today = new Date().toISOString().slice(0, 10);
     const assetLine = asset ? `${asset.name} (${asset.symbol}; class ${asset.cls}${asset.listing ? "; " + asset.listing : ""})` : "no specific asset";
     const base = `Today is ${today}. User's reporting currency: ${R}. Decision horizon: ${horizon}.
 Asset: ${assetLine}.
 User's question / decision: "${question}".
-Rules: never invent prices, figures, sources or research steps. Use get_quote for the current price and the app's tools for any calculation. Cite only URLs returned by your tools. Say plainly when evidence is missing. "No action" or "wait" are valid conclusions.`;
+Rules: never invent prices, figures, sources or research steps. Use get_quote for the current price and the app's tools for any calculation. Cite only URLs returned by your tools. Say plainly when evidence is missing. "No action" or "wait" are valid conclusions.${MD.ai ? "\n" + MD.ai.profileNote(app) + "\n" + MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai")) : ""}`;
     // Phase 1: evidence gathering (tools)
     onPhase && onPhase("Gathering evidence");
     const evPrompt = `${base}
-PHASE: evidence gathering. Call get_quote first${asset && ["stock", "etf"].includes(asset.cls) ? ", then get_fundamentals" + (asset.cls === "stock" ? " and get_zacks" : "") : asset ? ", then get_asset_data" : ""}, then get_price_stats (1Y and one other)${asset && ["stock", "etf", "crypto"].includes(asset.cls) ? " and get_technicals" : ""}, then search ${M.searches} times for recent news, primary sources, competitive and regulatory context, and the strongest bear case: use search_news (Bigdata.com) for company, sector and macro news${asset && asset.cls === "crypto" ? ", crypto_news for this coin's news" : ""}, and search_web for primary sources and anything else. If a news tool fails, carry on with search_web. Use read_page on the most important primary source if one exists. Call compare_alternatives for opportunity cost (include a cash proxy such as SGOV and a broad index).
+PHASE: evidence gathering. Call get_quote first${asset && ["stock", "etf"].includes(asset.cls) ? ", then get_fundamentals" + (asset.cls === "stock" ? " and get_zacks" : "") : asset ? ", then get_asset_data" : ""}, then get_price_stats (1Y and one other)${asset && ["stock", "etf", "crypto"].includes(asset.cls) ? " and get_technicals" : ""}, then${asset && asset.cls === "stock" ? " smart_money, insider_activity and options_move," : ""} search ${M.searches} times for recent news, primary sources, competitive and regulatory context, and the strongest bear case: use search_news (Bigdata.com) for company, sector and macro news${asset && asset.cls === "crypto" ? ", crypto_news for this coin's news" : ""}, and search_web for primary sources and anything else. If a news tool fails, carry on with search_web. Use read_page on the most important primary source if one exists. Call compare_alternatives for opportunity cost (include a cash proxy such as SGOV and a broad index).
 Then reply with ONLY JSON: {"facts": [{"fact": "...", "source_url": "...", "source_date": "...", "strength": "strong|moderate|weak"}], "conflicts": ["..."], "gaps": ["..."]}`;
     const ev = await s.json(evPrompt, { modelTier: M.tier, tools, signal });
     let ev2 = null;
@@ -7965,7 +7967,7 @@ Reply with ONLY JSON: {"headline": "one line", "market": "2 sentences on the bac
     return { text: "The user is on the " + label + " page.", subject: label, starters: ["What's moving the market today?", "Find me three ideas that fit my profile", "How accurate have the AI's calls been?"] };
   }
 
-  function open(app) {
+  function open(app, initial) {
     const s = app.caps.sample;
     const ctx0 = context(app), turns = [];
     const chat = h("div", { class: "askchat" }), log = MD.ai.logBox(), input = h("textarea", { rows: 2, placeholder: "Ask about " + ctx0.subject + "…", "aria-label": "Question" });
@@ -8000,7 +8002,7 @@ Use the tools for every price, statistic, odds figure and holding; never invent 
     };
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); if (!send.disabled) send.click(); } });
     U.modal("Ask AI · " + ctx0.subject, h("div", { class: "stack askai" }, chat, starters, h("div", { class: "row", style: "align-items:flex-end;gap:8px" }, input, send), h("details", {}, h("summary", { class: "label" }, "Research steps"), log), h("p", { class: "tiny muted" }, "Not investment or betting advice. Enter to send.")), { cls: "wide" });
-    setTimeout(() => input.focus(), 50);
+    setTimeout(() => { input.focus(); if (initial) { input.value = initial; send.click(); } }, 50);
   }
 
   MD.askAI = { open, context };
@@ -8882,6 +8884,7 @@ Reply with ONLY JSON:
         const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are analysing ${who}, for an investor deciding whether following these disclosures is useful and which positions look most interesting now.
 The app measured everything below from ${e.kind === "pol" ? "official STOCK Act disclosures (via Capitol Trades)" : "13F filings (via Dataroma)"} and exchange closes. Use these numbers as given; never invent figures, dates or trades.
 Rules: be neutral and factual. ${e.kind === "pol" ? "Disclosures cannot show why a trade was made: never suggest or imply insider trading, wrongdoing or access to non-public information. Many trades are made by spouses or outside managers. Filings arrive up to 45 days late, so a follower only gets the copy (publish-date) return." : "A 13F is a quarter-end snapshot of US long positions, filed up to 45 days later; it omits shorts, cash and non-US holdings."} A few dozen trades or one snapshot is weak evidence; a high return can be luck.
+${MD.ai.profileNote(app)}
 ${tools ? "Use 3 to 8 tool calls: search_news for the 2–4 largest or most recent positions (one company per call), and stock_snapshot for the same tickers. Use search_web only if search_news fails. Cite only URLs the tools returned." : "Tools are unavailable, so say that news wasn't checked."}
 Measured data: ${JSON.stringify(facts)}
 Reply with ONLY JSON:
@@ -8900,6 +8903,9 @@ Reply with ONLY JSON:
         const res = { summary: String(r.summary || ""), style: String(r.style || ""), tilts: (r.tilts || []).slice(0, 6).map(String), notable: (r.notable || []).slice(0, 6), positions: (r.positions || []).slice(0, 6).map(p => Object.assign({}, p, { sources: verify(p.sources) })),
           copyVerdict: r.copyVerdict || null, risks: (r.risks || []).slice(0, 5).map(String), watch: (r.watch || []).slice(0, 5).map(String), confidence: Math.max(0, Math.min(100, Number(r.confidence) || 0)), confidenceWhy: String(r.confidenceWhy || ""), sourcesRetrieved: sources.length, at: Date.now() };
         if (!res.summary) throw Object.assign(new Error("The answer came back unreadable; try again."), { code: "invalid_json" });
+        const RS = MD.ai.session((e2) => L(e2.kind, e2.text)); RS.sources = sources;
+        const rv = await MD.ai.review(app, { task: "An analysis of " + who, S: RS, signal: ctl.signal, facts, items: [{ id: "read", summary: res.summary, copyVerdict: res.copyVerdict, positions: res.positions.map(p => ({ ticker: p.ticker, view: p.view, why: p.why })), confidence: res.confidence }] }).catch(() => null);
+        if (rv && rv.reviews[0]) { res.review = rv.reviews[0]; if (res.review.adjustedConfidence != null && res.review.adjustedConfidence < res.confidence) res.confidence = res.review.adjustedConfidence; }
         if (!app.demo) await app.store.put("smai", e.id, JSON.parse(JSON.stringify(res))).catch(() => {});
         else e.aiDemo = res;
         phase.textContent = "Done" + (app.demo ? " (demo mode: not saved)" : " · saved"); paint(res);
@@ -8916,7 +8922,7 @@ Reply with ONLY JSON:
       const cvd = res.copyVerdict || {};
       out.replaceChildren(
         h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("span", { class: "verdict " + (/Worth/.test(cvd.label) ? "positive" : /Not useful/.test(cvd.label) ? "negative" : "neutral") }, cvd.label || "Analysis"), h("span", { class: "tiny muted" }, "Generated " + U.fmtTs(res.at) + " from " + res.sourcesRetrieved + " retrieved sources")),
-        h("p", {}, res.summary), cvd.why ? h("p", { class: "small" }, h("strong", {}, "Copying them: "), cvd.why) : null,
+        h("p", {}, res.summary), cvd.why ? h("p", { class: "small" }, h("strong", {}, "Copying them: "), cvd.why) : null, res.review ? MD.ai.reviewBadge(res.review) : null,
         res.style ? h("p", { class: "small" }, h("strong", {}, "Style: "), res.style) : null,
         res.tilts.length ? h("div", { class: "row", style: "flex-wrap:wrap;gap:6px" }, res.tilts.map(t => h("span", { class: "pill" }, t))) : null,
         h("div", { class: "grid g2", style: "align-items:start" },

@@ -537,6 +537,7 @@
         const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are analysing ${who}, for an investor deciding whether following these disclosures is useful and which positions look most interesting now.
 The app measured everything below from ${e.kind === "pol" ? "official STOCK Act disclosures (via Capitol Trades)" : "13F filings (via Dataroma)"} and exchange closes. Use these numbers as given; never invent figures, dates or trades.
 Rules: be neutral and factual. ${e.kind === "pol" ? "Disclosures cannot show why a trade was made: never suggest or imply insider trading, wrongdoing or access to non-public information. Many trades are made by spouses or outside managers. Filings arrive up to 45 days late, so a follower only gets the copy (publish-date) return." : "A 13F is a quarter-end snapshot of US long positions, filed up to 45 days later; it omits shorts, cash and non-US holdings."} A few dozen trades or one snapshot is weak evidence; a high return can be luck.
+${MD.ai.profileNote(app)}
 ${tools ? "Use 3 to 8 tool calls: search_news for the 2–4 largest or most recent positions (one company per call), and stock_snapshot for the same tickers. Use search_web only if search_news fails. Cite only URLs the tools returned." : "Tools are unavailable, so say that news wasn't checked."}
 Measured data: ${JSON.stringify(facts)}
 Reply with ONLY JSON:
@@ -555,6 +556,9 @@ Reply with ONLY JSON:
         const res = { summary: String(r.summary || ""), style: String(r.style || ""), tilts: (r.tilts || []).slice(0, 6).map(String), notable: (r.notable || []).slice(0, 6), positions: (r.positions || []).slice(0, 6).map(p => Object.assign({}, p, { sources: verify(p.sources) })),
           copyVerdict: r.copyVerdict || null, risks: (r.risks || []).slice(0, 5).map(String), watch: (r.watch || []).slice(0, 5).map(String), confidence: Math.max(0, Math.min(100, Number(r.confidence) || 0)), confidenceWhy: String(r.confidenceWhy || ""), sourcesRetrieved: sources.length, at: Date.now() };
         if (!res.summary) throw Object.assign(new Error("The answer came back unreadable; try again."), { code: "invalid_json" });
+        const RS = MD.ai.session((e2) => L(e2.kind, e2.text)); RS.sources = sources;
+        const rv = await MD.ai.review(app, { task: "An analysis of " + who, S: RS, signal: ctl.signal, facts, items: [{ id: "read", summary: res.summary, copyVerdict: res.copyVerdict, positions: res.positions.map(p => ({ ticker: p.ticker, view: p.view, why: p.why })), confidence: res.confidence }] }).catch(() => null);
+        if (rv && rv.reviews[0]) { res.review = rv.reviews[0]; if (res.review.adjustedConfidence != null && res.review.adjustedConfidence < res.confidence) res.confidence = res.review.adjustedConfidence; }
         if (!app.demo) await app.store.put("smai", e.id, JSON.parse(JSON.stringify(res))).catch(() => {});
         else e.aiDemo = res;
         phase.textContent = "Done" + (app.demo ? " (demo mode: not saved)" : " · saved"); paint(res);
@@ -571,7 +575,7 @@ Reply with ONLY JSON:
       const cvd = res.copyVerdict || {};
       out.replaceChildren(
         h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("span", { class: "verdict " + (/Worth/.test(cvd.label) ? "positive" : /Not useful/.test(cvd.label) ? "negative" : "neutral") }, cvd.label || "Analysis"), h("span", { class: "tiny muted" }, "Generated " + U.fmtTs(res.at) + " from " + res.sourcesRetrieved + " retrieved sources")),
-        h("p", {}, res.summary), cvd.why ? h("p", { class: "small" }, h("strong", {}, "Copying them: "), cvd.why) : null,
+        h("p", {}, res.summary), cvd.why ? h("p", { class: "small" }, h("strong", {}, "Copying them: "), cvd.why) : null, res.review ? MD.ai.reviewBadge(res.review) : null,
         res.style ? h("p", { class: "small" }, h("strong", {}, "Style: "), res.style) : null,
         res.tilts.length ? h("div", { class: "row", style: "flex-wrap:wrap;gap:6px" }, res.tilts.map(t => h("span", { class: "pill" }, t))) : null,
         h("div", { class: "grid g2", style: "align-items:start" },

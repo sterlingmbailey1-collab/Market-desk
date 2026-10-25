@@ -292,7 +292,8 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.fill(".cmd input", "portfolo"); await page.waitForTimeout(300);
   check("fuzzy search finds 'Portfolio' from 'portfolo'", /Portfolio/.test(await page.locator(".cmd .results").innerText()));
   await page.fill(".cmd input", "show my portfolio in EUR please"); await page.waitForTimeout(500);
-  await page.click(".cmd .item:has-text('Ask Market Desk')"); await page.waitForTimeout(1200);
+  check("command bar offers Ask AI and Go to for a question", await page.locator(".cmd .item:has-text('Ask AI:')").count() === 1 && await page.locator(".cmd .item:has-text('Go to:')").count() === 1);
+  await page.click(".cmd .item:has-text('Go to:')"); await page.waitForTimeout(1200);
   check("natural-language request routed (display currency EUR)", await page.evaluate(() => MD.app.settings.displayCurrency === "EUR"));
 
   // ---- Deep research
