@@ -311,6 +311,8 @@
     eq(Q.session(new Date("2026-10-26T21:00:00Z")).phase, "after");
     const th = Q.session(new Date("2026-11-26T16:00:00Z")); eq(th.phase, "closed"); eq(th.tradingDay, false);
     const ec = Q.session(new Date("2026-11-27T18:30:00Z")); eq(ec.phase, "after"); ok(ec.earlyClose);
+    eq(new Date(Q.closeTimeUTC("2026-10-26")).toISOString(), "2026-10-26T20:00:00.000Z"); eq(new Date(Q.closeTimeUTC("2026-11-02")).toISOString(), "2026-11-02T21:00:00.000Z"); eq(new Date(Q.closeTimeUTC("2026-11-27")).toISOString(), "2026-11-27T18:00:00.000Z");
+    eq(Q.targetSession(new Date("2026-10-26T14:00:00Z")), "2026-10-26"); eq(Q.targetSession(new Date("2026-10-26T21:00:00Z")), "2026-10-27"); eq(Q.targetSession(new Date("2026-10-24T16:00:00Z")), "2026-10-26"); eq(Q.targetSession(new Date("2026-11-25T22:00:00Z")), "2026-11-27");
     const sat = Q.session(new Date("2026-10-24T16:00:00Z")); eq(sat.phase, "closed"); eq(sat.minutesToOpen, 12 * 60 + 1440 + 570);
   });
   MD.tests = { list: T, run() { const res = []; for (const t of T) { try { t.fn(); res.push({ name: t.name, ok: true }); } catch (e) { res.push({ name: t.name, ok: false, err: e.message }); } } return res; } };

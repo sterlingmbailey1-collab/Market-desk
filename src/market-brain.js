@@ -260,6 +260,79 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
     return pb;
   }
 
+  /* ---------- the daily market call: will the S&P 500 close up? ---------- */
+  const SPY = etf("SPY");
+  function callsFor(app) { return app.store.cached("marketcalls").slice().sort((a, b) => b.at - a.at); }
+  function latestCall(app) { const t = Q.targetSession(); return callsFor(app).find(c => c.target === t) || null; }
+  /* Claude's call on the next close, anchored to SPY's own one-day base rate, checked by the review pass. The first
+     call per session is logged in the forecast journal (source ai-market) and graded from that session's close. */
+  async function marketCall(app, opts = {}) {
+    const s = app.caps.sample; if (!s) throw Object.assign(new Error("Claude isn't available in this view."), { code: "no_sample" });
+    const S = MD.ai.session(opts.onLog), step = (t) => S.step("run", t);
+    const sess = Q.session(), target = Q.targetSession(), live = sess.phase === "open" && sess.date === target;
+    let e = step("Measuring the market and SPY's own odds of an up day");
+    const [P, br, it, q] = await Promise.all([pulse(app, { history: true }).catch(() => null), MD.ai.baseRatesFor(SPY, 1).catch(() => null), D.stocks.intraday("SPY", "etf").catch(() => null), app.quote(SPY, 20000).catch(() => null)]);
+    S.done(e, "ok", br ? " → history: up " + br.model.upPct + "% of days in situations like today's" : " → no base rate");
+    // Reference price: during the session, the current price; before the open, the previous close (an "up day");
+    // after the close, today's close (the next session's up day).
+    const itDate = it && it.points.length ? Q.nyParts(new Date(it.points[it.points.length - 1].time * 1000)).ymd : null;
+    const ref = live ? (q && q.price) : sess.date === target ? (it && it.previousClose) || (q && q.price) : (it && itDate === sess.date && it.regular ? it.regular.last : q && q.price);
+    const refLabel = live ? "the current price" : "the previous close";
+    e = step("Checking the calendar and earnings for " + target);
+    const [econ, earn, big] = await Promise.all([D.calendar.economic(target).catch(() => []), D.calendar.earnings(target).catch(() => []), D.stocks.screener(0, 100).catch(() => [])]);
+    const bigSet = new Set(big.map(r => r.symbol)), events = econ.filter(x => /United States|US/i.test(x.country || "")).slice(0, 12).map(x => ({ timeGMT: x.gmt, event: x.event, actual: x.actual || null, consensus: x.consensus || null, previous: x.previous || null }));
+    const reports = earn.filter(x => bigSet.has(x.symbol)).slice(0, 10).map(x => ({ symbol: x.symbol, time: x.time }));
+    S.done(e, "ok", " → " + events.length + " US releases, " + reports.length + " large-cap reports");
+    const pb = playbook(app), rules = pb.patterns.filter(p => p.status === "active" && p.rule && p.backtest && !p.backtest.error && p.backtest.occurrences >= 8).map(p => ({ pattern: p.pattern, rule: Q.ruleText(p.rule), backtest: { heldPct: p.backtest.heldPct, baselinePct: p.backtest.baselinePct, z: p.backtest.z } }));
+    const lim = await s.limits().catch(() => null);
+    const tools = lim && lim.tools ? MD.ai.tools(app, S, ["search_news", "search_web", "market_memory", "backtest_rule", "explain_move", "economic_calendar"]) : undefined;
+    const measured = { target, phase: sess.phase, live, referencePrice: ref, reference: refLabel, spyBaseRate: br ? { modelUpPct: br.model.upPct, overallUpPct: Math.round(br.overall.upPct), conditions: br.conditions.map(c => ({ condition: c.label, upPct: Math.round(c.upPct), days: c.n })), typicalUpDayPct: br.model.avgUpPct, typicalDownDayPct: br.model.avgDownPct } : null,
+      preMarket: it && it.pre && !live ? { high: it.pre.high, low: it.pre.low, last: it.pre.last, vsPreviousClosePct: it.previousClose ? Math.round((it.pre.last / it.previousClose - 1) * 1e4) / 100 : null } : null,
+      now: P ? P.rows.map(r => ({ symbol: r.symbol, todayPct: r1(r.changePct), fiveDayPct: r1(r.ret5d) })) : null, regime: P && P.regime, economicReleases: events, largeCapEarnings: reports, backtestedPatterns: rules };
+    e = step("Claude is making the call (usually under a minute)");
+    const r = await s.json(`You are Market Desk's market strategist. Give the probability that the S&P 500 (SPY) closes the ${target} session ABOVE ${refLabel} (${ref ? ref.toFixed(2) : "n/a"}).
+Start from SPY's measured base rate (spyBaseRate.modelUpPct: how often it rose in a day in situations like today's) and move away from it only for evidence it can't know: ${live ? "how the session is trading so far," : "pre-market moves,"} scheduled releases and their consensus, large-cap earnings, news, and backtested patterns whose cause is in play. Daily direction is close to a coin flip: calls far from 50% need strong evidence. ${tools ? "Use 2 to 6 tool calls (search_news for overnight and macro news; economic_calendar or market_memory if useful). Cite only URLs the tools returned." : ""}
+${MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-market"))}
+${note(app)}
+Measured: ${JSON.stringify(measured)}
+Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "drivers": ["what matters most, with evidence"], "keyEvents": ["time ET: event"], "expectedRangePct": number (typical size of the day's move), "flipIf": "what would flip the call", "sectorTilt": {"leaders": ["sector funds likely to lead"], "laggards": ["..."]}, "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "complex", signal: opts.signal }, tools ? { tools } : { cache: false }));
+    S.done(e, "ok");
+    const claudeUp = Math.max(25, Math.min(75, Number(r.upProbabilityPct) || 50)), modelUp = br ? br.model.upPct : null;
+    let up = modelUp != null ? 0.65 * claudeUp + 0.35 * modelUp : claudeUp, conf = Math.max(0, Math.min(100, Number(r.confidence) || 0));
+    const rv = await MD.ai.review(app, { task: "Will SPY close the " + target + " session above " + refLabel + "?", S, signal: opts.signal, facts: measured, items: [{ id: "call", upProbabilityPct: Math.round(up), drivers: r.drivers, confidence: conf }] }).catch(() => null);
+    const review = rv && rv.reviews[0] || null;
+    if (review && review.adjustedConfidence != null && review.adjustedConfidence < conf && conf) { up = 50 + (up - 50) * review.adjustedConfidence / conf; conf = review.adjustedConfidence; }
+    up = Math.round(up);
+    const call = { target, at: Date.now(), phase: sess.phase, live, refPrice: ref, refLabel, upPct: up, downPct: 100 - up, probs: { claude: Math.round(claudeUp), model: modelUp, final: up }, summary: String(r.summary || ""), drivers: (r.drivers || []).slice(0, 5).map(String), keyEvents: (r.keyEvents || []).slice(0, 6).map(String), expectedRangePct: Number(r.expectedRangePct) || null, flipIf: String(r.flipIf || ""), sectorTilt: r.sectorTilt || null, confidence: conf, review, sources: S.verify(r.sources), toolCalls: S.calls, steps: S.log.map(x => ({ kind: x.kind, text: x.text })) };
+    if (app.demo) return Object.assign({ id: "unsaved" }, call);
+    // Only the first call per session counts for the record; later ones are shown but not logged.
+    const first = !app.store.cached("marketcalls").some(c => c.target === target && c.forecastId);
+    if (first && ref > 0 && up !== 50) {
+      const f = await app.store.create("forecasts", { assetId: SPY.id, asset: SPY, symbol: "SPY", source: "ai-market", horizonDays: 1, dueAt: Q.closeTimeUTC(target), priceAtCreation: ref, currency: "USD", priceSource: refLabel, direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: call.summary, flatBandPct: 0, sessionDate: target }).catch(() => null);
+      call.forecastId = f && f.id; call.dueAt = Q.closeTimeUTC(target);
+    }
+    return app.store.create("marketcalls", call);
+  }
+  function callCard(app, c) {
+    if (!c) return h("div", { class: "empty" }, "No call yet for " + Q.targetSession() + ".");
+    const ev = c.forecastId && app.store.cached("evals").find(x => x.forecastId === c.forecastId);
+    return h("div", { class: "stack" },
+      h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("strong", {}, "S&P 500 on " + c.target + ": " + (c.upPct >= 50 ? "▲ " + c.upPct + "% chance it closes up" : "▼ " + (100 - c.upPct) + "% chance it closes down")), h("span", { class: "tiny muted" }, "vs " + c.refLabel + (c.refPrice ? " " + c.refPrice.toFixed(2) : "") + " · made " + U.fmtTs(c.at) + " · confidence " + c.confidence + "/100")),
+      MD.day ? MD.day.probBar(c.upPct, "Closes up", "Closes down") : null,
+      h("p", {}, c.summary), MD.ai.list("Drivers", c.drivers), MD.ai.list("Key events", c.keyEvents),
+      c.flipIf ? h("p", { class: "small" }, h("strong", {}, "Would flip the call: "), c.flipIf) : null,
+      c.sectorTilt && (c.sectorTilt.leaders || []).length ? h("p", { class: "small muted" }, "Likely leaders: " + c.sectorTilt.leaders.join(", ") + (c.sectorTilt.laggards && c.sectorTilt.laggards.length ? " · laggards: " + c.sectorTilt.laggards.join(", ") : "")) : null,
+      h("p", { class: "tiny muted" }, "Claude " + c.probs.claude + "%" + (c.probs.model != null ? " · SPY's own history " + c.probs.model + "%" : "") + " · final " + c.probs.final + "%" + (c.expectedRangePct ? " · typical move ±" + c.expectedRangePct + "%" : "")),
+      MD.ai.reviewBadge(c.review), MD.ai.sources(c.sources),
+      ev ? h("p", { class: ev.directionHit ? "up small" : "down small" }, (ev.directionHit ? "Right: " : "Wrong: ") + "SPY closed at " + Number(ev.priceAtDue).toFixed(2) + " (" + fmtP(ev.realizedReturnPct) + ")") : c.forecastId ? h("p", { class: "tiny muted" }, "Logged; graded from the " + c.target + " close.") : h("p", { class: "tiny muted" }, "Not logged: the first call for this session already counts."));
+  }
+  function callsRecord(app) {
+    const tr = MD.ai.trackRecord(app, "ai-market"), calls = callsFor(app).filter(c => c.forecastId), evals = app.store.cached("evals");
+    if (!calls.length) return null;
+    return h("details", {}, h("summary", { class: "label", style: "cursor:pointer" }, "Market-call record: " + tr.scored + " graded" + (tr.hitPct != null ? ", " + tr.hitPct.toFixed(0) + "% right" : "") + (tr.brier != null ? ", Brier " + tr.brier.toFixed(3) : "")),
+      U.table([{ t: "Session", v: "target" }, { t: "Call", v: (c) => c.upPct >= 50 ? "▲ " + c.upPct + "% up" : "▼ " + (100 - c.upPct) + "% down" }, { t: "Result", v: (c) => { const ev = evals.find(x => x.forecastId === c.forecastId); return ev ? h("span", { class: ev.directionHit ? "up" : "down" }, (ev.directionHit ? "Right" : "Wrong") + " · " + fmtP(ev.realizedReturnPct)) : h("span", { class: "muted" }, "pending"); } }], calls.slice(0, 30)));
+  }
+
   /* ---------- what the rest of the desk is told ---------- */
   function note(app) {
     if (!app || !app.store) return "";
@@ -278,7 +351,8 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
       (proven.length ? " Patterns with a record: " + proven.map(p => "\"" + p.pattern + "\" held " + p.st.confirmed + " of " + p.st.tested + " times").join("; ") + "." : "") +
       (backed.length ? " Backtested over a year of daily moves: " + backed.map(p => "\"" + p.pattern + "\" held " + p.backtest.held + " of " + p.backtest.occurrences + " times (" + p.backtest.heldPct + "% vs " + p.backtest.baselinePct + "% on all days)").join("; ") + "." : "") +
       (fresh.length ? " Untested hypotheses: " + fresh.map(p => "\"" + p.pattern + "\"").join("; ") + "." : "") +
-      " Use this as context and check it against current data; patterns can break.").slice(0, 1800);
+      (() => { const c = latestCall(app); return c ? " The desk's market call for " + c.target + ": SPY " + (c.upPct >= 50 ? "up" : "down") + " " + Math.max(c.upPct, 100 - c.upPct) + "% (" + c.summary.slice(0, 160) + ")." : ""; })() +
+      " Use this as context and check it against current data; patterns can break.").slice(0, 2000);
   }
   // What the brain knows about one symbol, sector ETF or theme (for the market_memory tool and asset pages).
   function memory(app, query) {
@@ -298,7 +372,11 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
     const sess = Q.session(); if (sess.phase === "open" || sess.phase === "pre") return;
     const target = lastClosedSession(); if (latestPerDay(app).some(d => d.sessionDate === target && d.phase !== "open")) return;
     autoRunning = true;
-    try { const r = await studySession(app, {}); app.emit("data:marketdays"); await app.store.create("inbox", { kind: "brain", title: "Market Brain studied " + target, body: r.headline + " Source: Claude's study of measured moves and retrieved news.", materiality: 1, read: false, at: Date.now() }).catch(() => {}); }
+    try {
+      const r = await studySession(app, {}); app.emit("data:marketdays");
+      await app.store.create("inbox", { kind: "brain", title: "Market Brain studied " + target, body: r.headline + " Source: Claude's study of measured moves and retrieved news.", materiality: 1, read: false, at: Date.now() }).catch(() => {});
+      if (!latestCall(app)) { const c = await marketCall(app, {}); await app.store.create("inbox", { kind: "brain", title: "Market call for " + c.target + ": SPY " + (c.upPct >= 50 ? "up " + c.upPct : "down " + (100 - c.upPct)) + "%", body: c.summary + " Graded from the close.", materiality: 1, read: false, at: Date.now() }).catch(() => {}); }
+    }
     catch (e) { /* tried again at the next check */ }
     finally { autoRunning = false; }
   }
@@ -363,6 +441,16 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
       h("div", { class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center" }, go, stop, h("label", { class: "chk small" }, auto, "Study each session automatically after the close (once you've studied one)")),
       h("p", { class: "small muted" }, "US market: " + ({ open: "open, " + s.minutesToClose + " minutes to the close", pre: "pre-market, opens in " + s.minutesToOpen + " minutes", after: "after-hours", closed: "closed" + (s.minutesToOpen != null ? ", opens in " + Math.floor(s.minutesToOpen / 60) + " h " + (s.minutesToOpen % 60) + " min" : "") }[s.phase]) + ". A study takes 1–3 minutes: the app measures 22 instruments, the movers and the day's calendar; Claude reads the news, explains the session and tests the playbook. Uses your Claude usage plus about 50 data requests through Exa."),
       phase, log)));
+    const callBox = h("div", { class: "stack" }), callLog = MD.ai.logBox(), callPhase = h("span", { class: "small muted" }), cur0 = latestCall(app);
+    const callBtn = h("button", { class: "btn ghost", type: "button", disabled: !app.caps.sample, onclick: async () => {
+      callBtn.disabled = true; callLog.clear(); callPhase.textContent = "Working…";
+      try { const c = await marketCall(app, { onLog: (e) => callLog.add(e) }); callPhase.textContent = c.forecastId ? "Logged; graded at the close." : "Done."; callBox.replaceChildren(callCard(app, c)); callBtn.textContent = "Update the call"; }
+      catch (e) { callPhase.textContent = MD.ai.errText(e); }
+      callBtn.disabled = false;
+    } }, cur0 ? "Update the call" : "Make the call for " + Q.targetSession());
+    callBox.append(callCard(app, cur0));
+    root.append(U.section("Market call: will the S&P 500 close up?", h("div", { class: "stack" }, callBox, h("div", { class: "row", style: "gap:8px;align-items:center;flex-wrap:wrap" }, callBtn, callPhase), h("details", {}, h("summary", { class: "label" }, "Research steps"), callLog), callsRecord(app),
+      h("p", { class: "tiny muted" }, "Anchored to SPY's own history of up days in situations like today's, then adjusted for the calendar, pre-market moves, news and backtested patterns, and checked by a second reader. The first call per session is graded from the close; the record is fed back to future calls. Once you've studied a session, the next session's call is made automatically after each close."))));
     const pulseBox = h("div", { class: "stack" });
     root.append(U.section("Right now (measured)", pulseBox));
     U.async(pulseBox, () => pulse(app, { history: true }), (P) => {
@@ -464,8 +552,9 @@ Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": ".
     box.append(h("div", { class: "stack", style: "gap:6px" }, h("strong", {}, last.headline), h("span", { class: "tiny muted" }, "Session " + last.sessionDate + " · " + days.length + " studied · " + pb.patterns.filter(p => p.status === "active").length + " active patterns"),
       h("div", { class: "row", style: "gap:4px;flex-wrap:wrap" }, (last.drivers || []).slice(0, 3).map(d => h("span", { class: "chip sm" }, d.driver))),
       best ? h("p", { class: "small" }, "Most reliable pattern: \"" + best.pattern + "\" (held " + best.st.confirmed + " of " + best.st.tested + ")") : null,
+      (() => { const c = latestCall(app); return c ? h("p", { class: "small" }, h("strong", {}, "Market call " + c.target + ": "), "SPY " + (c.upPct >= 50 ? "▲ " + c.upPct + "% up" : "▼ " + (100 - c.upPct) + "% down")) : null; })(),
       h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")));
   }
 
-  MD.brain = { testIdea, backtest, RULE_HELP, labView, whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
+  MD.brain = { marketCall, latestCall, callsFor, testIdea, backtest, RULE_HELP, labView, whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
 })(typeof window !== "undefined" ? window : globalThis);

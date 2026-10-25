@@ -269,6 +269,14 @@
     return { phase, date: t.ymd, tradingDay: trading, earlyClose: EARLY.has(t.ymd), closeAt: close === 780 ? "1:00 p.m." : "4:00 p.m.", fraction: Math.max(0, Math.min(1, frac)), minutesToClose: phase === "open" ? Math.round(close - t.mins) : null, minutesToOpen: toOpen, nyMinutes: t.mins };
   }
 
-  MD.quant = { cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  // UTC time (ms) of a session's close (4:00 p.m. ET, 1:00 p.m. on early-close days), daylight saving included.
+  function closeTimeUTC(ymd) { const [y, m, d] = ymd.split("-").map(Number); let t = Date.UTC(y, m - 1, d, 20, 0); t += (960 - nyParts(new Date(t)).mins) * 60e3; if (EARLY.has(ymd)) t -= 180 * 60e3; return t; }
+  // The session a call made now is about: today's if it hasn't closed yet, otherwise the next trading day's.
+  function targetSession(now = new Date()) {
+    const s = session(now); if (s.tradingDay && s.nyMinutes < (s.earlyClose ? 780 : 960)) return s.date;
+    for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
+    return s.date;
+  }
+  MD.quant = { closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

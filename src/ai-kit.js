@@ -203,7 +203,7 @@
     const r = await s.json(`You are reviewing your own track record as Market Desk's market analyst, to get better at forecasting. Below are your past forecasts that were scored against the actual close on their due date: what you predicted, the probability you stated, your thesis at the time, and what happened. Overall: ${tr.scored} scored, ${tr.hitPct.toFixed(0)}% came true, Brier ${tr.brier.toFixed(3)} (0.25 is what always saying 50% earns).
 Find the patterns behind the misses and the hits: overconfidence at some stated levels, directions or kinds of asset you get wrong, horizons that don't work, kinds of thesis that failed (momentum, valuation, news, analyst ratings). Every lesson must be supported by specific calls in the list (name their symbols); with few calls, say the evidence is thin instead of over-generalising. Do not invent calls, prices or outcomes.${prev ? " Your previous lessons were: " + prev.lessons.map(l => l.lesson).join(" | ") + ". Keep the ones the record still supports and drop the rest." : ""}
 Scored calls: ${JSON.stringify(calls)}
-Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been and the main weakness", "lessons": [{"lesson": "one-sentence instruction to your future self", "evidence": "the calls that show it, by symbol", "appliesTo": "all"|"Recommendations"|"AI quick takes"|"Deep Research"}], "biases": ["short names of systematic biases seen"], "keepDoing": ["what worked"]}`, { modelTier: "complex", signal: opts.signal, cache: false });
+Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been and the main weakness", "lessons": [{"lesson": "one-sentence instruction to your future self", "evidence": "the calls that show it, by symbol", "appliesTo": "all"|"Recommendations"|"AI quick takes"|"Deep Research"|"Day-trade plans"|"Market calls"}], "biases": ["short names of systematic biases seen"], "keepDoing": ["what worked"]}`, { modelTier: "complex", signal: opts.signal, cache: false });
     const strs = (xs, n) => (Array.isArray(xs) ? xs : []).slice(0, n).map(x => String(x).slice(0, 200));
     const doc = { basedOn: calls.length, hitPct: tr.hitPct, brier: tr.brier, summary: String(r.summary || "").slice(0, 600), biases: strs(r.biases, 5), keepDoing: strs(r.keepDoing, 4),
       lessons: (Array.isArray(r.lessons) ? r.lessons : []).filter(l => l && l.lesson).slice(0, 6).map(l => ({ lesson: String(l.lesson).slice(0, 300), evidence: String(l.evidence || "").slice(0, 300), appliesTo: Object.values(SOURCE_LABEL).includes(l.appliesTo) ? l.appliesTo : "all" })) };
@@ -261,7 +261,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     })().finally(() => { scoring = null; });
     return scoring;
   }
-  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", "ai-day": "Day-trade plans", ai: "Deep Research", user: "Your own forecasts" };
+  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", "ai-day": "Day-trade plans", "ai-market": "Market calls", ai: "Deep Research", user: "Your own forecasts" };
   /* Per-source accuracy and a calibration chart: for each stated-probability band, how often calls came true. */
   function scorecard(app) {
     const fcs = app.store.cached("forecasts"), evals = app.store.cached("evals");
