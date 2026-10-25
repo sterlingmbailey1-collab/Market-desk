@@ -1,5 +1,25 @@
 # Changelog
 
+## Version 15 (2026-10-25)
+- **Testable playbook.** Market Brain patterns now carry a rule over daily moves (e.g. "TLT below −1% → XLK minus SPY
+  below 0% the same day"). Every rule is backtested on a year of daily closes (how often the effect followed the cause
+  vs how often it happens on any day, with a z-score), same-day rules are scored by the app itself from each
+  session's measured moves, and refining the playbook adds rules to older patterns and re-runs the backtests.
+- **Hypothesis Lab.** Describe a cause and effect in plain words; Claude turns it into a rule (ETFs stand in for
+  sectors and themes), the app backtests it over 1 or 3 years, and you can add it to the playbook. Ideas that can't
+  be measured with daily prices are explained, not forced.
+- **backtest_rule** AI tool: every AI on the desk can test a pattern against history before relying on it.
+- **Daily market call.** The chance the S&P 500 closes up in the next session, anchored to SPY's own history of up
+  days in situations like today's, adjusted for pre-market moves, the calendar, earnings, news and backtested
+  patterns, and checked by a reviewer. The first call per session is graded from the close; the record feeds the
+  next call. Made automatically after each studied session; shown on the Market Brain page, the dashboard card and
+  in every AI prompt.
+- **Two readers.** The reviewer now gives its own independent probability, which is averaged with the analyst's for
+  Recommendations, day-trade plans and market calls.
+- **Automatic calibration.** Once a feature has 10+ graded calls, its probabilities are corrected toward how often
+  calls stated at that level actually came true (never flipping the direction); each card shows the correction.
+- Test harness: the reload check now looks for the stored account data itself, not just any stored key.
+
 ## Version 14 (2026-10-25)
 
 **Recommendations**

@@ -128,8 +128,15 @@ Reply with ONLY JSON:
       noTradeIf: (r.noTradeIf || []).slice(0, 5).map(String), keyTimes: (r.keyTimes || []).slice(0, 5).map(String), risks: (r.risks || []).slice(0, 4).map(String), confidence: Math.max(0, Math.min(100, Number(r.confidence) || 0)), sources: S.verify(r.sources), toolCalls: S.calls };
     // Second reader checks the plan against the measured levels.
     const rv = await MD.ai.review(app, { task: "An intraday plan for " + L.symbol, S, signal: opts.signal, facts: forAI(L), items: [{ id: "plan", bias: P.bias, upProbabilityPct: P.upPct, setups: P.setups, drivers: P.drivers }] }).catch(() => null);
-    if (rv && rv.reviews[0]) { P.review = rv.reviews[0]; if (rv.reviews[0].adjustedConfidence != null && rv.reviews[0].adjustedConfidence < P.confidence && P.confidence) { const k = rv.reviews[0].adjustedConfidence / P.confidence; P.upPct = Math.round(50 + (P.upPct - 50) * k); P.confidence = rv.reviews[0].adjustedConfidence; } }
-    P.downPct = 100 - P.upPct;
+    P.probs = { claude: P.upPct };
+    if (rv && rv.reviews[0]) {
+      const rw = rv.reviews[0]; P.review = rw;
+      if (rw.probabilityPct != null) { P.probs.reviewer = Math.round(rw.probabilityPct); P.upPct = Math.round((P.upPct + rw.probabilityPct) / 2); }
+      else if (rw.adjustedConfidence != null && rw.adjustedConfidence < P.confidence && P.confidence) P.upPct = Math.round(50 + (P.upPct - 50) * rw.adjustedConfidence / P.confidence);
+      if (rw.adjustedConfidence != null && rw.adjustedConfidence < P.confidence) P.confidence = rw.adjustedConfidence;
+    }
+    const cal = MD.ai.calibrateUp(app, "ai-day", P.upPct); if (cal.applied) { P.calibration = cal; P.upPct = cal.upPct; }
+    P.downPct = 100 - P.upPct; P.probs.final = P.upPct;
     // Log the call so the AI's intraday record is scored from the session's close.
     if (!app.demo && L.last > 0 && P.upPct !== 50) {
       const c = Q.session(); let dueAt;
@@ -276,6 +283,7 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
     return h("div", { class: "card" }, h("div", { class: "bd stack" },
       h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("span", { class: "verdict " + bcls }, P.bias === "long" ? "Bias: long" : P.bias === "short" ? "Bias: short" : "Bias: neutral / no edge"), h("span", { class: "tiny muted" }, U.fmtTs(P.at) + " · price then " + px(P.last) + " · confidence " + P.confidence + "/100")),
       probBar(P.upPct, "Closes above " + px(P.last), "Closes below"),
+      P.probs ? h("p", { class: "tiny muted" }, "Claude " + P.probs.claude + "%" + (P.probs.reviewer != null ? " · reviewer's own estimate " + P.probs.reviewer + "%" : "") + (P.calibration ? " · calibrated from " + P.calibration.scored + " graded plans: " + P.probs.final + "%" : "") + " · final " + P.upPct + "%") : null,
       h("p", {}, P.summary), MD.ai.list("What's moving it", P.drivers),
       P.setups.length ? h("div", { class: "grid g2" }, P.setups.map(s => h("div", { class: "bb " + (s.side === "long" ? "up" : "down") }, h("span", { class: "label" }, (s.side === "long" ? "Long" : "Short") + " · " + s.name), h("p", { class: "small" }, s.trigger),
         h("p", { class: "small num" }, "Entry " + px(s.entry) + " · stop " + px(s.stop) + " · targets " + s.targets.map(px).join(" / ")), s.valid ? h("p", { class: "tiny muted" }, (s.rewardRisk != null ? s.rewardRisk.toFixed(2) + " R to the first target" : "") + (s.reachFirstTargetPct != null ? " · " + s.reachFirstTargetPct + "% chance of reaching it before the stop" : "") + (s.expectancyR != null ? " · expectancy " + (s.expectancyR > 0 ? "+" : "") + s.expectancyR.toFixed(2) + " R" : "")) : h("p", { class: "tiny warn-t" }, "The stop is on the wrong side of the entry; ignore this setup."),

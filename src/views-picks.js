@@ -177,8 +177,12 @@ Reply with ONLY JSON:
       const c = bySym.get(p.symbol), rev = rv && rv.reviews.find(x => x.id === p.symbol);
       if (rev) {
         p.review = rev;
-        if (rev.adjustedConfidence != null && rev.adjustedConfidence < p.confidence) { const k = p.confidence ? rev.adjustedConfidence / p.confidence : 1; p.upPct = 50 + (p.upPct - 50) * k; }
+        // Two readers: the reviewer's own independent estimate is averaged in; without one, lower confidence pulls toward 50%.
+        if (rev.probabilityPct != null) { p.probs.reviewer = Math.round(rev.probabilityPct); p.upPct = (p.upPct + rev.probabilityPct) / 2; }
+        else if (rev.adjustedConfidence != null && rev.adjustedConfidence < p.confidence) { const k = p.confidence ? rev.adjustedConfidence / p.confidence : 1; p.upPct = 50 + (p.upPct - 50) * k; }
       }
+      p.probs.afterReview = Math.round(p.upPct);
+      const cal = MD.ai.calibrateUp(app, "ai-picks", p.upPct); if (cal.applied) { p.calibration = cal; p.upPct = cal.upPct; }
       p.upPct = Math.round(p.upPct); p.downPct = 100 - p.upPct; p.probs.final = p.upPct;
       p.lean = p.upPct >= 50 ? "up" : "down"; p.leanProbabilityPct = Math.max(p.upPct, p.downPct);
       p.bigMove = c.volPct ? MD.quant.bigMoveChance(c.volPct, p.timeframeDays, Math.max(1, p.moveLow)) : null;
@@ -370,7 +374,7 @@ Reply with ONLY JSON:
           p.changeMyMind ? h("p", { class: "small" }, h("strong", {}, "What would change the view: "), p.changeMyMind) : null,
           MD.ai.reviewBadge(p.review),
           p.probs ? h("details", { class: "small" }, h("summary", { class: "label", style: "cursor:pointer" }, "How the " + p.upPct + "% chance up was built"),
-            h("p", { class: "small" }, "Claude: " + p.probs.claude + "%" + (p.probs.model != null ? " · the asset's own history: " + p.probs.model + "%" : " · no measured history") + " · blended " + p.probs.blended + "%" + (p.probs.final !== p.probs.blended ? " · after the review: " + p.probs.final + "%" : "") + "."),
+            h("p", { class: "small" }, "Claude: " + p.probs.claude + "%" + (p.probs.model != null ? " · the asset's own history: " + p.probs.model + "%" : " · no measured history") + " · blended " + p.probs.blended + "%" + (p.probs.reviewer != null ? " · the reviewer's own estimate: " + p.probs.reviewer + "%" : "") + ((p.probs.afterReview ?? p.probs.final) !== p.probs.blended ? " · after the review: " + (p.probs.afterReview ?? p.probs.final) + "%" : "") + (p.calibration ? " · calibrated from " + p.calibration.scored + " graded picks (calls like this came true " + p.calibration.observedPct + "% of the time): " + p.probs.final + "%" : "") + "."),
             p.baseRates ? h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:2px" }, h("li", {}, "Over every " + p.timeframeDays + "-day window since " + new Date(p.baseRates.historyFrom * 1000).getUTCFullYear() + ", it finished higher " + p.baseRates.overallUpPct + "% of the time (" + p.baseRates.windows + " windows, about " + p.baseRates.independent + " independent)."), p.baseRates.conditions.map(x => h("li", {}, "When " + x.condition + ": higher " + x.upPct + "% of the time (" + x.windows + " windows, ≈" + x.independent + " independent)."))) : null,
             p.moveExplained && p.moveExplained.last5Days ? h("p", { class: "tiny muted" }, "Last 5 days " + U.pct(p.moveExplained.last5Days.movePct) + ": " + U.pct(p.moveExplained.last5Days.explainedPct) + " explained by the market and its factors, " + U.pct(p.moveExplained.last5Days.unexplainedPct) + " its own.") : null,
             h("p", { class: "tiny muted" }, "History alone is capped at 25–75% and shrunk toward 50% when it has few independent windows.")) : null,

@@ -135,6 +135,18 @@
     return vx > 0 && vy > 0 ? c / Math.sqrt(vx * vy) : null;
   }
 
+  /* ---------- calibration from the record ---------- */
+  /* Correct a stated probability (for the favoured side, 0.5–1) with the record of past calls: the hit rate of calls
+     stated near it (Gaussian-weighted by distance), shrunk toward the stated value by k pseudo-calls so a short record
+     moves it only a little. items: [{p, hit}]. */
+  function calibrateFrom(items, p, k = 15, bw = 0.08) {
+    let w = 0, hw = 0;
+    for (const it of items) { const d = (it.p - p) / bw, wi = Math.exp(-d * d); w += wi; hw += wi * (it.hit ? 1 : 0); }
+    if (w < 1e-6) return { p, applied: false, n: 0 };
+    const obs = hw / w;
+    return { p: (w * obs + k * p) / (w + k), applied: true, n: Math.round(w * 10) / 10, observed: obs };
+  }
+
   /* ---------- testable cause → effect rules ---------- */
   /* A rule over daily % moves: {cause: {symbol, op: "<"|">", pct}, effect: {symbol, vs?, op, pct}, lagDays: 0|1}.
      "When TLT falls more than 1%, XLK trails SPY the same day" =
@@ -277,6 +289,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -301,9 +301,13 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     let up = modelUp != null ? 0.65 * claudeUp + 0.35 * modelUp : claudeUp, conf = Math.max(0, Math.min(100, Number(r.confidence) || 0));
     const rv = await MD.ai.review(app, { task: "Will SPY close the " + target + " session above " + refLabel + "?", S, signal: opts.signal, facts: measured, items: [{ id: "call", upProbabilityPct: Math.round(up), drivers: r.drivers, confidence: conf }] }).catch(() => null);
     const review = rv && rv.reviews[0] || null;
-    if (review && review.adjustedConfidence != null && review.adjustedConfidence < conf && conf) { up = 50 + (up - 50) * review.adjustedConfidence / conf; conf = review.adjustedConfidence; }
+    const reviewerUp = review && review.probabilityPct != null ? Math.round(review.probabilityPct) : null;
+    if (reviewerUp != null) up = (up + reviewerUp) / 2;
+    else if (review && review.adjustedConfidence != null && review.adjustedConfidence < conf && conf) up = 50 + (up - 50) * review.adjustedConfidence / conf;
+    if (review && review.adjustedConfidence != null && review.adjustedConfidence < conf) conf = review.adjustedConfidence;
+    const cal = MD.ai.calibrateUp(app, "ai-market", up); if (cal.applied) up = cal.upPct;
     up = Math.round(up);
-    const call = { target, at: Date.now(), phase: sess.phase, live, refPrice: ref, refLabel, upPct: up, downPct: 100 - up, probs: { claude: Math.round(claudeUp), model: modelUp, final: up }, summary: String(r.summary || ""), drivers: (r.drivers || []).slice(0, 5).map(String), keyEvents: (r.keyEvents || []).slice(0, 6).map(String), expectedRangePct: Number(r.expectedRangePct) || null, flipIf: String(r.flipIf || ""), sectorTilt: r.sectorTilt || null, confidence: conf, review, sources: S.verify(r.sources), toolCalls: S.calls, steps: S.log.map(x => ({ kind: x.kind, text: x.text })) };
+    const call = { target, at: Date.now(), phase: sess.phase, live, refPrice: ref, refLabel, upPct: up, downPct: 100 - up, probs: { claude: Math.round(claudeUp), model: modelUp, reviewer: reviewerUp, final: up }, calibration: cal.applied ? cal : null, summary: String(r.summary || ""), drivers: (r.drivers || []).slice(0, 5).map(String), keyEvents: (r.keyEvents || []).slice(0, 6).map(String), expectedRangePct: Number(r.expectedRangePct) || null, flipIf: String(r.flipIf || ""), sectorTilt: r.sectorTilt || null, confidence: conf, review, sources: S.verify(r.sources), toolCalls: S.calls, steps: S.log.map(x => ({ kind: x.kind, text: x.text })) };
     if (app.demo) return Object.assign({ id: "unsaved" }, call);
     // Only the first call per session counts for the record; later ones are shown but not logged.
     const first = !app.store.cached("marketcalls").some(c => c.target === target && c.forecastId);
@@ -322,7 +326,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
       h("p", {}, c.summary), MD.ai.list("Drivers", c.drivers), MD.ai.list("Key events", c.keyEvents),
       c.flipIf ? h("p", { class: "small" }, h("strong", {}, "Would flip the call: "), c.flipIf) : null,
       c.sectorTilt && (c.sectorTilt.leaders || []).length ? h("p", { class: "small muted" }, "Likely leaders: " + c.sectorTilt.leaders.join(", ") + (c.sectorTilt.laggards && c.sectorTilt.laggards.length ? " · laggards: " + c.sectorTilt.laggards.join(", ") : "")) : null,
-      h("p", { class: "tiny muted" }, "Claude " + c.probs.claude + "%" + (c.probs.model != null ? " · SPY's own history " + c.probs.model + "%" : "") + " · final " + c.probs.final + "%" + (c.expectedRangePct ? " · typical move ±" + c.expectedRangePct + "%" : "")),
+      h("p", { class: "tiny muted" }, "Claude " + c.probs.claude + "%" + (c.probs.model != null ? " · SPY's own history " + c.probs.model + "%" : "") + (c.probs.reviewer != null ? " · reviewer's own estimate " + c.probs.reviewer + "%" : "") + (c.calibration ? " · calibrated from " + c.calibration.scored + " graded calls" : "") + " · final " + c.probs.final + "%" + (c.expectedRangePct ? " · typical move ±" + c.expectedRangePct + "%" : "")),
       MD.ai.reviewBadge(c.review), MD.ai.sources(c.sources),
       ev ? h("p", { class: ev.directionHit ? "up small" : "down small" }, (ev.directionHit ? "Right: " : "Wrong: ") + "SPY closed at " + Number(ev.priceAtDue).toFixed(2) + " (" + fmtP(ev.realizedReturnPct) + ")") : c.forecastId ? h("p", { class: "tiny muted" }, "Logged; graded from the " + c.target + " close.") : h("p", { class: "tiny muted" }, "Not logged: the first call for this session already counts."));
   }

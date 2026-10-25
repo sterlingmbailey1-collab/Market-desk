@@ -1609,6 +1609,18 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     return vx > 0 && vy > 0 ? c / Math.sqrt(vx * vy) : null;
   }
 
+  /* ---------- calibration from the record ---------- */
+  /* Correct a stated probability (for the favoured side, 0.5–1) with the record of past calls: the hit rate of calls
+     stated near it (Gaussian-weighted by distance), shrunk toward the stated value by k pseudo-calls so a short record
+     moves it only a little. items: [{p, hit}]. */
+  function calibrateFrom(items, p, k = 15, bw = 0.08) {
+    let w = 0, hw = 0;
+    for (const it of items) { const d = (it.p - p) / bw, wi = Math.exp(-d * d); w += wi; hw += wi * (it.hit ? 1 : 0); }
+    if (w < 1e-6) return { p, applied: false, n: 0 };
+    const obs = hw / w;
+    return { p: (w * obs + k * p) / (w + k), applied: true, n: Math.round(w * 10) / 10, observed: obs };
+  }
+
   /* ---------- testable cause → effect rules ---------- */
   /* A rule over daily % moves: {cause: {symbol, op: "<"|">", pct}, effect: {symbol, vs?, op, pct}, lagDays: 0|1}.
      "When TLT falls more than 1%, XLK trails SPY the same day" =
@@ -1751,7 +1763,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);
 
@@ -2047,6 +2059,14 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     eq(Q.positionSize({ account: 25000, riskPct: 1, entry: 100, stop: 102, side: "short" }).shares, 125);
     const st = Q.tradeStats([{ side: "long", entry: 10, exit: 11, shares: 100, stop: 9.5 }, { side: "short", entry: 20, exit: 21, shares: 50, stop: 21 }, { side: "long", entry: 5, exit: 5.5, shares: 100 }]);
     eq(st.n, 3); near(st.net, 100, 1e-9); near(st.winRatePct, 200 / 3, 1e-9); near(st.profitFactor, 3, 1e-9); near(st.avgR, 0.5, 1e-9);
+  });
+  test("calibration from the record pulls overconfident calls down, by more as the record grows", () => {
+    const Q = MD.quant, mk = (n, p, hits) => Array.from({ length: n }, (_, i) => ({ p, hit: i < hits }));
+    const few = Q.calibrateFrom(mk(10, 0.7, 5), 0.7), many = Q.calibrateFrom(mk(100, 0.7, 50), 0.7);
+    ok(few.applied && few.p < 0.7 && few.p > many.p && many.p > 0.5, few.p + " " + many.p); near(many.observed, 0.5, 1e-9);
+    const good = Q.calibrateFrom(mk(40, 0.6, 24), 0.6); near(good.p, 0.6, 1e-9);
+    const far = Q.calibrateFrom(mk(40, 0.55, 10), 0.85); ok(Math.abs(far.p - 0.85) < 0.01, "calls stated far away barely count: " + far.p);
+    ok(!Q.calibrateFrom([], 0.7).applied);
   });
   test("cause → effect rules: cleaning, backtest against the baseline, today's check", () => {
     const Q = MD.quant, r = MD.core.rng(5), g = MD.core.gauss;
@@ -7620,6 +7640,17 @@ Reply with ONLY JSON: {"strongestCounter": "...", "pricedIn": "...", "fragileAss
     const lessons = L ? { at: L.createdAt, items: L.lessons.filter(l => !l.appliesTo || l.appliesTo === "all" || !label || l.appliesTo === label).map(l => l.lesson) } : null;
     return { logged: fcs.length, scored: n, hitPct: n ? hits / n * 100 : null, brier, buckets, lessons };
   }
+  /* Automatic calibration: once a source has 10+ scored calls, an up-probability is corrected toward how often calls
+     stated at that level actually came true (MD.quant.calibrateFrom). It never flips the direction. */
+  function calibrateUp(app, source, upPct) {
+    const fcs = app.store.cached("forecasts").filter(f => f.source === source), evals = app.store.cached("evals");
+    const items = fcs.map(f => { const e = evals.find(v => v.forecastId === f.id); return e ? { p: Number(f.probability) || 0.5, hit: !!e.directionHit } : null; }).filter(Boolean);
+    if (items.length < 10) return { upPct, applied: false, scored: items.length };
+    const fav = Math.max(upPct, 100 - upPct) / 100, c = MD.quant.calibrateFrom(items, fav);
+    if (!c.applied) return { upPct, applied: false, scored: items.length };
+    const adj = Math.max(50, c.p * 100);
+    return { upPct: Math.round(upPct >= 50 ? adj : 100 - adj), from: Math.round(upPct), applied: true, scored: items.length, observedPct: Math.round(c.observed * 100), weight: c.n };
+  }
   function calibrationNote(tr) {
     const learned = tr && tr.lessons && tr.lessons.items.length ? " Lessons you wrote on " + new Date(tr.lessons.at).toISOString().slice(0, 10) + " after studying your scored calls; apply them: " + tr.lessons.items.join(" ") : "";
     if (!tr || tr.scored < 5) return "Track record: fewer than 5 of your past calls have been scored, so there is no calibration evidence yet; keep stated probabilities modest." + learned;
@@ -7731,13 +7762,14 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     const st = S.step("run", "Independent review of " + items.length + " item" + (items.length > 1 ? "s" : ""));
     const prompt = `You are a skeptical independent reviewer checking an analyst's draft before an investor sees it. Task the draft answers: ${task}
 Check each item ONLY against the measured data and the list of sources that were actually retrieved. Flag: claims not supported by the data or sources, figures that contradict the measured data, risks ignored, confidence that is too high for the evidence, and anything that reads like advice to act. Be concrete. Keep items that hold up.
+When an item states a probability (upProbabilityPct), also give YOUR OWN independent estimate of that same probability as probabilityPct, from the evidence, without anchoring on the draft's number; leave it null otherwise.
 Measured data: ${JSON.stringify(facts).slice(0, 60000)}
 Sources retrieved: ${JSON.stringify(S.sourceList()).slice(0, 12000)}
 Draft items: ${JSON.stringify(items).slice(0, 60000)}
-Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"revise"|"drop", "issues": ["short, specific problems; empty if none"], "adjustedConfidence": 0-100, "note": "one sentence the investor should read"}], "overall": "one sentence on the draft as a whole"}`;
+Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"revise"|"drop", "issues": ["short, specific problems; empty if none"], "adjustedConfidence": 0-100, "probabilityPct": 0-100 or null, "note": "one sentence the investor should read"}], "overall": "one sentence on the draft as a whole"}`;
     try {
       const r = await s.json(prompt, { modelTier: "complex", signal, cache: false });
-      const reviews = (Array.isArray(r.reviews) ? r.reviews : []).filter(x => x && x.id != null).map(x => ({ id: String(x.id), verdict: ["keep", "revise", "drop"].includes(x.verdict) ? x.verdict : "keep", issues: (x.issues || []).slice(0, 4).map(String), adjustedConfidence: x.adjustedConfidence == null ? null : Math.max(0, Math.min(100, Number(x.adjustedConfidence) || 0)), note: String(x.note || "") }));
+      const reviews = (Array.isArray(r.reviews) ? r.reviews : []).filter(x => x && x.id != null).map(x => ({ id: String(x.id), verdict: ["keep", "revise", "drop"].includes(x.verdict) ? x.verdict : "keep", issues: (x.issues || []).slice(0, 4).map(String), adjustedConfidence: x.adjustedConfidence == null ? null : Math.max(0, Math.min(100, Number(x.adjustedConfidence) || 0)), probabilityPct: x.probabilityPct == null || !isFinite(Number(x.probabilityPct)) ? null : Math.max(1, Math.min(99, Number(x.probabilityPct))), note: String(x.note || "") }));
       S.done(st, "ok", " → " + reviews.filter(x => x.verdict === "keep").length + " kept, " + reviews.filter(x => x.verdict === "revise").length + " revised, " + reviews.filter(x => x.verdict === "drop").length + " dropped");
       return { reviews, overall: String(r.overall || "") };
     } catch (e) { if (e && e.code === "cancelled") throw e; S.done(st, "fail", " → didn't complete; showing the draft unreviewed"); return null; }
@@ -7775,7 +7807,7 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -8084,9 +8116,13 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     let up = modelUp != null ? 0.65 * claudeUp + 0.35 * modelUp : claudeUp, conf = Math.max(0, Math.min(100, Number(r.confidence) || 0));
     const rv = await MD.ai.review(app, { task: "Will SPY close the " + target + " session above " + refLabel + "?", S, signal: opts.signal, facts: measured, items: [{ id: "call", upProbabilityPct: Math.round(up), drivers: r.drivers, confidence: conf }] }).catch(() => null);
     const review = rv && rv.reviews[0] || null;
-    if (review && review.adjustedConfidence != null && review.adjustedConfidence < conf && conf) { up = 50 + (up - 50) * review.adjustedConfidence / conf; conf = review.adjustedConfidence; }
+    const reviewerUp = review && review.probabilityPct != null ? Math.round(review.probabilityPct) : null;
+    if (reviewerUp != null) up = (up + reviewerUp) / 2;
+    else if (review && review.adjustedConfidence != null && review.adjustedConfidence < conf && conf) up = 50 + (up - 50) * review.adjustedConfidence / conf;
+    if (review && review.adjustedConfidence != null && review.adjustedConfidence < conf) conf = review.adjustedConfidence;
+    const cal = MD.ai.calibrateUp(app, "ai-market", up); if (cal.applied) up = cal.upPct;
     up = Math.round(up);
-    const call = { target, at: Date.now(), phase: sess.phase, live, refPrice: ref, refLabel, upPct: up, downPct: 100 - up, probs: { claude: Math.round(claudeUp), model: modelUp, final: up }, summary: String(r.summary || ""), drivers: (r.drivers || []).slice(0, 5).map(String), keyEvents: (r.keyEvents || []).slice(0, 6).map(String), expectedRangePct: Number(r.expectedRangePct) || null, flipIf: String(r.flipIf || ""), sectorTilt: r.sectorTilt || null, confidence: conf, review, sources: S.verify(r.sources), toolCalls: S.calls, steps: S.log.map(x => ({ kind: x.kind, text: x.text })) };
+    const call = { target, at: Date.now(), phase: sess.phase, live, refPrice: ref, refLabel, upPct: up, downPct: 100 - up, probs: { claude: Math.round(claudeUp), model: modelUp, reviewer: reviewerUp, final: up }, calibration: cal.applied ? cal : null, summary: String(r.summary || ""), drivers: (r.drivers || []).slice(0, 5).map(String), keyEvents: (r.keyEvents || []).slice(0, 6).map(String), expectedRangePct: Number(r.expectedRangePct) || null, flipIf: String(r.flipIf || ""), sectorTilt: r.sectorTilt || null, confidence: conf, review, sources: S.verify(r.sources), toolCalls: S.calls, steps: S.log.map(x => ({ kind: x.kind, text: x.text })) };
     if (app.demo) return Object.assign({ id: "unsaved" }, call);
     // Only the first call per session counts for the record; later ones are shown but not logged.
     const first = !app.store.cached("marketcalls").some(c => c.target === target && c.forecastId);
@@ -8105,7 +8141,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
       h("p", {}, c.summary), MD.ai.list("Drivers", c.drivers), MD.ai.list("Key events", c.keyEvents),
       c.flipIf ? h("p", { class: "small" }, h("strong", {}, "Would flip the call: "), c.flipIf) : null,
       c.sectorTilt && (c.sectorTilt.leaders || []).length ? h("p", { class: "small muted" }, "Likely leaders: " + c.sectorTilt.leaders.join(", ") + (c.sectorTilt.laggards && c.sectorTilt.laggards.length ? " · laggards: " + c.sectorTilt.laggards.join(", ") : "")) : null,
-      h("p", { class: "tiny muted" }, "Claude " + c.probs.claude + "%" + (c.probs.model != null ? " · SPY's own history " + c.probs.model + "%" : "") + " · final " + c.probs.final + "%" + (c.expectedRangePct ? " · typical move ±" + c.expectedRangePct + "%" : "")),
+      h("p", { class: "tiny muted" }, "Claude " + c.probs.claude + "%" + (c.probs.model != null ? " · SPY's own history " + c.probs.model + "%" : "") + (c.probs.reviewer != null ? " · reviewer's own estimate " + c.probs.reviewer + "%" : "") + (c.calibration ? " · calibrated from " + c.calibration.scored + " graded calls" : "") + " · final " + c.probs.final + "%" + (c.expectedRangePct ? " · typical move ±" + c.expectedRangePct + "%" : "")),
       MD.ai.reviewBadge(c.review), MD.ai.sources(c.sources),
       ev ? h("p", { class: ev.directionHit ? "up small" : "down small" }, (ev.directionHit ? "Right: " : "Wrong: ") + "SPY closed at " + Number(ev.priceAtDue).toFixed(2) + " (" + fmtP(ev.realizedReturnPct) + ")") : c.forecastId ? h("p", { class: "tiny muted" }, "Logged; graded from the " + c.target + " close.") : h("p", { class: "tiny muted" }, "Not logged: the first call for this session already counts."));
   }
@@ -8475,8 +8511,15 @@ Reply with ONLY JSON:
       noTradeIf: (r.noTradeIf || []).slice(0, 5).map(String), keyTimes: (r.keyTimes || []).slice(0, 5).map(String), risks: (r.risks || []).slice(0, 4).map(String), confidence: Math.max(0, Math.min(100, Number(r.confidence) || 0)), sources: S.verify(r.sources), toolCalls: S.calls };
     // Second reader checks the plan against the measured levels.
     const rv = await MD.ai.review(app, { task: "An intraday plan for " + L.symbol, S, signal: opts.signal, facts: forAI(L), items: [{ id: "plan", bias: P.bias, upProbabilityPct: P.upPct, setups: P.setups, drivers: P.drivers }] }).catch(() => null);
-    if (rv && rv.reviews[0]) { P.review = rv.reviews[0]; if (rv.reviews[0].adjustedConfidence != null && rv.reviews[0].adjustedConfidence < P.confidence && P.confidence) { const k = rv.reviews[0].adjustedConfidence / P.confidence; P.upPct = Math.round(50 + (P.upPct - 50) * k); P.confidence = rv.reviews[0].adjustedConfidence; } }
-    P.downPct = 100 - P.upPct;
+    P.probs = { claude: P.upPct };
+    if (rv && rv.reviews[0]) {
+      const rw = rv.reviews[0]; P.review = rw;
+      if (rw.probabilityPct != null) { P.probs.reviewer = Math.round(rw.probabilityPct); P.upPct = Math.round((P.upPct + rw.probabilityPct) / 2); }
+      else if (rw.adjustedConfidence != null && rw.adjustedConfidence < P.confidence && P.confidence) P.upPct = Math.round(50 + (P.upPct - 50) * rw.adjustedConfidence / P.confidence);
+      if (rw.adjustedConfidence != null && rw.adjustedConfidence < P.confidence) P.confidence = rw.adjustedConfidence;
+    }
+    const cal = MD.ai.calibrateUp(app, "ai-day", P.upPct); if (cal.applied) { P.calibration = cal; P.upPct = cal.upPct; }
+    P.downPct = 100 - P.upPct; P.probs.final = P.upPct;
     // Log the call so the AI's intraday record is scored from the session's close.
     if (!app.demo && L.last > 0 && P.upPct !== 50) {
       const c = Q.session(); let dueAt;
@@ -8623,6 +8666,7 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
     return h("div", { class: "card" }, h("div", { class: "bd stack" },
       h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("span", { class: "verdict " + bcls }, P.bias === "long" ? "Bias: long" : P.bias === "short" ? "Bias: short" : "Bias: neutral / no edge"), h("span", { class: "tiny muted" }, U.fmtTs(P.at) + " · price then " + px(P.last) + " · confidence " + P.confidence + "/100")),
       probBar(P.upPct, "Closes above " + px(P.last), "Closes below"),
+      P.probs ? h("p", { class: "tiny muted" }, "Claude " + P.probs.claude + "%" + (P.probs.reviewer != null ? " · reviewer's own estimate " + P.probs.reviewer + "%" : "") + (P.calibration ? " · calibrated from " + P.calibration.scored + " graded plans: " + P.probs.final + "%" : "") + " · final " + P.upPct + "%") : null,
       h("p", {}, P.summary), MD.ai.list("What's moving it", P.drivers),
       P.setups.length ? h("div", { class: "grid g2" }, P.setups.map(s => h("div", { class: "bb " + (s.side === "long" ? "up" : "down") }, h("span", { class: "label" }, (s.side === "long" ? "Long" : "Short") + " · " + s.name), h("p", { class: "small" }, s.trigger),
         h("p", { class: "small num" }, "Entry " + px(s.entry) + " · stop " + px(s.stop) + " · targets " + s.targets.map(px).join(" / ")), s.valid ? h("p", { class: "tiny muted" }, (s.rewardRisk != null ? s.rewardRisk.toFixed(2) + " R to the first target" : "") + (s.reachFirstTargetPct != null ? " · " + s.reachFirstTargetPct + "% chance of reaching it before the stop" : "") + (s.expectancyR != null ? " · expectancy " + (s.expectancyR > 0 ? "+" : "") + s.expectancyR.toFixed(2) + " R" : "")) : h("p", { class: "tiny warn-t" }, "The stop is on the wrong side of the entry; ignore this setup."),
@@ -9646,8 +9690,12 @@ Reply with ONLY JSON:
       const c = bySym.get(p.symbol), rev = rv && rv.reviews.find(x => x.id === p.symbol);
       if (rev) {
         p.review = rev;
-        if (rev.adjustedConfidence != null && rev.adjustedConfidence < p.confidence) { const k = p.confidence ? rev.adjustedConfidence / p.confidence : 1; p.upPct = 50 + (p.upPct - 50) * k; }
+        // Two readers: the reviewer's own independent estimate is averaged in; without one, lower confidence pulls toward 50%.
+        if (rev.probabilityPct != null) { p.probs.reviewer = Math.round(rev.probabilityPct); p.upPct = (p.upPct + rev.probabilityPct) / 2; }
+        else if (rev.adjustedConfidence != null && rev.adjustedConfidence < p.confidence) { const k = p.confidence ? rev.adjustedConfidence / p.confidence : 1; p.upPct = 50 + (p.upPct - 50) * k; }
       }
+      p.probs.afterReview = Math.round(p.upPct);
+      const cal = MD.ai.calibrateUp(app, "ai-picks", p.upPct); if (cal.applied) { p.calibration = cal; p.upPct = cal.upPct; }
       p.upPct = Math.round(p.upPct); p.downPct = 100 - p.upPct; p.probs.final = p.upPct;
       p.lean = p.upPct >= 50 ? "up" : "down"; p.leanProbabilityPct = Math.max(p.upPct, p.downPct);
       p.bigMove = c.volPct ? MD.quant.bigMoveChance(c.volPct, p.timeframeDays, Math.max(1, p.moveLow)) : null;
@@ -9839,7 +9887,7 @@ Reply with ONLY JSON:
           p.changeMyMind ? h("p", { class: "small" }, h("strong", {}, "What would change the view: "), p.changeMyMind) : null,
           MD.ai.reviewBadge(p.review),
           p.probs ? h("details", { class: "small" }, h("summary", { class: "label", style: "cursor:pointer" }, "How the " + p.upPct + "% chance up was built"),
-            h("p", { class: "small" }, "Claude: " + p.probs.claude + "%" + (p.probs.model != null ? " · the asset's own history: " + p.probs.model + "%" : " · no measured history") + " · blended " + p.probs.blended + "%" + (p.probs.final !== p.probs.blended ? " · after the review: " + p.probs.final + "%" : "") + "."),
+            h("p", { class: "small" }, "Claude: " + p.probs.claude + "%" + (p.probs.model != null ? " · the asset's own history: " + p.probs.model + "%" : " · no measured history") + " · blended " + p.probs.blended + "%" + (p.probs.reviewer != null ? " · the reviewer's own estimate: " + p.probs.reviewer + "%" : "") + ((p.probs.afterReview ?? p.probs.final) !== p.probs.blended ? " · after the review: " + (p.probs.afterReview ?? p.probs.final) + "%" : "") + (p.calibration ? " · calibrated from " + p.calibration.scored + " graded picks (calls like this came true " + p.calibration.observedPct + "% of the time): " + p.probs.final + "%" : "") + "."),
             p.baseRates ? h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:2px" }, h("li", {}, "Over every " + p.timeframeDays + "-day window since " + new Date(p.baseRates.historyFrom * 1000).getUTCFullYear() + ", it finished higher " + p.baseRates.overallUpPct + "% of the time (" + p.baseRates.windows + " windows, about " + p.baseRates.independent + " independent)."), p.baseRates.conditions.map(x => h("li", {}, "When " + x.condition + ": higher " + x.upPct + "% of the time (" + x.windows + " windows, ≈" + x.independent + " independent)."))) : null,
             p.moveExplained && p.moveExplained.last5Days ? h("p", { class: "tiny muted" }, "Last 5 days " + U.pct(p.moveExplained.last5Days.movePct) + ": " + U.pct(p.moveExplained.last5Days.explainedPct) + " explained by the market and its factors, " + U.pct(p.moveExplained.last5Days.unexplainedPct) + " its own.") : null,
             h("p", { class: "tiny muted" }, "History alone is capped at 25–75% and shrunk toward 50% when it has few independent windows.")) : null,

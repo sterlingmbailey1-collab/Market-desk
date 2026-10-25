@@ -288,6 +288,14 @@
     const st = Q.tradeStats([{ side: "long", entry: 10, exit: 11, shares: 100, stop: 9.5 }, { side: "short", entry: 20, exit: 21, shares: 50, stop: 21 }, { side: "long", entry: 5, exit: 5.5, shares: 100 }]);
     eq(st.n, 3); near(st.net, 100, 1e-9); near(st.winRatePct, 200 / 3, 1e-9); near(st.profitFactor, 3, 1e-9); near(st.avgR, 0.5, 1e-9);
   });
+  test("calibration from the record pulls overconfident calls down, by more as the record grows", () => {
+    const Q = MD.quant, mk = (n, p, hits) => Array.from({ length: n }, (_, i) => ({ p, hit: i < hits }));
+    const few = Q.calibrateFrom(mk(10, 0.7, 5), 0.7), many = Q.calibrateFrom(mk(100, 0.7, 50), 0.7);
+    ok(few.applied && few.p < 0.7 && few.p > many.p && many.p > 0.5, few.p + " " + many.p); near(many.observed, 0.5, 1e-9);
+    const good = Q.calibrateFrom(mk(40, 0.6, 24), 0.6); near(good.p, 0.6, 1e-9);
+    const far = Q.calibrateFrom(mk(40, 0.55, 10), 0.85); ok(Math.abs(far.p - 0.85) < 0.01, "calls stated far away barely count: " + far.p);
+    ok(!Q.calibrateFrom([], 0.7).applied);
+  });
   test("cause → effect rules: cleaning, backtest against the baseline, today's check", () => {
     const Q = MD.quant, r = MD.core.rng(5), g = MD.core.gauss;
     const R0 = Q.cleanRule({ cause: { symbol: "tlt", op: "<", pct: "-1" }, effect: { symbol: "XLK", vs: "spy", op: "<", pct: 0 }, lagDays: 0 });

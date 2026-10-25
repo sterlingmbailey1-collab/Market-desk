@@ -181,6 +181,17 @@
     const lessons = L ? { at: L.createdAt, items: L.lessons.filter(l => !l.appliesTo || l.appliesTo === "all" || !label || l.appliesTo === label).map(l => l.lesson) } : null;
     return { logged: fcs.length, scored: n, hitPct: n ? hits / n * 100 : null, brier, buckets, lessons };
   }
+  /* Automatic calibration: once a source has 10+ scored calls, an up-probability is corrected toward how often calls
+     stated at that level actually came true (MD.quant.calibrateFrom). It never flips the direction. */
+  function calibrateUp(app, source, upPct) {
+    const fcs = app.store.cached("forecasts").filter(f => f.source === source), evals = app.store.cached("evals");
+    const items = fcs.map(f => { const e = evals.find(v => v.forecastId === f.id); return e ? { p: Number(f.probability) || 0.5, hit: !!e.directionHit } : null; }).filter(Boolean);
+    if (items.length < 10) return { upPct, applied: false, scored: items.length };
+    const fav = Math.max(upPct, 100 - upPct) / 100, c = MD.quant.calibrateFrom(items, fav);
+    if (!c.applied) return { upPct, applied: false, scored: items.length };
+    const adj = Math.max(50, c.p * 100);
+    return { upPct: Math.round(upPct >= 50 ? adj : 100 - adj), from: Math.round(upPct), applied: true, scored: items.length, observedPct: Math.round(c.observed * 100), weight: c.n };
+  }
   function calibrationNote(tr) {
     const learned = tr && tr.lessons && tr.lessons.items.length ? " Lessons you wrote on " + new Date(tr.lessons.at).toISOString().slice(0, 10) + " after studying your scored calls; apply them: " + tr.lessons.items.join(" ") : "";
     if (!tr || tr.scored < 5) return "Track record: fewer than 5 of your past calls have been scored, so there is no calibration evidence yet; keep stated probabilities modest." + learned;
@@ -292,13 +303,14 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     const st = S.step("run", "Independent review of " + items.length + " item" + (items.length > 1 ? "s" : ""));
     const prompt = `You are a skeptical independent reviewer checking an analyst's draft before an investor sees it. Task the draft answers: ${task}
 Check each item ONLY against the measured data and the list of sources that were actually retrieved. Flag: claims not supported by the data or sources, figures that contradict the measured data, risks ignored, confidence that is too high for the evidence, and anything that reads like advice to act. Be concrete. Keep items that hold up.
+When an item states a probability (upProbabilityPct), also give YOUR OWN independent estimate of that same probability as probabilityPct, from the evidence, without anchoring on the draft's number; leave it null otherwise.
 Measured data: ${JSON.stringify(facts).slice(0, 60000)}
 Sources retrieved: ${JSON.stringify(S.sourceList()).slice(0, 12000)}
 Draft items: ${JSON.stringify(items).slice(0, 60000)}
-Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"revise"|"drop", "issues": ["short, specific problems; empty if none"], "adjustedConfidence": 0-100, "note": "one sentence the investor should read"}], "overall": "one sentence on the draft as a whole"}`;
+Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"revise"|"drop", "issues": ["short, specific problems; empty if none"], "adjustedConfidence": 0-100, "probabilityPct": 0-100 or null, "note": "one sentence the investor should read"}], "overall": "one sentence on the draft as a whole"}`;
     try {
       const r = await s.json(prompt, { modelTier: "complex", signal, cache: false });
-      const reviews = (Array.isArray(r.reviews) ? r.reviews : []).filter(x => x && x.id != null).map(x => ({ id: String(x.id), verdict: ["keep", "revise", "drop"].includes(x.verdict) ? x.verdict : "keep", issues: (x.issues || []).slice(0, 4).map(String), adjustedConfidence: x.adjustedConfidence == null ? null : Math.max(0, Math.min(100, Number(x.adjustedConfidence) || 0)), note: String(x.note || "") }));
+      const reviews = (Array.isArray(r.reviews) ? r.reviews : []).filter(x => x && x.id != null).map(x => ({ id: String(x.id), verdict: ["keep", "revise", "drop"].includes(x.verdict) ? x.verdict : "keep", issues: (x.issues || []).slice(0, 4).map(String), adjustedConfidence: x.adjustedConfidence == null ? null : Math.max(0, Math.min(100, Number(x.adjustedConfidence) || 0)), probabilityPct: x.probabilityPct == null || !isFinite(Number(x.probabilityPct)) ? null : Math.max(1, Math.min(99, Number(x.probabilityPct))), note: String(x.note || "") }));
       S.done(st, "ok", " → " + reviews.filter(x => x.verdict === "keep").length + " kept, " + reviews.filter(x => x.verdict === "revise").length + " revised, " + reviews.filter(x => x.verdict === "drop").length + " dropped");
       return { reviews, overall: String(r.overall || "") };
     } catch (e) { if (e && e.code === "cancelled") throw e; S.done(st, "fail", " → didn't complete; showing the draft unreviewed"); return null; }
@@ -336,5 +348,5 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

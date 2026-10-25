@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 14; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 15; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading and a Sports Betting tab.
@@ -74,12 +74,16 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   `profileNote()` adds the investor profile (`settings.profile`) to prompts. `learn()` has Claude study scored calls and save lessons
   (`ailessons`); `trackRecord()` attaches the latest lessons, filtered by feature, so `calibrationNote()` carries
   them into every forecasting prompt. Collections added in v10–v14: follows, smcache, smai, ideas, aitakes, briefs,
-  proppicks, ailessons, marketdays, brain (the playbook doc), dayplans, daytrades, pickhide.
+  proppicks, ailessons, marketdays, brain (the playbook doc), dayplans, daytrades, pickhide, marketcalls.
+  Playbook patterns may carry `rule` (MD.quant.cleanRule shape) and `backtest`; same-day rules are scored by the page
+  (`testSrc[date] = "measured"`). `MD.ai.calibrateUp(app, source, upPct)` corrects probabilities once a source has
+  10+ scored calls; the review pass returns `probabilityPct` (the reviewer's own estimate) for items with a probability.
   v14 kit tools: market_pulse, explain_move, base_rates, intraday_levels, market_memory, movers, earnings_info,
   economic_calendar. The runtime caps tools per request (limits().tools.maxCount, 20): use `MD.ai.selectTools(tools,
   questionText, cap, core)` whenever a request could carry more. `MD.ai.contextNote(app)` = investor profile + the
   Market Brain note; use it in every AI prompt (not profileNote alone).
 - **Forecast sources:** ai-picks, ai-take, ai-day (day-trade plans, horizonDays 1, graded from that session's close),
+  ai-market (daily SPY call, due at MD.quant.closeTimeUTC(target)),
   ai (Deep Research), user. Recommendations picks carry upPct/downPct; lean is derived from upPct (no "either").
 
 ## Source map (src/)
