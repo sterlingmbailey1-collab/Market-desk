@@ -1,0 +1,383 @@
+/* Market Brain: an AI that studies each session (what moved, by how much, and why) and learns which causes tend to
+   produce which effects.
+   - The page measures: index, sector, rates, dollar, oil, gold, credit and bitcoin moves; the regime (trend,
+     volatility, stock–bond correlation, leadership); and how strongly each sector moves with rates, the dollar and oil.
+   - Claude explains the session from news and the measured moves, names the drivers, and checks the playbook: each
+     cause → effect pattern it has written before is marked confirmed or contradicted when a session tests it.
+   - The page keeps score. A pattern's reliability is how often it held when tested, so the playbook learns from
+     outcomes instead of from the AI's own say-so. The latest regime, themes and most reliable patterns are given to
+     every other AI feature on the desk (MD.brain.note). */
+(function (G) {
+  const MD = (G.MD = G.MD || {});
+  const C = MD.core, Q = MD.quant, U = MD.ui, D = MD.data, h = U.h;
+  const V = (MD.views = MD.views || {});
+  const FACTORS = [["SPY", "S&P 500", "index"], ["QQQ", "Nasdaq-100", "index"], ["IWM", "Russell 2000 (small caps)", "index"], ["DIA", "Dow Jones", "index"],
+    ["TLT", "Long Treasuries (up = long yields down)", "rates"], ["UUP", "US dollar", "dollar"], ["USO", "Oil", "commodity"], ["GLD", "Gold", "commodity"], ["HYG", "High-yield credit", "credit"],
+    ["XLK", "Technology", "sector"], ["SMH", "Semiconductors", "sector"], ["XLF", "Financials", "sector"], ["XLE", "Energy", "sector"], ["XLV", "Health care", "sector"], ["XLY", "Consumer discretionary", "sector"],
+    ["XLP", "Consumer staples", "sector"], ["XLI", "Industrials", "sector"], ["XLU", "Utilities", "sector"], ["XLB", "Materials", "sector"], ["XLRE", "Real estate", "sector"], ["XLC", "Communication services", "sector"]];
+  const NAME = Object.fromEntries(FACTORS.map(f => [f[0], f[1]]));
+  const SECTOR_ETF = [[/semiconductor/i, "SMH"], [/^technology|software|computer/i, "XLK"], [/financ|bank|insurance/i, "XLF"], [/energy|oil|gas/i, "XLE"], [/health|pharma|biotech|medical/i, "XLV"], [/consumer discretionary|retail|auto/i, "XLY"], [/consumer staples|food|beverage/i, "XLP"], [/industrial|aerospace|transport/i, "XLI"], [/utilit/i, "XLU"], [/materials|chemical|mining|steel/i, "XLB"], [/real estate|reit/i, "XLRE"], [/telecom|communication|media|internet/i, "XLC"]];
+  function sectorEtf(p) { if (!p) return null; for (const [re, s] of SECTOR_ETF) if (re.test(p.industry || "")) return s; for (const [re, s] of SECTOR_ETF) if (re.test(p.sector || "")) return s; return null; }
+  const etf = (s) => ({ id: "etf:" + s, cls: "etf", symbol: s, name: NAME[s] || s });
+  const BTC = { id: "crypto:bitcoin", cls: "crypto", cgId: "bitcoin", symbol: "BTC", name: "Bitcoin" };
+  const assetOf = (s) => s === "BTC" ? BTC : etf(s);
+  const r1 = (x) => x == null || !isFinite(x) ? null : Math.round(x * 10) / 10;
+  async function pool(items, n, fn) { const out = new Array(items.length); let i = 0; await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; try { out[k] = await fn(items[k], k); } catch (e) { out[k] = { error: e }; } } })); return out; }
+
+  /* ---------- measured market picture ---------- */
+  let pulseCache = null;
+  async function pulse(app, opts = {}) {
+    if (pulseCache && Date.now() - pulseCache.at < 60000 && (!opts.history || pulseCache.history)) return pulseCache;
+    const rows = (await pool(FACTORS.concat([["BTC", "Bitcoin", "crypto"]]), 4, async ([sym, name, kind]) => {
+      const a = assetOf(sym);
+      const [q, hs] = await Promise.all([app.quote(a, 30000).catch(() => null), opts.history ? D.historyFor(a, "1Y").catch(() => null) : null]);
+      return { symbol: sym, name, kind, price: q ? q.price : null, changePct: q && q.changePct != null ? Number(q.changePct) : null, marketStatus: q ? q.marketStatus || q.status : null, ret5d: hs ? Q.lastMove(hs.points, 5) : null, ret1m: hs ? Q.lastMove(hs.points, hs.ppy === 365 ? 30 : 21) : null, hist: hs };
+    })).filter(r => r && !r.error);
+    const by = Object.fromEntries(rows.map(r => [r.symbol, r]));
+    const out = { at: Date.now(), history: !!opts.history, rows, by, regime: opts.history ? regimeOf(by, rows) : (pulseCache && pulseCache.regime) || null, session: Q.session() };
+    pulseCache = out;
+    return out;
+  }
+  // Trend, volatility state, stock–bond correlation and leadership, measured from 1-year daily histories.
+  function regimeOf(by, rows) {
+    const spy = by.SPY && by.SPY.hist; if (!spy) return null;
+    const t = C.technicals(spy.points, 252), r = C.returnsFrom(spy.points.map(p => p.close ?? p.value));
+    const v20 = C.stdev(r.slice(-20)) * Math.sqrt(252) * 100, vYr = C.stdev(r) * Math.sqrt(252) * 100;
+    const sbc = by.TLT && by.TLT.hist ? Q.recentCorrelation(spy.points, by.TLT.hist.points, 60) : null;
+    const sectors = rows.filter(x => x.kind === "sector" && x.ret1m != null).sort((a, b) => b.ret1m - a.ret1m);
+    const spread = (a, b) => by[a] && by[b] && by[a].ret1m != null && by[b].ret1m != null ? by[a].ret1m - by[b].ret1m : null;
+    const volState = v20 > vYr * 1.35 ? "stressed" : v20 < vYr * 0.75 ? "calm" : "normal";
+    const trend = t ? t.trend : null;
+    const label = (trend === "up" ? "Uptrend" : trend === "down" ? "Downtrend" : "Choppy, no clear trend") + ", " + volState + " volatility" + (sbc == null ? "" : sbc < -0.2 ? ", stocks and long bonds moving opposite (rates-driven)" : sbc > 0.2 ? ", stocks and long bonds moving together (growth-driven)" : "");
+    return { label, trend, aboveSma200: t && t.sma200 ? t.last > t.sma200 : null, spyFromHighPct: t ? r1(t.fromHighPct) : null, spyRsi14: t ? r1(t.rsi14) : null, vol20Pct: r1(v20), volYearPct: r1(vYr), volState, stockBondCorr60d: sbc == null ? null : Math.round(sbc * 100) / 100,
+      leaders: sectors.slice(0, 3).map(s => ({ symbol: s.symbol, name: s.name, ret1mPct: r1(s.ret1m) })), laggards: sectors.slice(-3).reverse().map(s => ({ symbol: s.symbol, name: s.name, ret1mPct: r1(s.ret1m) })),
+      smallVsLarge1mPct: r1(spread("IWM", "SPY")), cyclicalVsDefensive1mPct: r1(spread("XLY", "XLP")), credit1mPct: r1(by.HYG && by.HYG.ret1m), dollar1mPct: r1(by.UUP && by.UUP.ret1m), oil1mPct: r1(by.USO && by.USO.ret1m), gold1mPct: r1(by.GLD && by.GLD.ret1m), longBonds1mPct: r1(by.TLT && by.TLT.ret1m), bitcoin1mPct: r1(by.BTC && by.BTC.ret1m) };
+  }
+  // What moves what: each sector's beta to the S&P 500 and its 60-day correlation with long bonds, the dollar and oil.
+  function sensitivities(P) {
+    const g = (s) => P.by[s] && P.by[s].hist && P.by[s].hist.points;
+    if (!g("SPY")) return [];
+    return P.rows.filter(r => (r.kind === "sector" || r.symbol === "IWM" || r.symbol === "BTC") && g(r.symbol)).map(r => {
+      const pts = g(r.symbol), b = C.betaTo(pts, g("SPY")), c = (f) => g(f) ? Q.recentCorrelation(pts, g(f), 60) : null;
+      return { symbol: r.symbol, name: r.name, betaToSPY: b ? Math.round(b.beta * 100) / 100 : null, corrLongBonds: c("TLT"), corrDollar: c("UUP"), corrOil: c("USO"), corrGold: c("GLD") };
+    });
+  }
+
+  /* Why an asset moved: a factor model on a year of daily returns splits today's and the last week's move into the
+     market, its sector, rates, the dollar and oil (bitcoin and tech for coins), and the unexplained remainder. */
+  async function explainMove(app, asset) {
+    const cls = asset.cls || String(asset.id).split(":")[0];
+    let factors, market, relative = [], sector = null;
+    if (cls === "crypto") { market = asset.symbol === "BTC" ? "QQQ" : "BTC"; factors = asset.symbol === "BTC" ? ["QQQ", "UUP", "GLD"] : ["BTC", "QQQ", "UUP"]; }
+    else if (cls === "stock" || cls === "etf") {
+      const pr = cls === "stock" ? await D.stocks.profile(asset.symbol, cls).catch(() => null) : null;
+      sector = sectorEtf(pr); if (sector === asset.symbol) sector = null;
+      market = "SPY"; factors = ["SPY"].concat(sector ? [sector] : [], ["TLT", "UUP", "USO"]); relative = sector ? [sector] : [];
+      if (asset.symbol === "SPY") { market = null; factors = ["TLT", "UUP", "USO"]; }
+    } else throw new Error("Move explanations cover stocks, ETFs and crypto.");
+    const [ha, ...hf] = await Promise.all([D.historyFor(asset, "1Y"), ...factors.map(f => D.historyFor(assetOf(f), "1Y").catch(() => null))]);
+    const fmap = {}; factors.forEach((f, i) => { if (hf[i]) fmap[f] = hf[i].points; });
+    const model = Q.factorModel(ha.points, fmap, { market, relative, ppy: ha.ppy || 252 });
+    if (!model) throw new Error("Not enough overlapping history to model " + (asset.symbol || asset.name) + ".");
+    const qs = await Promise.all([app.quote(asset, 30000).catch(() => null), ...model.names.map(f => app.quote(assetOf(f), 30000).catch(() => null))]);
+    const todayF = {}; model.names.forEach((f, i) => { const q = qs[i + 1]; if (q && q.changePct != null) todayF[f] = Number(q.changePct); });
+    const today = qs[0] && qs[0].changePct != null ? Q.attribute(model, todayF, Number(qs[0].changePct)) : null;
+    const wkF = {}; model.names.forEach(f => { wkF[f] = Q.lastMove(fmap[f], 5); });
+    const week = Q.attribute(model, wkF, Q.lastMove(ha.points, 5));
+    const residDaily = model.residVolPct / Math.sqrt(ha.ppy || 252), z = today && residDaily ? today.unexplainedPct / residDaily : null;
+    const verdict = !today ? null : Math.abs(today.unexplainedPct) < Math.abs(today.explainedPct) ? "Mostly the market and its factors" : z != null && Math.abs(z) >= 2 ? "Mostly asset-specific, and unusually large for it: look for news" : "Mostly asset-specific, within its normal range";
+    return { symbol: asset.symbol, name: asset.name, sectorEtf: sector, sectorName: sector ? NAME[sector] : null, model: { factors: model.names.map(n => ({ factor: n, name: n === "BTC" ? "Bitcoin" : NAME[n] || n, beta: Math.round(model.betas[n] * 100) / 100, relativeToMarket: model.relative.includes(n) })), r2: Math.round(model.r2 * 100) / 100, residualVolPct: r1(model.residVolPct), days: model.n },
+      today, week, typicalAssetSpecificDailyPct: r1(residDaily), unexplainedZ: z == null ? null : Math.round(z * 10) / 10, verdict, note: cls === "crypto" ? "Coin moves are 24-hour changes; the ETFs' are session changes." : null };
+  }
+
+  /* ---------- the playbook (cause → effect patterns with a scored record) ---------- */
+  const PB_ID = "playbook";
+  function playbook(app) { const d = app.store.cached("brain").find(x => x.id === PB_ID); return d ? JSON.parse(JSON.stringify(d)) : { patterns: [], themes: [], lessons: [], narrative: "" }; }
+  function stats(p) { const v = Object.values(p.tests || {}), c = v.filter(x => x === "confirmed").length, x = v.filter(x => x === "contradicted").length; return { tested: c + x, confirmed: c, contradicted: x, reliability: (c + 1) / (c + x + 2) }; }
+  const words = (s) => new Set(String(s).toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(w => w.length > 2));
+  function similar(a, b) { const A = words(a), B = words(b); if (!A.size || !B.size) return 0; let n = 0; for (const w of A) if (B.has(w)) n++; return n / (A.size + B.size - n); }
+  function recaps(app) { return app.store.cached("marketdays").slice().sort((a, b) => (b.sessionDate || "").localeCompare(a.sessionDate || "") || b.createdAt - a.createdAt); }
+  // The latest recap per session date (re-studying a session replaces its view, not its history).
+  function latestPerDay(app) { const seen = new Set(); return recaps(app).filter(r => !seen.has(r.sessionDate) && seen.add(r.sessionDate)); }
+
+  // The last session whose regular hours have finished (today after the close, otherwise the previous trading day).
+  function lastClosedSession(now = new Date()) {
+    const s = Q.session(now);
+    if (s.tradingDay && s.nyMinutes >= (s.earlyClose ? 780 : 960)) return s.date;
+    for (let i = 1; i < 10; i++) { const p = Q.nyParts(new Date(now.getTime() - i * 864e5)); if (p.dow > 0 && p.dow < 6 && !Q.HOLIDAYS.has(p.ymd)) return p.ymd; }
+    return s.date;
+  }
+
+  /* ---------- studying a session ---------- */
+  async function studySession(app, opts = {}) {
+    const s = app.caps.sample; if (!s) throw Object.assign(new Error("Claude isn't available in this view."), { code: "no_sample" });
+    const S = MD.ai.session(opts.onLog), step = (t) => S.step("run", t);
+    const sess = Q.session(), sessionDate = sess.phase === "open" || sess.phase === "pre" ? sess.date : lastClosedSession();
+    let e = step("Measuring indices, sectors, rates, the dollar, oil, gold, credit and bitcoin (1-year histories)");
+    const P = await pulse(app, { history: true }); S.done(e, "ok", " → " + P.rows.length + " instruments");
+    e = step("Loading the session's biggest movers");
+    const [mv, big, coins] = await Promise.all([D.stocks.movers().catch(() => null), D.stocks.screener(0, 100).catch(() => []), D.crypto.top("usd", 25).catch(() => [])]);
+    const bigMovers = big.filter(r => r.changePct != null).sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct)).slice(0, 10).map(r => ({ symbol: r.symbol, name: r.name, changePct: r1(r.changePct), marketCapB: r.marketCap ? r1(r.marketCap / 1e9) : null }));
+    const pick = (rows) => (rows || []).filter(r => r.price >= 5).slice(0, 6).map(r => ({ symbol: r.symbol, name: r.name, changePct: r1(r.changePct), price: r.price }));
+    const notable = mv ? { asOf: mv.asOf, gainers: pick(mv.gainers.rows), losers: pick(mv.losers.rows) } : null;
+    const cryptoMoves = coins.filter(c => !["USDT", "USDC", "DAI", "USDE", "FDUSD"].includes(c.symbol)).slice(0, 12).map(c => ({ symbol: c.symbol, changePct24h: r1(c.changePct) }));
+    S.done(e, "ok", " → " + bigMovers.length + " large caps, " + cryptoMoves.length + " coins");
+    e = step("Checking today's economic calendar and earnings reports");
+    const [econ, earn] = await Promise.all([D.calendar.economic(sessionDate).catch(() => []), D.calendar.earnings(sessionDate).catch(() => [])]);
+    const bigSet = new Set(big.map(r => r.symbol));
+    const events = econ.filter(x => /United States|US/i.test(x.country || "")).slice(0, 14).map(x => ({ time: x.gmt, event: x.event, actual: x.actual, consensus: x.consensus, previous: x.previous }));
+    const reports = earn.filter(x => bigSet.has(x.symbol)).slice(0, 12).map(x => ({ symbol: x.symbol, time: x.time }));
+    S.done(e, "ok", " → " + events.length + " US releases, " + reports.length + " large-cap reports");
+    const pb = playbook(app), active = pb.patterns.filter(p => p.status !== "retired");
+    const measured = { sessionDate, sessionPhase: sess.phase, instruments: P.rows.map(r => ({ symbol: r.symbol, name: r.name, todayPct: r1(r.changePct), fiveDayPct: r1(r.ret5d), oneMonthPct: r1(r.ret1m) })), regime: P.regime, largeCapMovers: bigMovers, notableMovers: notable, crypto: cryptoMoves, economicReleases: events, largeCapEarnings: reports };
+    const prior = latestPerDay(app).filter(r => r.sessionDate !== sessionDate).slice(0, 5).map(r => ({ date: r.sessionDate, headline: r.headline, drivers: (r.drivers || []).map(d => d.driver) }));
+    const tools = MD.ai.tools(app, S, ["search_news", "search_web", "read_page", "crypto_news", "explain_move", "stock_snapshot"]);
+    e = step("Claude is explaining the session and testing the playbook (usually 1–3 minutes)");
+    const prompt = `You are Market Desk's market analyst. Your job is to understand WHY markets moved in the session of ${sessionDate}${sess.phase === "open" ? " (still in progress)" : ""}, so the desk learns cause and effect over time.
+The app measured the session below. Use 4 to 10 tool calls: search_news for the big moves and the macro story (one topic per call), explain_move for one or two large movers whose move needs separating from the market, search_web if news comes up empty. Cite only URLs the tools returned. Never invent figures; use the measured numbers.
+Explain the session: the main drivers (with evidence), which instruments each one moved and how much (measured), and the biggest movers' reasons. Then test the playbook: for each existing pattern whose CAUSE actually occurred this session, say whether the EFFECT followed (confirmed) or not (contradicted); skip patterns not tested. Propose at most 3 new patterns only if this session gives a clear, checkable example of a cause and its effect (phrase them as "When <cause>, <effect>"). Be honest about one-off noise.
+Measured session: ${JSON.stringify(measured)}
+Playbook patterns: ${JSON.stringify(active.map(p => ({ id: p.id, pattern: p.pattern, record: stats(p) })))}
+Recent sessions you studied: ${JSON.stringify(prior)}
+Reply with ONLY JSON:
+{"headline": "one sentence: what the session was about",
+ "summary": "3-5 sentences tying the measured moves to their causes",
+ "drivers": [{"driver": "short name", "category": "rates"|"inflation"|"growth data"|"earnings"|"central banks"|"policy"|"geopolitics"|"AI & tech"|"energy"|"crypto"|"flows & positioning"|"other", "explanation": "how it moved markets, citing measured moves", "effects": [{"on": "SPY or a sector ETF or ticker", "direction": "up"|"down", "movePct": number}], "strength": "major"|"moderate"|"minor", "persistence": "one-day"|"developing"|"ongoing theme", "sources": [{"title": "...", "url": "https://..."}]}],
+ "movers": [{"symbol": "...", "movePct": number, "why": "one sentence", "source": "https://... or null"}],
+ "patternChecks": [{"id": "pattern id", "verdict": "confirmed"|"contradicted", "note": "the measured evidence"}],
+ "newPatterns": [{"pattern": "When <cause>, <effect>", "cause": "...", "effect": "...", "category": "same list as drivers", "evidence": "this session's measured example"}],
+ "regime": {"label": "a few words", "note": "one sentence on what kind of market this is and what it rewards"},
+ "watchNext": ["2-4 things to watch next session"],
+ "confidence": 0-100}`;
+    const r = await s.json(prompt, { modelTier: "complex", signal: opts.signal, tools });
+    S.done(e, "ok", " → " + (Array.isArray(r.drivers) ? r.drivers.length : 0) + " drivers");
+    const recap = { sessionDate, phase: sess.phase, headline: String(r.headline || "").slice(0, 240), summary: String(r.summary || "").slice(0, 1600), regimeAI: r.regime || null, confidence: Math.max(0, Math.min(100, Number(r.confidence) || 0)),
+      drivers: (Array.isArray(r.drivers) ? r.drivers : []).slice(0, 6).map(d => ({ driver: String(d.driver || "").slice(0, 120), category: String(d.category || "other"), explanation: String(d.explanation || "").slice(0, 600), effects: (Array.isArray(d.effects) ? d.effects : []).slice(0, 6).map(x => ({ on: String(x.on || ""), direction: x.direction === "down" ? "down" : "up", movePct: Number(x.movePct) || null })), strength: ["major", "moderate", "minor"].includes(d.strength) ? d.strength : "moderate", persistence: String(d.persistence || ""), sources: S.verify(d.sources) })),
+      movers: (Array.isArray(r.movers) ? r.movers : []).slice(0, 10).map(m => ({ symbol: String(m.symbol || ""), movePct: Number(m.movePct) || null, why: String(m.why || ""), source: m.source && /^https?:/.test(m.source) ? S.verify([{ url: m.source, title: m.symbol }])[0] : null })),
+      watchNext: (Array.isArray(r.watchNext) ? r.watchNext : []).slice(0, 4).map(String),
+      measured: { regime: P.regime, instruments: measured.instruments, largeCapMovers: bigMovers, crypto: cryptoMoves, events, reports },
+      patternChecks: [], newPatternIds: [], sourcesRetrieved: S.sources.length, toolCalls: S.calls, steps: S.log.map(x => ({ kind: x.kind, text: x.text })) };
+    // Score the playbook: one verdict per pattern per session; re-studying a session replaces that session's verdict.
+    const byId = new Map(pb.patterns.map(p => [p.id, p]));
+    for (const c of Array.isArray(r.patternChecks) ? r.patternChecks : []) {
+      const p = byId.get(String(c.id)); if (!p || !["confirmed", "contradicted"].includes(c.verdict)) continue;
+      p.tests = Object.assign({}, p.tests, { [sessionDate]: c.verdict }); p.lastNote = String(c.note || "").slice(0, 300); p.lastTested = sessionDate;
+      recap.patternChecks.push({ id: p.id, pattern: p.pattern, verdict: c.verdict, note: p.lastNote });
+    }
+    for (const n of (Array.isArray(r.newPatterns) ? r.newPatterns : []).slice(0, 3)) {
+      const text = String(n.pattern || "").slice(0, 220); if (!text) continue;
+      const dup = pb.patterns.find(p => similar(p.pattern, text) >= 0.55);
+      if (dup) { if (!dup.tests || !dup.tests[sessionDate]) { dup.tests = Object.assign({}, dup.tests, { [sessionDate]: "confirmed" }); recap.patternChecks.push({ id: dup.id, pattern: dup.pattern, verdict: "confirmed", note: "Seen again: " + String(n.evidence || "").slice(0, 200) }); } continue; }
+      const p = { id: "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), pattern: text, cause: String(n.cause || ""), effect: String(n.effect || ""), category: String(n.category || "other"), firstSeen: sessionDate, evidence: String(n.evidence || "").slice(0, 300), tests: {}, status: "active" };
+      pb.patterns.push(p); recap.newPatternIds.push(p.id);
+    }
+    // Retire patterns that keep failing once they have a real record.
+    for (const p of pb.patterns) { const st = stats(p); if (p.status !== "retired" && st.tested >= 4 && st.reliability < 0.35) { p.status = "retired"; p.retiredOn = sessionDate; p.retiredWhy = "Held " + st.confirmed + " of " + st.tested + " times"; } }
+    if (!app.demo) { const saved = await app.store.create("marketdays", recap); pb.updatedAt = Date.now(); await app.store.put("brain", PB_ID, Object.assign(pb, { id: PB_ID })); return saved; }
+    return Object.assign({ id: "unsaved", createdAt: Date.now() }, recap);
+  }
+
+  /* Step back across every studied session: merge duplicate patterns, sharpen vague ones, retire ones the record
+     doesn't support, and name the themes that keep recurring. */
+  async function refinePlaybook(app, opts = {}) {
+    const s = app.caps.sample; if (!s) throw Object.assign(new Error("Claude isn't available in this view."), { code: "no_sample" });
+    const pb = playbook(app), days = latestPerDay(app).slice(0, 30);
+    if (days.length < 2) throw new Error("Study at least two sessions first.");
+    const cats = {}; for (const d of days) for (const x of d.drivers || []) cats[x.category] = (cats[x.category] || 0) + 1;
+    const P = await pulse(app, { history: true }).catch(() => null);
+    const r = await s.json(`You maintain Market Desk's playbook of cause → effect patterns learned from studying market sessions. Below are the patterns with their measured record (how often they held when a session tested them) and summaries of the last ${days.length} sessions. Refine the playbook:
+- merge patterns that say the same thing (mergeInto the one with the better record),
+- rewrite vague patterns so a future session can clearly test them (keep the meaning),
+- retire patterns the record doesn't support (held less than half the time after 4+ tests) or that were one-off noise,
+- name the recurring themes (with how many sessions they drove) and whether each is rising, steady or fading,
+- write 3-5 lessons for an investor about what has been moving this market, grounded in the record.
+Never invent sessions or results. Patterns with few tests are hypotheses; say so.
+Patterns: ${JSON.stringify(pb.patterns.map(p => Object.assign({ id: p.id, pattern: p.pattern, status: p.status, firstSeen: p.firstSeen }, stats(p))))}
+Driver categories over these sessions: ${JSON.stringify(cats)}
+Sessions: ${JSON.stringify(days.map(d => ({ date: d.sessionDate, headline: d.headline, drivers: (d.drivers || []).map(x => x.driver + " (" + x.category + ", " + x.strength + ")") })))}
+Measured regime now: ${JSON.stringify(P && P.regime)}
+Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewrite"|"merge"|"retire", "pattern": "new wording when rewriting", "mergeInto": "id when merging", "reason": "short"}], "themes": [{"theme": "...", "sessions": number, "status": "rising"|"steady"|"fading", "note": "..."}], "narrative": "3-4 sentences on the market's story across these sessions", "lessons": ["..."]}`, { modelTier: "complex", signal: opts.signal, cache: false });
+    const byId = new Map(pb.patterns.map(p => [p.id, p])), changes = [];
+    for (const a of Array.isArray(r.patterns) ? r.patterns : []) {
+      const p = byId.get(String(a.id)); if (!p) continue;
+      if (a.action === "rewrite" && a.pattern) { changes.push({ id: p.id, action: "rewrite", from: p.pattern, to: String(a.pattern).slice(0, 220), reason: String(a.reason || "") }); p.pattern = String(a.pattern).slice(0, 220); }
+      else if (a.action === "merge" && byId.has(String(a.mergeInto)) && String(a.mergeInto) !== p.id) { const into = byId.get(String(a.mergeInto)); into.tests = Object.assign({}, p.tests, into.tests); p.status = "merged"; p.mergedInto = into.id; changes.push({ id: p.id, action: "merge", from: p.pattern, to: into.pattern, reason: String(a.reason || "") }); }
+      else if (a.action === "retire" && p.status !== "retired") { p.status = "retired"; p.retiredWhy = String(a.reason || "Retired when the playbook was refined"); changes.push({ id: p.id, action: "retire", from: p.pattern, reason: p.retiredWhy }); }
+    }
+    pb.patterns = pb.patterns.filter(p => p.status !== "merged");
+    Object.assign(pb, { themes: (Array.isArray(r.themes) ? r.themes : []).slice(0, 8).map(t => ({ theme: String(t.theme || ""), sessions: Number(t.sessions) || null, status: String(t.status || ""), note: String(t.note || "") })), narrative: String(r.narrative || "").slice(0, 1200), lessons: (Array.isArray(r.lessons) ? r.lessons : []).slice(0, 5).map(String), refinedAt: Date.now(), refinedFrom: days.length, lastChanges: changes });
+    if (!app.demo) await app.store.put("brain", PB_ID, Object.assign(pb, { id: PB_ID }));
+    return pb;
+  }
+
+  /* ---------- what the rest of the desk is told ---------- */
+  function note(app) {
+    if (!app || !app.store) return "";
+    const days = latestPerDay(app); if (!days.length) return "";
+    const pb = playbook(app), last = days[0], rg = (pulseCache && pulseCache.regime) || (last.measured && last.measured.regime) || null;
+    const ranked = pb.patterns.filter(p => p.status === "active").map(p => Object.assign({ st: stats(p) }, p));
+    const proven = ranked.filter(p => p.st.tested >= 2).sort((a, b) => b.st.reliability * Math.log(1 + b.st.tested) - a.st.reliability * Math.log(1 + a.st.tested)).slice(0, 4);
+    const fresh = ranked.filter(p => p.st.tested < 2).slice(-2);
+    const cats = {}; for (const d of days.slice(0, 10)) for (const x of d.drivers || []) cats[x.category] = (cats[x.category] || 0) + 1;
+    const top = Object.entries(cats).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => k + " (" + n + " of the last " + Math.min(10, days.length) + " sessions)");
+    return ("Market Brain (the desk's own study of " + days.length + " session" + (days.length > 1 ? "s" : "") + "; latest " + last.sessionDate + "): " + (last.headline || "") +
+      (rg ? " Regime: " + rg.label + (rg.leaders && rg.leaders.length ? "; leading sectors " + rg.leaders.map(l => l.name).join(", ") : "") + "." : "") +
+      (top.length ? " Recurring drivers: " + top.join(", ") + "." : "") +
+      (pb.themes && pb.themes.length ? " Themes: " + pb.themes.slice(0, 3).map(t => t.theme + " (" + t.status + ")").join("; ") + "." : "") +
+      (proven.length ? " Patterns with a record: " + proven.map(p => "\"" + p.pattern + "\" held " + p.st.confirmed + " of " + p.st.tested + " times").join("; ") + "." : "") +
+      (fresh.length ? " Untested hypotheses: " + fresh.map(p => "\"" + p.pattern + "\"").join("; ") + "." : "") +
+      " Use this as context and check it against current data; patterns can break.").slice(0, 1800);
+  }
+  // What the brain knows about one symbol, sector ETF or theme (for the market_memory tool and asset pages).
+  function memory(app, query) {
+    const q = String(query || "").trim().toLowerCase(), days = latestPerDay(app), pb = playbook(app);
+    const hit = (t) => !q || String(t || "").toLowerCase().includes(q);
+    return { sessionsStudied: days.length, regimeNow: (pulseCache && pulseCache.regime) || (days[0] && days[0].measured && days[0].measured.regime) || null, narrative: pb.narrative || null, themes: pb.themes || [], lessons: pb.lessons || [],
+      patterns: pb.patterns.filter(p => p.status === "active" && (hit(p.pattern) || hit(p.category))).slice(0, 12).map(p => Object.assign({ pattern: p.pattern, category: p.category, firstSeen: p.firstSeen }, stats(p))),
+      sessions: days.filter(d => !q || hit(d.headline) || hit(d.summary) || (d.drivers || []).some(x => hit(x.driver) || hit(x.explanation) || (x.effects || []).some(e => hit(e.on))) || (d.movers || []).some(m => hit(m.symbol))).slice(0, 8)
+        .map(d => ({ date: d.sessionDate, headline: d.headline, drivers: (d.drivers || []).map(x => ({ driver: x.driver, category: x.category, effects: x.effects })), movers: (d.movers || []).filter(m => !q || hit(m.symbol)).slice(0, 5) })) };
+  }
+
+  /* ---------- automatic study after each close ---------- */
+  let autoRunning = false;
+  async function autoStudy(app) {
+    if (autoRunning || app.demo || !app.caps.sample || !D.available() || document.hidden) return;
+    if (app.settings.brainAuto === false || !app.store.cached("marketdays").length) return; // starts once the user has studied a session
+    const sess = Q.session(); if (sess.phase === "open" || sess.phase === "pre") return;
+    const target = lastClosedSession(); if (latestPerDay(app).some(d => d.sessionDate === target && d.phase !== "open")) return;
+    autoRunning = true;
+    try { const r = await studySession(app, {}); app.emit("data:marketdays"); await app.store.create("inbox", { kind: "brain", title: "Market Brain studied " + target, body: r.headline + " Source: Claude's study of measured moves and retrieved news.", materiality: 1, read: false, at: Date.now() }).catch(() => {}); }
+    catch (e) { /* tried again at the next check */ }
+    finally { autoRunning = false; }
+  }
+
+  /* ---------- page ---------- */
+  const fmtP = (x) => x == null ? "—" : (x > 0 ? "+" : "") + x.toFixed(2) + "%";
+  function heat(rows) {
+    return h("div", { class: "heat" }, rows.map(r => { const v = r.changePct; const a = v == null ? 0 : Math.min(1, Math.abs(v) / 2.5); return h("div", { class: "heat-c " + (v == null ? "" : v >= 0 ? "up" : "down"), style: "--a:" + a.toFixed(2), title: r.name + " " + fmtP(v) }, h("b", {}, r.symbol), h("span", { class: "tiny" }, r.name), h("span", { class: "num small" }, fmtP(v))); }));
+  }
+  function regimeKpis(rg) {
+    if (!rg) return h("p", { class: "small muted" }, "Regime appears after the histories load.");
+    const k = (label, value, sub) => h("div", { class: "kpi" }, h("span", { class: "label" }, label), h("b", { class: "v" }, value), sub ? h("span", { class: "s" }, sub) : null);
+    return h("div", { class: "stack" }, h("p", {}, h("strong", {}, rg.label)),
+      h("div", { class: "kpis k4" }, k("S&P 500 trend", rg.trend || "—", rg.spyFromHighPct != null ? rg.spyFromHighPct.toFixed(1) + "% from its 1-year high" : null), k("Volatility", rg.volState, rg.vol20Pct + "% (20-day) vs " + rg.volYearPct + "% (1-year)"), k("Stocks vs long bonds", rg.stockBondCorr60d == null ? "—" : rg.stockBondCorr60d.toFixed(2), "60-day correlation"), k("Small vs large caps", fmtP(rg.smallVsLarge1mPct), "1 month, IWM minus SPY")),
+      h("p", { class: "small muted" }, "Leading sectors (1 month): " + rg.leaders.map(l => l.name + " " + fmtP(l.ret1mPct)).join(", ") + ". Lagging: " + rg.laggards.map(l => l.name + " " + fmtP(l.ret1mPct)).join(", ") + ". Cyclicals vs defensives " + fmtP(rg.cyclicalVsDefensive1mPct) + ", credit " + fmtP(rg.credit1mPct) + ", dollar " + fmtP(rg.dollar1mPct) + ", oil " + fmtP(rg.oil1mPct) + ", gold " + fmtP(rg.gold1mPct) + " over a month."));
+  }
+  function recapView(app, r) {
+    if (!r) return h("div", { class: "empty" }, "No session studied yet. Study one to start the playbook.");
+    const strengthCls = { major: "negative", moderate: "neutral", minor: "" };
+    return h("div", { class: "stack" },
+      h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("div", { class: "stack", style: "gap:2px" }, h("h2", { style: "font-size:1.15rem" }, r.headline || "Session " + r.sessionDate), h("span", { class: "small muted" }, "Session " + r.sessionDate + (r.phase === "open" ? " (studied while open)" : "") + " · studied " + U.fmtTs(r.createdAt) + " · " + (r.toolCalls || 0) + " research steps, " + (r.sourcesRetrieved || 0) + " sources · confidence " + r.confidence + "/100")), r.regimeAI ? h("span", { class: "verdict sm neutral" }, r.regimeAI.label) : null),
+      h("p", {}, r.summary), r.regimeAI && r.regimeAI.note ? h("p", { class: "small muted" }, r.regimeAI.note) : null,
+      h("div", { class: "grid g2" }, (r.drivers || []).map(d => h("div", { class: "card driver" }, h("div", { class: "bd stack", style: "gap:6px" },
+        h("div", { class: "row between", style: "gap:6px;flex-wrap:wrap" }, h("strong", {}, d.driver), h("span", { class: "row", style: "gap:4px" }, h("span", { class: "chip sm" }, d.category), h("span", { class: "verdict sm " + (strengthCls[d.strength] || "") }, d.strength))),
+        h("p", { class: "small" }, d.explanation),
+        d.effects.length ? h("div", { class: "row", style: "gap:4px;flex-wrap:wrap" }, d.effects.map(x => h("span", { class: "pill " + (x.direction === "up" ? "ok" : "bad") }, (x.direction === "up" ? "▲ " : "▼ ") + x.on + (x.movePct != null ? " " + fmtP(x.movePct) : "")))) : null,
+        d.persistence ? h("span", { class: "tiny muted" }, "Persistence: " + d.persistence) : null, MD.ai.sources(d.sources))))),
+      r.movers && r.movers.length ? h("div", {}, h("span", { class: "label" }, "Movers explained"), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, r.movers.map(m => h("li", {}, h("strong", {}, m.symbol + " " + (m.movePct != null ? fmtP(m.movePct) : "") + ": "), m.why, m.source ? h("span", {}, " ", h("a", { href: m.source.url, target: "_blank", rel: "noopener noreferrer" }, "source"), m.source.verified ? null : h("span", { class: "warn-t" }, " (unverified)")) : null)))) : null,
+      r.patternChecks && r.patternChecks.length ? h("div", {}, h("span", { class: "label" }, "Playbook tested this session"), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, r.patternChecks.map(c => h("li", {}, h("span", { class: c.verdict === "confirmed" ? "up" : "down" }, c.verdict === "confirmed" ? "Held: " : "Failed: "), "\"" + c.pattern + "\" ", h("span", { class: "muted" }, c.note))))) : null,
+      MD.ai.list("Watch next session", r.watchNext));
+  }
+  function playbookView(app, pb, refreshBtn) {
+    const rows = pb.patterns.filter(p => p.status !== "merged").map(p => Object.assign({ st: stats(p) }, p)).sort((a, b) => (a.status === "retired") - (b.status === "retired") || b.st.tested - a.st.tested || b.st.reliability - a.st.reliability);
+    return h("div", { class: "stack" },
+      pb.narrative ? h("p", {}, pb.narrative) : null,
+      pb.themes && pb.themes.length ? h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" }, pb.themes.map(t => h("span", { class: "chip", title: t.note }, t.theme + (t.sessions ? " · " + t.sessions : "") + (t.status ? " · " + t.status : "")))) : null,
+      rows.length ? U.table([{ t: "Pattern", v: (p) => h("span", { class: "stack", style: "gap:1px" }, h("span", { class: p.status === "retired" ? "faint" : "" }, p.pattern), h("span", { class: "tiny muted" }, (p.category || "") + " · first seen " + (p.firstSeen || "—") + (p.status === "retired" ? " · retired: " + (p.retiredWhy || "") : "") + (p.lastNote ? " · last test: " + p.lastNote : ""))) },
+        { t: "Tested", v: (p) => String(p.st.tested), n: true }, { t: "Held", v: (p) => String(p.st.confirmed), n: true }, { t: "Failed", v: (p) => String(p.st.contradicted), n: true },
+        { t: "Reliability", v: (p) => p.st.tested ? h("span", { class: "row", style: "gap:6px;align-items:center;justify-content:flex-end" }, h("span", { class: "meter", style: "width:60px" }, h("i", { style: "width:" + (p.st.reliability * 100).toFixed(0) + "%" })), h("span", { class: "num" }, (p.st.reliability * 100).toFixed(0) + "%")) : h("span", { class: "tiny muted" }, "hypothesis"), n: true }], rows)
+        : h("div", { class: "empty" }, "No patterns yet. Each studied session can add cause → effect patterns; later sessions test them."),
+      MD.ai.list("Lessons so far", pb.lessons),
+      pb.lastChanges && pb.lastChanges.length ? h("details", { class: "small" }, h("summary", { class: "label", style: "cursor:pointer" }, "Last refinement: " + pb.lastChanges.length + " change" + (pb.lastChanges.length > 1 ? "s" : "")), h("ul", {}, pb.lastChanges.map(c => h("li", {}, c.action + ": \"" + c.from + "\"" + (c.to ? " → \"" + c.to + "\"" : "") + (c.reason ? " (" + c.reason + ")" : ""))))) : null,
+      h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("p", { class: "tiny muted" }, "Reliability = (times held + 1) ÷ (times tested + 2), so an untested pattern starts at 50%. Patterns that fail most of 4+ tests are retired automatically." + (pb.refinedAt ? " Last refined " + U.fmtTs(pb.refinedAt) + "." : "")), refreshBtn));
+  }
+
+  V.brain = function (root, app) {
+    root.append(MD.marketsHelpers.head("Market Brain", "An AI that studies each market session (what moved, by how much, and why) and keeps a scored playbook of cause and effect. What it learns is given to every other AI on the desk: Recommendations, quick takes, Deep Research, Ask AI, the Advisor and day-trading plans."));
+    const days = latestPerDay(app), log = MD.ai.logBox(), phase = h("div", { class: "label" });
+    let ctl = null;
+    const go = h("button", { class: "btn", type: "button" }, days.length ? "Study the latest session" : "Study today's market");
+    const stop = h("button", { class: "btn ghost", type: "button", hidden: true, onclick: () => ctl && ctl.abort() }, "Stop");
+    const auto = h("input", { type: "checkbox", checked: app.settings.brainAuto !== false, onchange: () => app.saveSettings({ brainAuto: auto.checked }) });
+    go.onclick = async () => {
+      ctl = new AbortController(); go.disabled = true; stop.hidden = false; log.clear(); phase.textContent = "Working…";
+      try { await studySession(app, { signal: ctl.signal, onLog: (e) => log.add(e) }); phase.textContent = app.demo ? "Done (demo mode: not saved)" : "Done · saved to the playbook"; app.emit("data:marketdays"); if (!app.demo) app.rerender(); }
+      catch (e) { phase.textContent = e && e.code === "cancelled" ? "Stopped." : MD.ai.errText(e); }
+      go.disabled = false; stop.hidden = true; ctl = null;
+    };
+    const s = Q.session();
+    root.append(U.section("Study", h("div", { class: "stack" },
+      h("div", { class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center" }, go, stop, h("label", { class: "chk small" }, auto, "Study each session automatically after the close (once you've studied one)")),
+      h("p", { class: "small muted" }, "US market: " + ({ open: "open, " + s.minutesToClose + " minutes to the close", pre: "pre-market, opens in " + s.minutesToOpen + " minutes", after: "after-hours", closed: "closed" + (s.minutesToOpen != null ? ", opens in " + Math.floor(s.minutesToOpen / 60) + " h " + (s.minutesToOpen % 60) + " min" : "") }[s.phase]) + ". A study takes 1–3 minutes: the app measures 22 instruments, the movers and the day's calendar; Claude reads the news, explains the session and tests the playbook. Uses your Claude usage plus about 50 data requests through Exa."),
+      phase, log)));
+    const pulseBox = h("div", { class: "stack" });
+    root.append(U.section("Right now (measured)", pulseBox));
+    U.async(pulseBox, () => pulse(app, { history: true }), (P) => {
+      const groups = [["Indices", "index"], ["Rates, dollar, commodities, credit", null], ["Sectors", "sector"]];
+      pulseBox.replaceChildren(regimeKpis(P.regime),
+        ...groups.map(([label, kind]) => h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, label), heat(P.rows.filter(r => kind ? r.kind === kind : !["index", "sector"].includes(r.kind)).sort((a, b) => kind === "sector" ? (b.changePct ?? -99) - (a.changePct ?? -99) : 0)))),
+        h("details", {}, h("summary", { class: "label", style: "cursor:pointer" }, "What moves what (measured from a year of daily returns)"),
+          U.table([{ t: "Sector", v: (r) => r.name + " (" + r.symbol + ")" }, { t: "Beta to S&P 500", v: (r) => r.betaToSPY == null ? "—" : r.betaToSPY.toFixed(2), n: true }, { t: "Corr. long bonds", v: (r) => r.corrLongBonds == null ? "—" : r.corrLongBonds.toFixed(2), n: true }, { t: "Corr. dollar", v: (r) => r.corrDollar == null ? "—" : r.corrDollar.toFixed(2), n: true }, { t: "Corr. oil", v: (r) => r.corrOil == null ? "—" : r.corrOil.toFixed(2), n: true }, { t: "Corr. gold", v: (r) => r.corrGold == null ? "—" : r.corrGold.toFixed(2), n: true }], sensitivities(P)),
+          h("p", { class: "tiny muted" }, "Correlations are over the last 60 trading days. A sector with a high correlation to long bonds rallies when yields fall; a negative one benefits when yields rise.")),
+        h("p", { class: "tiny muted" }, "Today's moves from Nasdaq quotes (bitcoin from the crypto feed, 24-hour change); 5-day and 1-month figures and the regime from 1-year daily histories. As of " + new Date(P.at).toLocaleTimeString() + "."));
+    }, { loading: "Measuring 22 instruments and a year of their history…" });
+    const openId = app.ls.get("brainOpen", null), cur = days.find(d => d.id === openId) || days[0] || null;
+    root.append(U.section("Latest study", recapView(app, cur)));
+    const pb = playbook(app), pbPhase = h("span", { class: "small muted" });
+    const refine = h("button", { class: "btn ghost sm", type: "button", disabled: days.length < 2 || !app.caps.sample, onclick: async () => {
+      refine.disabled = true; pbPhase.textContent = "Refining…";
+      try { await refinePlaybook(app, {}); pbPhase.textContent = "Refined."; if (!app.demo) app.rerender(); } catch (e) { pbPhase.textContent = MD.ai.errText(e); }
+      refine.disabled = false;
+    } }, "Refine the playbook");
+    root.append(U.section("Playbook: what causes what", h("div", { class: "stack" }, playbookView(app, pb, h("span", { class: "row", style: "gap:8px;align-items:center" }, pbPhase, refine)))));
+    if (days.length) root.append(U.section("Sessions studied", U.dataTable([{ t: "Session", v: (d) => d.sessionDate, sort: (d) => d.sessionDate }, { t: "Headline", v: (d) => d.headline }, { t: "Drivers", v: (d) => (d.drivers || []).map(x => x.category).join(", ") }, { t: "Playbook tests", v: (d) => String((d.patternChecks || []).length), n: true }], days, { key: "brain.days", sort: [0, -1], noun: "sessions", filter: false, onRow: (d) => { app.ls.set("brainOpen", d.id); app.rerender(); window.scrollTo(0, 0); } })));
+  };
+
+  /* Asset pages: the measured split of today's and the week's move, what the Market Brain recorded about the
+     symbol, and (on request) Claude's read of the news behind the part the market doesn't explain. */
+  function whyCard(app, a) {
+    const out = h("div", { class: "stack" }), ai = h("div", { class: "stack" });
+    const sec = U.section("Why it's moving", h("div", { class: "stack" }, out, ai)); sec.id = "sec-why";
+    const split = (at, label) => !at ? null : h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, label + ": " + fmtP(at.movePct) + " · " + fmtP(at.explainedPct) + " explained by the market and its factors, " + fmtP(at.unexplainedPct) + " its own"),
+      U.bars(at.parts.map(p => ({ label: (p.factor === "BTC" ? "Bitcoin" : NAME[p.factor] || p.factor) + " (β " + p.beta + ")", value: p.contributionPct, text: fmtP(p.contributionPct) })).concat([{ label: "Asset-specific", value: at.unexplainedPct, text: fmtP(at.unexplainedPct) }]), { signed: true }));
+    let last = null;
+    const run = () => U.async(out, () => explainMove(app, a), (ex) => {
+      last = ex;
+      const mem = memory(app, a.symbol), notes = mem.sessions.filter(s => s.movers.length || s.drivers.some(d => (d.effects || []).some(e => e.on === a.symbol || e.on === ex.sectorEtf)));
+      const go = h("button", { class: "btn ghost sm", type: "button", disabled: !app.caps.sample, onclick: () => newsRead(go) }, "Find the news behind it");
+      out.append(ex.verdict ? h("p", {}, h("strong", {}, ex.verdict), ex.unexplainedZ != null ? h("span", { class: "small muted" }, " (asset-specific part = " + ex.unexplainedZ + "× its typical daily size of " + ex.typicalAssetSpecificDailyPct + "%)") : null) : null,
+        split(ex.today, "Today"), split(ex.week, "Last 5 days"),
+        h("p", { class: "tiny muted" }, "Factor model fitted on " + ex.model.days + " days of daily returns (R² " + ex.model.r2 + "): " + ex.model.factors.map(f => f.name + " β " + f.beta + (f.relativeToMarket ? " (vs the market)" : "")).join(", ") + ". " + (ex.note || "")),
+        notes.length ? h("div", {}, h("span", { class: "label" }, "Market Brain notes"), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em" }, notes.slice(0, 3).map(s => h("li", {}, s.date + ": " + s.headline + (s.movers[0] ? " · " + s.movers[0].symbol + " " + fmtP(s.movers[0].movePct) + ": " + s.movers[0].why : ""))))) : null,
+        h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" }, go, ["stock", "etf", "crypto"].includes(a.cls) ? h("button", { class: "btn ghost sm", type: "button", onclick: () => { app.ctx.daytrade = { asset: a }; app.go("daytrade", app.ctx.daytrade); } }, "Day-trade view") : null));
+    }, { loading: "Fitting a factor model on a year of daily returns…" });
+    async function newsRead(btn) {
+      const s = app.caps.sample; if (!s || !last) return;
+      btn.disabled = true; const log = MD.ai.logBox(); ai.replaceChildren(log);
+      const S = MD.ai.session((e) => log.add(e));
+      try {
+        const r = await s.json(`Explain why ${a.symbol} (${a.name || a.symbol}) moved, separating what the market explains from what is specific to it. The app's factor model already measured the split below; find the news for the asset-specific part with 1 to 4 tool calls (${a.cls === "crypto" ? "crypto_news, search_news" : "search_news"}, search_web if needed). If the asset-specific part is small, say the move is mostly the market and don't invent a story. Cite only URLs the tools returned.
+Measured: ${JSON.stringify({ today: last.today, last5Days: last.week, verdict: last.verdict, unexplainedZ: last.unexplainedZ, factors: last.model.factors })}
+${MD.ai.contextNote(app)}
+Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": "...", "when": "date or time", "impact": "how it moved the price"}], "marketPart": "one sentence on the market/sector part", "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`, { modelTier: "complex", cache: false, tools: MD.ai.tools(app, S, a.cls === "crypto" ? ["crypto_news", "search_news", "search_web"] : ["search_news", "search_web", "read_page"]) });
+        ai.replaceChildren(h("div", { class: "aicard" }, h("p", {}, r.explanation), r.marketPart ? h("p", { class: "small muted" }, r.marketPart) : null, (r.catalysts || []).length ? h("ul", { class: "small" }, r.catalysts.slice(0, 4).map(c => h("li", {}, h("strong", {}, c.what), c.when ? " (" + c.when + ")" : "", c.impact ? ": " + c.impact : ""))) : null, MD.ai.sources(S.verify(r.sources)), h("p", { class: "tiny muted" }, "Confidence " + (Number(r.confidence) || 0) + "/100 · " + S.calls + " research steps")));
+      } catch (e) { ai.replaceChildren(U.errorBox({ message: MD.ai.errText(e) })); }
+      btn.disabled = false;
+    }
+    const start = h("button", { class: "btn ghost sm", type: "button", onclick: () => run() }, "Explain the move");
+    out.append(h("p", { class: "small muted" }, "Splits the move into the market, the sector, rates, the dollar and oil (bitcoin and tech for coins) and the part that's the asset's own."), start);
+    return sec;
+  }
+
+  function dashboardCard(box, app) {
+    const days = latestPerDay(app), last = days[0], pb = playbook(app);
+    if (!last) { box.append(h("p", { class: "small muted" }, "The Market Brain studies each session and learns what moves what. Study a session to start."), h("button", { class: "btn sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")); return; }
+    const best = pb.patterns.filter(p => p.status === "active").map(p => Object.assign({ st: stats(p) }, p)).filter(p => p.st.tested >= 2).sort((a, b) => b.st.reliability - a.st.reliability)[0];
+    box.append(h("div", { class: "stack", style: "gap:6px" }, h("strong", {}, last.headline), h("span", { class: "tiny muted" }, "Session " + last.sessionDate + " · " + days.length + " studied · " + pb.patterns.filter(p => p.status === "active").length + " active patterns"),
+      h("div", { class: "row", style: "gap:4px;flex-wrap:wrap" }, (last.drivers || []).slice(0, 3).map(d => h("span", { class: "chip sm" }, d.driver))),
+      best ? h("p", { class: "small" }, "Most reliable pattern: \"" + best.pattern + "\" (held " + best.st.confirmed + " of " + best.st.tested + ")") : null,
+      h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")));
+  }
+
+  MD.brain = { whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
+})(typeof window !== "undefined" ? window : globalThis);

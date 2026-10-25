@@ -89,10 +89,10 @@
     if (!flagged.length) return { summary: "Nothing in your watchlist or holdings shows an unusual signal right now. No action needed.", items: [], at: Date.now() };
     const facts = flagged.map(r => ({ symbol: r.a.symbol, name: r.a.name, class: r.a.cls, held: r.a.held, last: r.last, return1WPct: r.r && r.r["1W"] != null ? +r.r["1W"].toFixed(1) : null, return1MPct: r.r && r.r["1M"] != null ? +r.r["1M"].toFixed(1) : null, rsi14: r.t && r.t.rsi14 != null ? +r.t.rsi14.toFixed(0) : null, signals: r.signals.map(s => s.sev + ": " + s.text) }));
     const lim = await app.caps.sample.limits().catch(() => null);
-    const tools = lim && lim.tools ? A().tools(app, S, ["search_news", "crypto_news", "stock_snapshot", "zacks_view", "my_portfolio", "search_web"]) : undefined;
+    const tools = lim && lim.tools ? A().tools(app, S, ["search_news", "crypto_news", "stock_snapshot", "zacks_view", "my_portfolio", "search_web", "explain_move", "base_rates", "market_pulse"]) : undefined;
     const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. Triage the investor's watchlist and holdings: the app measured the signals below. Decide what deserves attention today and why.
 ${tools ? "Use 2 to 8 tool calls: search_news (or crypto_news) for the 2–4 highest-priority names to explain the moves, my_portfolio once to judge position sizes. Cite only URLs the tools returned." : ""}
-${A().profileNote(app)}
+${A().contextNote(app)}
 A signal is not a reason to trade. "No action" is often right; say so. Holdings matter more than watchlist names. Never invent figures.
 Signals: ${JSON.stringify(facts)}
 Reply with ONLY JSON: {"summary": "2 sentences", "items": [{"symbol": "...", "priority": "high"|"medium"|"low", "headline": "one line", "why": "1-2 sentences with the evidence", "action": "Review position"|"Research"|"Set an alert"|"No action", "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}]}`;

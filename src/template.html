@@ -595,6 +595,22 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
 .askbtn { white-space: nowrap; }
 @media (max-width: 700px) { .askbtn { padding-inline: 8px; } }
 .fc-head .verdict, .aicard .verdict { justify-self: start; }
+/* Market Brain + day trading */
+.heat { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
+.heat-c { display: grid; gap: 1px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--grid); background: var(--sheet-2); min-width: 0; }
+.heat-c .tiny { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.heat-c.up { background: color-mix(in srgb, var(--up) calc(var(--a, 0) * 32%), var(--sheet-2)); }
+.heat-c.down { background: color-mix(in srgb, var(--down) calc(var(--a, 0) * 32%), var(--sheet-2)); }
+.heat-c.up .num { color: var(--up); } .heat-c.down .num { color: var(--down); }
+.chip.sm { font-size: 0.68rem; padding: 1px 7px; cursor: default; }
+.kpi .v.up { color: var(--up); } .kpi .v.down { color: var(--down); }
+.probbar { position: relative; display: flex; height: 28px; border-radius: 8px; overflow: hidden; border: 1px solid var(--grid); font: 600 0.78rem var(--font-data); margin-bottom: 16px; }
+.probbar .pb-up { background: color-mix(in srgb, var(--up) 22%, var(--sheet)); color: var(--up); display: flex; align-items: center; padding: 0 8px; white-space: nowrap; }
+.probbar .pb-down { background: color-mix(in srgb, var(--down) 22%, var(--sheet)); color: var(--down); display: flex; align-items: center; justify-content: flex-end; padding: 0 8px; white-space: nowrap; }
+.probbar .pb-l, .probbar .pb-r { position: absolute; top: 30px; color: var(--muted); font-weight: 400; } .probbar .pb-l { left: 0; } .probbar .pb-r { right: 0; }
+.probbar.sm { height: 22px; font-size: 0.72rem; margin-bottom: 14px; } .probbar.sm .pb-l, .probbar.sm .pb-r { top: 24px; }
+.card.driver { box-shadow: none; }
+.pickrm { margin-left: auto; }
 /* Smart Money */
 .spin.sm { display: inline-block; width: 10px; height: 10px; border-width: 2px; vertical-align: -1px; }
 .party { display: inline-grid; place-items: center; min-width: 20px; height: 18px; padding: 0 5px; border-radius: 999px; font: 700 0.62rem var(--font-data); letter-spacing: 0.03em; background: var(--sheet-2); color: var(--muted); border: 1px solid var(--line); flex: none; }

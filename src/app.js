@@ -4,10 +4,10 @@
   const C = MD.core, U = MD.ui, D = MD.data, h = U.h;
 
   const ROUTES = [
-    ["dashboard", "Dashboard", "Overview"], ["markets", "Global Markets", "Overview"],
+    ["dashboard", "Dashboard", "Overview"], ["markets", "Global Markets", "Overview"], ["brain", "Market Brain", "Overview"],
     ["stocks", "Stocks & ETFs", "Markets"], ["crypto", "Crypto", "Markets"], ["fx", "FX & Currencies", "Markets"], ["metals", "Precious Metals", "Markets"], ["cards", "Trading Cards", "Markets"],
     ["betting", "Sports Betting", "Sports"],
-    ["smartmoney", "Smart Money", "Decide"], ["portfolio", "Portfolio", "Decide"], ["picks", "Recommendations", "Decide"], ["opportunities", "Opportunities", "Decide"], ["research", "Deep Research", "Decide"], ["calendar", "Calendar & Catalysts", "Decide"], ["advisor", "AI Advisor", "Decide"], ["strategies", "Strategies & Backtesting", "Decide"],
+    ["smartmoney", "Smart Money", "Decide"], ["portfolio", "Portfolio", "Decide"], ["picks", "Recommendations", "Decide"], ["daytrade", "Day Trading", "Decide"], ["opportunities", "Opportunities", "Decide"], ["research", "Deep Research", "Decide"], ["calendar", "Calendar & Catalysts", "Decide"], ["advisor", "AI Advisor", "Decide"], ["strategies", "Strategies & Backtesting", "Decide"],
     ["reports", "Reports", "Workflow"], ["inbox", "Alerts & Research Inbox", "Workflow"], ["settings", "Settings & Data Sources", "Workflow"]
   ];
   const DEFAULT_SETTINGS = {
@@ -16,7 +16,7 @@
     assumptions: { stockExitPct: 0.05, cryptoExitPct: 0.5, metalSpreadPct: 3, cardFeePct: 13, cardShipping: 5, fxSpreadMajorPct: 0.1, fxSpreadOtherPct: 1, riskFreePct: 4, inflationPct: 2.5 },
     betting: { oddsFormat: "american", bankroll: 1000, unit: 10, kelly: 0.25, minEdge: 1 },
     profile: { risk: "mid", horizon: "mid", goals: "", avoid: "", income: false },
-    customCurrencies: [], dashboard: ["brief", "changes", "portfolio", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
+    customCurrencies: [], dashboard: ["brief", "brain", "changes", "portfolio", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], brainAuto: true, universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
   };
   const ls = { get(k, d) { try { const v = localStorage.getItem("mdp." + k); return v ? JSON.parse(v) : d; } catch { return d; } }, set(k, v) { try { localStorage.setItem("mdp." + k, JSON.stringify(v)); } catch {} } };
 
@@ -35,9 +35,9 @@
     app.settings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), s || {});
     for (const k of ["quiet", "notify", "assumptions", "betting", "profile"]) app.settings[k] = Object.assign({}, DEFAULT_SETTINGS[k], (s || {})[k] || {});
     // Dashboards saved before a card existed get it once, before Data health.
-    for (const card of ["betting", "smart", "brief"]) {
+    for (const card of ["betting", "smart", "brief", "brain"]) {
       if (app.settings.dashSeen && app.settings.dashSeen.includes(card)) continue;
-      if (!app.settings.dashboard.includes(card)) { const i = card === "brief" ? 0 : app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
+      if (!app.settings.dashboard.includes(card)) { const i = card === "brief" ? 0 : card === "brain" ? Math.min(1, app.settings.dashboard.length) : app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
       app.settings.dashSeen = (app.settings.dashSeen || []).concat(card);
     }
     applySettings();
@@ -267,6 +267,8 @@
     betting: "M3 7h18v3a2 2 0 0 0 0 4v3H3v-3a2 2 0 0 0 0-4zM14 7v2M14 11v2M14 15v2M7 11h4M7 14h3",
     smartmoney: "M3 21h18M5 21v-9M9.5 21v-9M14.5 21v-9M19 21v-9M2.5 9.5L12 4l9.5 5.5zM12 4V2",
     portfolio: "M21 12A9 9 0 1 1 12 3v9zM15 3.5A9 9 0 0 1 20.5 9H15z",
+    brain: "M12 4a3.5 3.5 0 0 0-6.6 1.6A3.5 3.5 0 0 0 4 12a3.5 3.5 0 0 0 2.5 5.6A3.5 3.5 0 0 0 12 19zM12 4a3.5 3.5 0 0 1 6.6 1.6A3.5 3.5 0 0 1 20 12a3.5 3.5 0 0 1-2.5 5.6A3.5 3.5 0 0 1 12 19zM12 4v15M8 9h2M14 13h2M8 14.5h1.5",
+    daytrade: "M7 3v4M7 15v6M5 7h4v8H5zM17 3v6M17 17v4M15 9h4v8h-4z",
     picks: "M12 3l1.9 4.8L18.7 9.7l-4.8 1.9L12 16.4l-1.9-4.8L5.3 9.7l4.8-1.9zM19 15l.8 2.2 2.2.8-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z",
     opportunities: "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1.1 1.3 1.1 2.2h5c0-.9.5-1.7 1.1-2.2A6 6 0 0 0 12 3z",
     research: "M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14zM21 21l-4.4-4.4M8 11h6M11 8v6",
@@ -533,6 +535,9 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
     // Keep every AI's track record current: score due forecasts quietly while the page is open.
     const autoScore = () => { if (app.demo || !D.available() || document.hidden || !MD.ai) return; MD.ai.scoreDue(app, { max: 12 }).then(r => { if (r.scored) { app.emit("data:evals"); if (app.settings.notify.toasts) U.toast("Scored " + r.scored + " due forecast" + (r.scored > 1 ? "s" : ""), "See Deep Research → Forecast journal for the AI scorecard."); } }).catch(() => {}); };
     setTimeout(autoScore, 20000); setInterval(autoScore, 30 * 60e3);
+    // Once a session has been studied, the Market Brain studies each new session after the close.
+    const autoBrain = () => { if (MD.brain) MD.brain.autoStudy(app).catch(() => {}); };
+    setTimeout(autoBrain, 45000); setInterval(autoBrain, 30 * 60e3);
     try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderView()); } catch {}
     new MutationObserver(() => { if (app.settings.theme === "system") { app._hostTheme = document.documentElement.getAttribute("data-theme"); renderView(); } }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
   }

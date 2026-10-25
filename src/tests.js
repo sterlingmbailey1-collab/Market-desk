@@ -243,5 +243,59 @@
     near(s.homeHandicap(-0.5).win, s.home, 1e-12, "home -0.5 wins exactly when home wins"); near(s.awayHandicap(0.5).win, s.away + s.draw, 1e-12);
     near(s.btts, (1 - Math.exp(-1.45)) * (1 - Math.exp(-0.63)), 1e-6);
   });
+  /* ---------- quant engine ---------- */
+  const series = (n, f) => Array.from({ length: n }, (_, i) => ({ time: 1.6e9 + i * 86400, close: f(i) }));
+  test("base rates: rising series has a high up-rate; model shrinks toward 50% and caps at 75%", () => {
+    const Q = MD.quant, r = MD.core.rng(3), g = MD.core.gauss;
+    let p = 100; const up = series(900, () => (p *= Math.exp(0.002 + 0.01 * g(r))));
+    const br = Q.baseRates(up, 20); ok(br && br.overall.n === 880, "880 windows"); ok(br.overall.upPct > 75, "mostly up: " + br.overall.upPct);
+    eq(br.overall.independent, 44); ok(br.conditions.length >= 3, "conditions measured");
+    const m = Q.directionModel(br); ok(m.upPct > 55 && m.upPct <= 75, "model " + m.upPct); near(m.upPct + m.downPct, 100, 1e-9);
+    const short = Q.baseRates(up.slice(-120), 40); const ms = Q.directionModel(short);
+    ok(Math.abs(ms.upPct - 50) < Math.abs(m.upPct - 50), "less evidence → closer to 50%");
+    let q = 100; const flat = series(900, () => (q *= Math.exp(0.012 * g(r)))); const mf = Q.directionModel(Q.baseRates(flat, 20)); ok(Math.abs(mf.upPct - 50) < 12, "random walk near 50%: " + mf.upPct);
+    eq(Q.barsFor(75, 252), 52); eq(Q.barsFor(30, 365), 30);
+    const bm = Q.bigMoveChance(40, 365, 20); ok(bm.eitherPct > 40 && bm.eitherPct < 70, "either " + bm.eitherPct);
+  });
+  test("least squares recovers betas; factor model attributes a move", () => {
+    const Q = MD.quant, r = MD.core.rng(9), g = MD.core.gauss;
+    const x1 = Array.from({ length: 300 }, () => 0.01 * g(r)), x2 = Array.from({ length: 300 }, () => 0.01 * g(r));
+    const y = x1.map((v, i) => 0.0005 + 1.2 * v - 0.5 * x2[i] + 0.001 * g(r));
+    const f = Q.ols(y, [x1, x2]); near(f.betas[0], 1.2, 0.03); near(f.betas[1], -0.5, 0.03); near(f.alpha, 0.0005, 0.0003); ok(f.r2 > 0.95);
+    let m = 100, s = 100, a = 100; const M = [], SEC = [], A = [];
+    for (let i = 0; i < 300; i++) { const rm = 0.01 * g(r), rs = rm + 0.006 * g(r); m *= 1 + rm; s *= 1 + rs; a *= 1 + 0.8 * rm + 0.9 * (rs - rm) + 0.004 * g(r); const t = 1.6e9 + i * 86400; M.push({ time: t, close: m }); SEC.push({ time: t, close: s }); A.push({ time: t, close: a }); }
+    const fm = Q.factorModel(A, { SPY: M, XLK: SEC }, { market: "SPY", relative: ["XLK"] });
+    near(fm.betas.SPY, 0.8, 0.08); near(fm.betas.XLK, 0.9, 0.12); ok(fm.r2 > 0.8, "r2 " + fm.r2);
+    const at = Q.attribute(fm, { SPY: 2, XLK: 3 }, 3.5);
+    near(at.explainedPct, fm.betas.SPY * 2 + fm.betas.XLK * 1, 0.11); near(at.unexplainedPct, 3.5 - at.explainedPct, 0.11); eq(at.parts[0].factor, "SPY");
+    ok(Q.recentCorrelation(A, M, 60) > 0.5);
+  });
+  test("day-trading maths: VWAP, opening range, pivots, ATR, gaps, RVOL, position size, trade stats", () => {
+    const Q = MD.quant;
+    const v = Q.vwap([{ time: 1, high: 11, low: 9, close: 10, volume: 100 }, { time: 2, high: 13, low: 11, close: 12, volume: 300 }]);
+    near(v.last, 11.5, 1e-12); ok(v.upper > v.last && v.lower < v.last);
+    const orr = Q.openingRange([{ time: 0, close: 5 }, { time: 60, high: 10, low: 8, close: 9 }, { time: 600, high: 12, low: 7, close: 11 }, { time: 1000, high: 20, low: 1, close: 15 }], 60, 15);
+    eq(orr.high, 12); eq(orr.low, 7); ok(orr.complete);
+    const pv = Q.pivots({ high: 110, low: 90, close: 100 }); near(pv.P, 100, 1e-12); near(pv.R1, 110, 1e-12); near(pv.S1, 90, 1e-12); near(pv.R2, 120, 1e-12); near(pv.S2, 80, 1e-12);
+    const flat = Array.from({ length: 30 }, (_, i) => ({ time: i * 86400, open: 100, high: 102, low: 98, close: 100 })); near(Q.atr(flat).atr, 4, 1e-9); near(Q.atr(flat).atrPct, 4, 1e-9);
+    const gp = [{ close: 100 }, { open: 103, high: 104, low: 99, close: 101 }, { open: 101, high: 102, low: 100, close: 101 }, { open: 104, high: 107, low: 103, close: 106 }, { open: 106, high: 106, low: 106, close: 106 }];
+    const gs = Q.gapStats(gp, 3); eq(gs.n, 2); eq(gs.fillPct, 50); eq(gs.closeAboveOpenPct, 50);
+    near(Q.sessionVolumeShare(1), 1, 1e-12); near(Q.sessionVolumeShare(0.05), 0.12, 1e-12); near(Q.rvol(1e6, 1e6, 1), 1, 1e-12); ok(Q.rvol(3e5, 1e6, 0.1) > 1.5, "30% of a day's volume early is heavy");
+    const ps = Q.positionSize({ account: 25000, riskPct: 1, entry: 100, stop: 98, target: 106 }); eq(ps.shares, 125); near(ps.dollarsAtRisk, 250, 1e-9); near(ps.rewardRisk, 3, 1e-9); near(ps.targets[1].price, 104, 1e-9);
+    eq(Q.positionSize({ account: 25000, riskPct: 1, entry: 100, stop: 98, maxPositionPct: 40 }).shares, 100);
+    ok(Q.positionSize({ account: 25000, riskPct: 1, entry: 100, stop: 102 }).error, "long stop above entry rejected");
+    eq(Q.positionSize({ account: 25000, riskPct: 1, entry: 100, stop: 102, side: "short" }).shares, 125);
+    const st = Q.tradeStats([{ side: "long", entry: 10, exit: 11, shares: 100, stop: 9.5 }, { side: "short", entry: 20, exit: 21, shares: 50, stop: 21 }, { side: "long", entry: 5, exit: 5.5, shares: 100 }]);
+    eq(st.n, 3); near(st.net, 100, 1e-9); near(st.winRatePct, 200 / 3, 1e-9); near(st.profitFactor, 3, 1e-9); near(st.avgR, 0.5, 1e-9);
+  });
+  test("New York session clock and NYSE holidays", () => {
+    const Q = MD.quant;
+    const a = Q.session(new Date("2026-10-26T14:00:00Z")); eq(a.phase, "open"); near(a.fraction, 30 / 390, 1e-9); eq(a.minutesToClose, 360);
+    eq(Q.session(new Date("2026-10-26T12:00:00Z")).phase, "pre"); eq(Q.session(new Date("2026-10-26T12:00:00Z")).minutesToOpen, 90);
+    eq(Q.session(new Date("2026-10-26T21:00:00Z")).phase, "after");
+    const th = Q.session(new Date("2026-11-26T16:00:00Z")); eq(th.phase, "closed"); eq(th.tradingDay, false);
+    const ec = Q.session(new Date("2026-11-27T18:30:00Z")); eq(ec.phase, "after"); ok(ec.earlyClose);
+    const sat = Q.session(new Date("2026-10-24T16:00:00Z")); eq(sat.phase, "closed"); eq(sat.minutesToOpen, 12 * 60 + 1440 + 570);
+  });
   MD.tests = { list: T, run() { const res = []; for (const t of T) { try { t.fn(); res.push({ name: t.name, ok: true }); } catch (e) { res.push({ name: t.name, ok: false, err: e.message }); } } return res; } };
 })(typeof window !== "undefined" ? window : globalThis);

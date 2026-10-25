@@ -80,14 +80,17 @@
     const ctx = { app, asset, question, log: [], sources: [], stats: {}, onLog, quote: null };
     let tools = makeTools(ctx);
     // Extra evidence the shared AI kit can gather: smart-money ownership, insider trades, the options-implied move.
-    if (MD.ai && asset && asset.cls === "stock") { const S = MD.ai.session((e) => onLog && onLog(e)); S.sources = ctx.sources; tools = tools.concat(MD.ai.tools(app, S, ["smart_money", "insider_activity", "options_move"])); }
+    if (MD.ai && asset && asset.cls === "stock") { const S = MD.ai.session((e) => onLog && onLog(e)); S.sources = ctx.sources; tools = tools.concat(MD.ai.tools(app, S, ["smart_money", "insider_activity", "options_move", "base_rates", "explain_move", "earnings_info", "market_pulse", "market_memory"])); }
+    else if (MD.ai && asset && (asset.cls === "crypto" || asset.cls === "etf")) { const S = MD.ai.session((e) => onLog && onLog(e)); S.sources = ctx.sources; tools = tools.concat(MD.ai.tools(app, S, ["base_rates", "explain_move", "market_pulse", "market_memory"])); }
+    // Keep within the runtime's per-request tool cap: the research tools first, then the kit tools the question needs.
+    if (MD.ai) tools = MD.ai.selectTools(tools, question, (lim.tools && lim.tools.maxCount) || 20, tools.slice(0, 13).map(t => t.name));
     const R = app.settings.reportingCurrency;
     const today = new Date().toISOString().slice(0, 10);
     const assetLine = asset ? `${asset.name} (${asset.symbol}; class ${asset.cls}${asset.listing ? "; " + asset.listing : ""})` : "no specific asset";
     const base = `Today is ${today}. User's reporting currency: ${R}. Decision horizon: ${horizon}.
 Asset: ${assetLine}.
 User's question / decision: "${question}".
-Rules: never invent prices, figures, sources or research steps. Use get_quote for the current price and the app's tools for any calculation. Cite only URLs returned by your tools. Say plainly when evidence is missing. "No action" or "wait" are valid conclusions.${MD.ai ? "\n" + MD.ai.profileNote(app) + "\n" + MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai")) : ""}`;
+Rules: never invent prices, figures, sources or research steps. Use get_quote for the current price and the app's tools for any calculation. Cite only URLs returned by your tools. Say plainly when evidence is missing. "No action" or "wait" are valid conclusions.${MD.ai ? "\n" + MD.ai.contextNote(app) + "\n" + MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai")) : ""}`;
     // Phase 1: evidence gathering (tools)
     onPhase && onPhase("Gathering evidence");
     const evPrompt = `${base}

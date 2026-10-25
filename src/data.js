@@ -144,7 +144,7 @@
   const all = (rx, s) => { rx.lastIndex = 0; return [...s.matchAll(rx)]; };
   function sortUniq(points) { points.sort((a, b) => a.time - b.time); const out = []; for (const p of points) if (!out.length || p.time > out[out.length - 1].time) out.push(p); return out; }
   function chunks(from, to, years) { const out = []; let s = new Date(from); while (s < to) { const e = new Date(s); e.setUTCFullYear(e.getUTCFullYear() + years); const end = e < to ? e : to; out.push([ymd(s), ymd(end)]); s = new Date(end.getTime() + 864e5); } return out; }
-  const TF_DAYS = { "1D": 1, "1W": 7, "1M": 30, "3M": 91, "6M": 182, "1Y": 365, "3Y": 1096, "5Y": 1826, "10Y": 3652 };
+  const TF_DAYS = { "1D": 1, "1W": 7, "1M": 30, "3M": 91, "6M": 182, "1Y": 365, "2Y": 730, "3Y": 1096, "5Y": 1826, "10Y": 3652 };
   function tfStart(tf) { if (tf === "YTD") return new Date(Date.UTC(new Date().getUTCFullYear(), 0, 1)); return daysAgo(TF_DAYS[tf] || 365); }
   const RX = {
     nasdaqRow: /"date":"(\d{1,2})\/(\d{1,2})\/(\d{4})","close":"\$?([\d,.]+)","volume":"([^"]*)","open":"\$?([^"]*)","high":"\$?([^"]*)","low":"\$?([^"]*)"/g,
@@ -192,11 +192,30 @@
       const t = r && r.data && r.data.table;
       return arr(t && t.rows).map(x => ({ id: "stock:" + x.symbol, cls: "stock", symbol: x.symbol, name: String(x.name || "").replace(/ Common Stock$| Class A Common Stock$/, ""), price: num(x.lastsale), change: num(x.netchange), changePct: num(x.pctchange), marketCap: num(x.marketCap), currency: "USD" }));
     },
-    async movers() {
-      const r = await fetchJSON("https://api.nasdaq.com/api/marketmovers?assetclass=stocks&exchangestatus=currentMarket&limit=50", 160000, 120000);
+    // status: currentMarket, preMarket or afterHours (outside those hours Nasdaq returns the last session's list).
+    async movers(status = "currentMarket") {
+      const r = await fetchJSON("https://api.nasdaq.com/api/marketmovers?assetclass=stocks&exchangestatus=" + status + "&limit=50", 160000, 120000);
       const d = (r && r.data && r.data.STOCKS) || {};
       const rows = (k, pct) => { const tb = d[k] || {}; return { asOf: tb.dataAsOf || "", rows: arr(tb.table && tb.table.rows).map(x => { const price = num(x.lastSalePrice), ch = num(x.lastSaleChange); return { id: "stock:" + x.symbol, cls: "stock", symbol: x.symbol, name: x.name, price, change: ch, changePct: pct ? num(x.change) : (price && ch != null && price - ch ? ch / (price - ch) * 100 : null), volume: pct ? null : num(x.change), currency: "USD" }; }) }; };
-      return { active: rows("MostActiveByShareVolume", false), gainers: rows("MostAdvanced", true), losers: rows("MostDeclined", true) };
+      return { asOf: ((d.MostAdvanced || d.MostActiveByShareVolume || d.MostDeclined || {}).dataAsOf || "").replace(/^Data as of /, ""), active: rows("MostActiveByShareVolume", false), gainers: rows("MostAdvanced", true), losers: rows("MostDeclined", true) };
+    },
+    // Sector, industry, average and today's volume, and the analysts' one-year target from Nasdaq's summary.
+    async profile(sym, cls) {
+      const r = await fetchJSON(`https://api.nasdaq.com/api/quote/${encodeURIComponent(sym)}/summary?assetclass=${cls === "etf" ? "etf" : "stocks"}`, 30000, 300000);
+      const s = (r && r.data && r.data.summaryData) || {}, v = (k) => s[k] && s[k].value && s[k].value !== "N/A" ? s[k].value : null;
+      return { sector: v("Sector"), industry: v("Industry"), avgVolume: num(v("AverageVolume")), volume: num(v("ShareVolume")), target1y: num(v("OneYrTarget")), previousClose: num(v("PreviousClose")) };
+    },
+    /* The latest session minute by minute from 4:00 a.m. ET (pre-market) through after-hours, with the previous
+       close and the session's volume. Prices only: Nasdaq's chart has no per-minute volume. Nasdaq's timestamps are
+       New York wall-clock time written as if it were UTC ("4:00 AM ET" = 04:00Z); they're converted to real UTC. */
+    async intraday(sym, cls) {
+      const r = await fetchJSON(bust(`https://api.nasdaq.com/api/quote/${encodeURIComponent(sym)}/chart?assetclass=${cls === "etf" ? "etf" : "stocks"}`), 260000, 15000);
+      const d = r && r.data; if (!d || !arr(d.chart).length) throw new DataError("not_found", "No intraday data for " + sym + ".", "nasdaq");
+      const off = tzOffsetSec("America/New_York");
+      const pts = arr(d.chart).map(c => { const m = String((c.z && c.z.dateTime) || "").match(/(\d{1,2}):(\d{2}) (AM|PM)/), wall = Math.floor(+c.x / 1000); return { time: wall - off, value: +c.y, et: m ? ((+m[1] % 12) + (m[3] === "PM" ? 12 : 0)) * 60 + +m[2] : wall > 0 ? Math.floor((wall % 86400) / 60) : null }; }).filter(p => p.value > 0 && p.et != null && p.time > 0);
+      const span = (xs) => xs.length ? { high: Math.max(...xs.map(p => p.value)), low: Math.min(...xs.map(p => p.value)), first: xs[0].value, last: xs[xs.length - 1].value } : null;
+      const pre = pts.filter(p => p.et < 570), reg = pts.filter(p => p.et >= 570 && p.et < 960), post = pts.filter(p => p.et >= 960);
+      return { symbol: sym, date: d.timeAsOf || null, previousClose: num(d.previousClose), last: num(d.lastSalePrice), changePct: num(d.percentageChange), volume: num(d.volume), points: pts, pre: span(pre), regular: span(reg), post: span(post), openSec: reg.length ? reg[0].time : null, source: "Nasdaq (1-minute, from 4:00 a.m. ET)" };
     },
     ETFS: [["SPY", "SPDR S&P 500"], ["VOO", "Vanguard S&P 500"], ["QQQ", "Invesco QQQ (Nasdaq-100)"], ["VTI", "Vanguard Total Stock Market"], ["IWM", "iShares Russell 2000"], ["DIA", "SPDR Dow Jones"], ["VT", "Vanguard Total World"], ["EFA", "iShares MSCI EAFE"], ["VEA", "Vanguard Developed Markets"], ["VWO", "Vanguard Emerging Markets"], ["EEM", "iShares MSCI Emerging Markets"], ["EWJ", "iShares MSCI Japan"], ["VGK", "Vanguard FTSE Europe"], ["INDA", "iShares MSCI India"], ["MCHI", "iShares MSCI China"], ["AGG", "iShares Core US Aggregate Bond"], ["TLT", "iShares 20+ Year Treasury"], ["SGOV", "iShares 0-3 Month Treasury"], ["LQD", "iShares Investment Grade Corporate"], ["HYG", "iShares High Yield Corporate"], ["GLD", "SPDR Gold Shares"], ["SLV", "iShares Silver Trust"], ["XLK", "Technology Select Sector"], ["XLF", "Financial Select Sector"], ["XLE", "Energy Select Sector"], ["XLV", "Health Care Select Sector"], ["SMH", "VanEck Semiconductor"], ["ARKK", "ARK Innovation"], ["IBIT", "iShares Bitcoin Trust"], ["SCHD", "Schwab US Dividend Equity"]],
     // Market-implied move from at-the-money straddles, per expiry. Nasdaq's option data can lag a session.
@@ -327,7 +346,7 @@
     }
   };
   // Kraken candle interval (minutes) and look-back (seconds; 0 = all, null = year to date) per time frame.
-  const KRAKEN_PLAN = { "Live": [1, 1800], "15m": [1, 900], "1H": [1, 3600], "4H": [1, 14400], "12H": [1, 43200], "1D": [5, 86400], "1W": [30, 7 * 86400], "1M": [240, 30 * 86400], "3M": [240, 91 * 86400], "6M": [1440, 182 * 86400], "YTD": [1440, null], "1Y": [1440, 365 * 86400], "5Y": [10080, 1826 * 86400], "Max": [10080, 0] };
+  const KRAKEN_PLAN = { "Live": [1, 1800], "15m": [1, 900], "1H": [1, 3600], "4H": [1, 14400], "12H": [1, 43200], "1D": [5, 86400], "1W": [30, 7 * 86400], "1M": [240, 30 * 86400], "3M": [240, 91 * 86400], "6M": [1440, 182 * 86400], "YTD": [1440, null], "1Y": [1440, 365 * 86400], "2Y": [1440, 0], "5Y": [10080, 1826 * 86400], "Max": [10080, 0] };
   const KRAKEN_LABEL = { 1: "1-minute", 5: "5-minute", 30: "30-minute", 240: "4-hour", 1440: "Daily", 10080: "Weekly" };
   function krakenSince(plan, tf) { return plan[1] === 0 ? 0 : plan[1] == null ? Math.floor(tfStart("YTD").getTime() / 1000) : Math.floor(Date.now() / 1000) - plan[1]; }
   const krakenSym = (s) => ({ BTC: "XBT", DOGE: "XDG" }[String(s).toUpperCase()] || String(s).toUpperCase());
@@ -925,6 +944,24 @@
     if (cls === "cash") return { id: asset.id, cls, symbol: asset.symbol, name: asset.symbol + " cash", price: 1, currency: asset.symbol, ts: Date.now(), status: "Live", source: "Cash balance" };
     throw new DataError("unavailable", "No live price source for this asset. Its value comes from your own recorded valuations.", "manual");
   }
+  /* 5-minute bars with volume for the latest session, times in UTC seconds: stocks from Twelve Data (regular hours,
+     New York wall-clock converted to UTC), crypto from Kraken (last 24 hours). Used for VWAP and relative volume. */
+  async function intradayBars(asset) {
+    const cls = asset.cls || clsOf(asset.id);
+    if (cls === "crypto") {
+      const k = await kraken.ohlc(krakenSym(asset.symbol) + "USD", 5, Math.floor(Date.now() / 1000) - 86400, 15000);
+      const bars = k.points.map((p, i) => ({ time: p.time - k.shift, open: p.open, high: p.high, low: p.low, close: p.close, volume: k.volume[i] && p.close ? k.volume[i].value / p.close : 0 }));
+      return { bars, source: "Kraken 5-minute candles (last 24 hours, UTC)", session: "24h" };
+    }
+    if (cls !== "stock" && cls !== "etf") throw new DataError("unavailable", "Intraday bars cover US stocks, ETFs and crypto.", "manual");
+    const rows = await twelve.series(asset.symbol, "5min", { outputsize: 160 });
+    const off = tzOffsetSec("America/New_York");
+    const bars = sortUniq(rows.map(x => ({ time: Math.floor(Date.parse(x.dt.replace(" ", "T") + "Z") / 1000) - off, open: x.open ?? x.close, high: x.high ?? x.close, low: x.low ?? x.close, close: x.close, volume: x.volume || 0, dt: x.dt })));
+    const lastDay = bars.length ? bars[bars.length - 1].dt.slice(0, 10) : null;
+    return { bars: bars.filter(b => b.dt.slice(0, 10) === lastDay), prior: bars.filter(b => b.dt.slice(0, 10) !== lastDay), date: lastDay, source: "Twelve Data 5-minute bars (regular hours)", session: "regular" };
+  }
+  // Long daily history for base rates: five years for US stocks and ETFs, two years of daily candles for crypto.
+  function dailyLong(asset) { const cls = asset.cls || clsOf(asset.id); return historyFor(asset, cls === "crypto" ? "2Y" : cls === "stock" || cls === "etf" ? "5Y" : "1Y"); }
   async function historyFor(asset, tf) {
     try { return await primaryHistory(asset, tf); }
     catch (e) {
@@ -969,5 +1006,5 @@
     return health;
   }
 
-  MD.data = { imageData, sales, connector, resetConnectors, twelve, cdc, av, cardchain, dealer, bigdataNews, cmc, zacks, mdTables, liveQuote, liveSupported, MINUTE_TF, tzOffsetSec, bust, init, available, onActivity, DataError, PROVIDERS, UNAVAILABLE, health, checkHealth, fetchRaw, fetchJSON, stocks, crypto, STABLECOINS, kraken, fx, METALS, metals, pokemon, ygo, events, calendar, webSearch, readPage, quoteFor, historyFor, clsOf, TF_DAYS, num, ymd, daysAgo };
+  MD.data = { intradayBars, dailyLong, imageData, sales, connector, resetConnectors, twelve, cdc, av, cardchain, dealer, bigdataNews, cmc, zacks, mdTables, liveQuote, liveSupported, MINUTE_TF, tzOffsetSec, bust, init, available, onActivity, DataError, PROVIDERS, UNAVAILABLE, health, checkHealth, fetchRaw, fetchJSON, stocks, crypto, STABLECOINS, kraken, fx, METALS, metals, pokemon, ygo, events, calendar, webSearch, readPage, quoteFor, historyFor, clsOf, TF_DAYS, num, ymd, daysAgo };
 })(typeof window !== "undefined" ? window : globalThis);

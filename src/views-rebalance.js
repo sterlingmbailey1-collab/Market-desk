@@ -91,7 +91,7 @@
     const facts = MD.ai.rnd({ reportingCurrency: m.R, totalValue: m.total, strategy: st.strategy === "cap" ? "cap positions at " + st.cap + "%" : st.strategy, volatilityPctBefore: p.volBefore, volatilityPctAfter: p.volAfter, effectiveHoldingsBefore: p.effBefore, effectiveHoldingsAfter: p.effAfter, turnover: p.turnover, estimatedCosts: p.cost, betaVsSPY: m.beta ? m.beta.beta : null,
       changes: p.rows.filter(r => Math.abs(r.trade) >= m.total * 0.001).map(r => ({ symbol: r.symbol, class: r.cls, weightNowPct: r.weight * 100, targetPct: r.target * 100, trade: r.trade, volPct: r.volPct })) });
     const r = await app.caps.sample.json(`Today is ${new Date().toISOString().slice(0, 10)}. The investor is considering this rebalance of their portfolio (measured by the app). ${tools ? "Use 2 to 5 tool calls on the biggest trims and adds (search_news, zacks_view or stock_snapshot) so the trade-offs reflect what's happening now. Cite only URLs the tools returned." : ""}
-${MD.ai.profileNote(app)}
+${MD.ai.contextNote(app)}
 Weigh it honestly: risk reduction versus giving up exposure to what has worked, costs and taxes, and gentler alternatives (direct new money to underweights, rebalance in steps, set bands). Doing nothing can be right. Never invent figures; never instruct a trade.
 Plan: ${JSON.stringify(facts)}
 Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now", "summary": "2-3 sentences", "pros": ["..."], "cons": ["..."], "gentlerPath": "a gentler way to get most of the benefit", "biggestRisk": "...", "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "default", signal }, tools ? { tools } : { cache: false }));

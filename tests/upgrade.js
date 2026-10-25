@@ -20,7 +20,7 @@ const T = __dirname, V = path.join(__dirname, "..", "vendor"), page_ = path.reso
   await p.waitForTimeout(4000);
   const txt = await p.locator("body").innerText();
   const results = [
-    ["starts with settings saved by an older version", !/failed to start/i.test(txt) && await p.locator(".nav a").count() === 19],
+    ["starts with settings saved by an older version", !/failed to start/i.test(txt) && await p.locator(".nav a").count() === 21],
     ["older dashboard gains the Betting today card", /Betting today/i.test(txt)],
     ["older dashboard gains the Smart Money card", /Smart Money/i.test(await p.locator("#content").innerText()) && /Open Smart Money/i.test(txt)],
     ["no uncaught errors", errs.length === 0]

@@ -96,11 +96,11 @@
       const log = MD.ai.logBox(); out.replaceChildren(log);
       const S = MD.ai.session((e) => log.add(e));
       const lim = await s.limits().catch(() => null);
-      const tools = lim && lim.tools ? MD.ai.tools(app, S, ["search_news", "crypto_news", "zacks_view", "stock_snapshot", "smart_money", "compare_returns", "search_web"]) : undefined;
+      const tools = lim && lim.tools ? MD.ai.tools(app, S, ["search_news", "crypto_news", "zacks_view", "stock_snapshot", "smart_money", "compare_returns", "search_web", "market_pulse", "explain_move", "market_memory"]) : undefined;
       const r = await s.json(`You are reviewing a personal investment portfolio for its owner. The measured figures below were computed by the app from market data (returns are for today's holdings over the past year, not the owner's actual results):
 ${JSON.stringify(facts)}
 ${tools ? "Investigate before writing, with 3 to 8 tool calls: search_news (or crypto_news) for the two or three largest or riskiest holdings, zacks_view for large stock positions, compare_returns against SPY, AGG and SGOV as baselines, smart_money where interesting. Cite only URLs the tools returned." : ""}
-${MD.ai.profileNote(app)}
+${MD.ai.contextNote(app)}
 Be specific, plain and balanced. Do not invent prices, news or figures. Do not tell them to buy or sell; frame ideas as things to consider, with the trade-off. Say what a stress in the market would do using the measured beta.
 Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "strengths": ["..."], "risks": ["..."], "concentration": "1-2 sentences on concentration and diversification", "toConsider": [{"idea": "...", "tradeOff": "..."}], "watch": ["what to monitor"], "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "complex" }, tools ? { tools } : { cache: false }));
       const rv = await MD.ai.review(app, { task: "A balanced review of this portfolio", S, facts, items: [{ id: "review", headline: r.headline, summary: r.summary, risks: r.risks, toConsider: r.toConsider, confidence: r.confidence, sources: (r.sources || []).map(x => x.url) }] });

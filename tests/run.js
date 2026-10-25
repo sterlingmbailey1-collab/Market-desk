@@ -1,6 +1,7 @@
 globalThis.Decimal = require("../vendor/decimal.js");
 require("../src/core.js");
 require("../src/odds.js");
+require("../src/quant.js");
 require("../src/tests.js");
 const res = globalThis.MD.tests.run();
 let fail = 0;

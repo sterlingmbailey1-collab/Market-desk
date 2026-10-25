@@ -204,7 +204,7 @@
 Rules: use the tools for every price, statistic, odds figure, holding and calculation; never invent numbers or sources; cite the URLs and sources the tools return (attribute Zacks data to Zacks with its URL); separate facts from opinion; quantify uncertainty; mention the strongest counterargument; "do nothing", "wait", "no bet" or "research further" are valid answers; you never execute trades or place bets.
 Investing: consider costs, currency effects, liquidity, concentration and the investor's existing holdings; price ranges from project_price are statistical, not forecasts.
 Betting: start from the fair (no-vig) probabilities, which are the market's best estimate; only claim value when a price beats the fair line or there is concrete evidence; use bet_math for odds arithmetic; say how stale the odds may be and that the user must confirm prices in the sportsbook; suggest small stakes (around 1-2% of bankroll at most) and never chasing losses; parlays compound the margin; if the user shows signs of problem gambling, point to 1-800-GAMBLER (US) or BeGambleAware (UK) kindly and without lecturing.
-${MD.ai.profileNote(app)}
+${MD.ai.contextNote(app)}
 How to think for any decision question: (1) gather the evidence with tools first; (2) start from the base rate or the market's own view (fair odds, options-implied move, consensus target) before your own; (3) weigh the strongest counterargument; (4) give a conclusion with a probability or a confidence level and say what would change it. When confidence matters, check track_record and be more modest if past calls were overconfident. smart_money shows which tracked members of Congress and investors hold a stock (disclosures lag; never imply wrongdoing).
 Plain text, short paragraphs, no markdown headings.${app.demo ? " The portfolio is DEMO data; say so if you discuss it." : ""}`;
     send.onclick = async () => {
@@ -215,9 +215,11 @@ Plain text, short paragraphs, no markdown headings.${app.demo ? " The portfolio 
       const ctx = { app, asset: null, question: text, log: [], sources: [], stats: {}, onLog: (e) => log.append(h("div", { class: e.kind }, e.text)) };
       const base = RS.makeTools(ctx).filter(t => ["search_web", "read_page", "search_news", "crypto_news", "get_portfolio_context", "compare_alternatives", "calc_reward_risk"].includes(t.name));
       const kitS = MD.ai.session((e) => ctx.onLog(e)); kitS.sources = ctx.sources;
-      const kit = MD.ai.tools(app, kitS, ["smart_money", "options_move", "track_record"]);
+      const kit = MD.ai.tools(app, kitS, ["smart_money", "options_move", "track_record", "base_rates", "explain_move", "market_pulse", "market_memory", "intraday_levels", "movers", "earnings_info", "economic_calendar", "insider_activity"]);
       try {
-        const r = await s([{ role: "user", content: RULES }, ...turns.slice(-12)], { cache: false, tools: [...base, ...advisorTools(app, ctx), ...kit], onText: ({ text }) => { bubble.textContent = text; } });
+        // The recent conversation decides which tools this request carries (the runtime caps the count).
+        const toolsNow = MD.ai.selectTools([...base, ...advisorTools(app, ctx), ...kit], turns.slice(-3).map(t => t.content).join(" "), await MD.ai.toolCap(app), ["search_news", "search_web", "lookup_asset", "get_technicals"]);
+        const r = await s([{ role: "user", content: RULES }, ...turns.slice(-12)], { cache: false, tools: toolsNow, onText: ({ text }) => { bubble.textContent = text; } });
         turns.push({ role: "assistant", content: r.text }); paint();
         // Offer an independent check of this answer against the evidence the tools returned.
         const checkBox = h("div", { class: "stack" });

@@ -34,10 +34,11 @@
       const kit = MD.ai.tools(app, S);
       const extra = MD.advisorKit ? MD.advisorKit.advisorTools(app, actx).filter(t => ["analyze_portfolio", "get_betting_odds", "bet_math", "get_my_bets"].includes(t.name)) : [];
       const RULES = `You are Market Desk's analyst, answering inside the app. Today is ${new Date().toISOString().slice(0, 10)}. ${ctx0.text}
-${MD.ai.profileNote(app)}
+${MD.ai.contextNote(app)}
 Use the tools for every price, statistic, odds figure and holding; never invent numbers or sources; cite URLs the tools returned. Think in steps: gather evidence, start from the market's own view (fair odds, implied move, consensus), weigh the strongest counterargument, then conclude with a confidence level and what would change it. "Do nothing", "wait" and "no bet" are valid. Never execute trades or place bets. Disclosed trades by politicians or investors never imply wrongdoing. Plain text, short paragraphs.`;
       try {
-        const r = await s([{ role: "user", content: RULES }, ...turns.slice(-10)], { cache: false, tools: [...kit, ...extra], onText: ({ text: t }) => { bubble.textContent = t; } });
+        const toolsNow = MD.ai.selectTools([...kit, ...extra], ctx0.text + " " + turns.slice(-3).map(t => t.content).join(" "), await MD.ai.toolCap(app), ["search_news", "search_web", "stock_snapshot"]);
+        const r = await s([{ role: "user", content: RULES }, ...turns.slice(-10)], { cache: false, tools: toolsNow, onText: ({ text: t }) => { bubble.textContent = t; } });
         turns.push({ role: "assistant", content: r.text }); paint();
         const checkBox = h("div", { class: "stack" });
         const chk = h("button", { class: "btn ghost sm", type: "button", onclick: async () => {

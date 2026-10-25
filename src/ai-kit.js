@@ -93,10 +93,69 @@
     track_record: { description: "How the app's own past AI calls turned out, from the forecast journal: Recommendations picks and AI quick takes, each with the number scored, hit rate, Brier score and hit rate by stated probability. Use it to calibrate how confident to be.", props: {}, req: [],
       label: () => "AI track record",
       async run(app) { return rnd({ recommendations: trackRecord(app, "ai-picks"), quickTakes: trackRecord(app, "ai-take"), allForecasts: trackRecord(app) }); } },
+    market_pulse: { description: "The whole market right now, measured by the app: today's, 5-day and 1-month moves of the S&P 500, Nasdaq-100, small caps, Dow, long Treasuries (rates), the dollar, oil, gold, high-yield credit, bitcoin and the 11 sector funds plus semiconductors; the regime (trend, volatility state, stock–bond correlation, sector leadership); the US session phase; and what the desk's Market Brain has learned (latest session, recurring drivers, patterns with their record).", props: {}, req: [],
+      label: () => "Market pulse",
+      async run(app) { const P = await MD.brain.pulse(app, { history: true }); return rnd({ session: P.session, regime: P.regime, instruments: P.rows.map(r => ({ symbol: r.symbol, name: r.name, todayPct: r.changePct, fiveDayPct: r.ret5d, oneMonthPct: r.ret1m })), marketBrain: MD.brain.note(app) || "No sessions studied yet." }); } },
+    explain_move: { description: "Why a stock, ETF or coin moved: a factor model fitted on a year of daily returns splits today's and the last 5 days' move into the market (S&P 500), its sector fund, long Treasuries (rates), the dollar and oil (bitcoin, tech and the dollar for coins), and the unexplained, asset-specific remainder, with how unusual that remainder is. Use it before searching for news: a move the market explains needs no company story.", props: { symbol: { type: "string" } }, req: ["symbol"],
+      label: (i) => "Explain the move in " + i.symbol,
+      async run(app, S, i) { const a = await findAsset(i.symbol); return rnd(await MD.brain.explainMove(app, a)); } },
+    base_rates: { description: "Measured odds from the asset's own history (5 years of daily closes for US stocks/ETFs, 2 for coins): how often it finished higher over the given number of days, overall and in past situations like today's (RSI, trend, a sharp recent move, distance from the high), each with its sample size; a shrunk model P(up)/P(down); typical up and down move sizes; and the chance of a move larger than 10% either way. Overlapping windows are counted honestly as fewer independent samples.", props: { symbol: { type: "string" }, days: { type: "number", description: "Horizon in calendar days" } }, req: ["symbol", "days"],
+      label: (i) => "Base rates for " + i.symbol + " over " + i.days + " days",
+      async run(app, S, i) { const a = await findAsset(i.symbol); return rnd(await baseRatesFor(a, Number(i.days) || 30)); } },
+    intraday_levels: { description: "Day-trading picture for a US stock/ETF or coin: price vs the previous close, pre-market high/low, the open and opening range, session high/low, VWAP with bands, the previous day's high/low/close, floor pivots, ATR (typical daily range) and how much of it is used, relative volume, how past gaps like today's played out the same day, and the US session clock.", props: { symbol: { type: "string" } }, req: ["symbol"],
+      label: (i) => "Intraday levels for " + i.symbol,
+      async run(app, S, i) { const a = await findAsset(i.symbol); const L = await MD.day.levels(app, a); return rnd(MD.day.forAI(L)); } },
+    market_memory: { description: "What the desk's Market Brain has learned from studying past sessions: the sessions that mention a symbol, sector fund or theme, the drivers and moves recorded for them, and cause → effect patterns with how often each held when tested. Leave query empty for the overview.", props: { query: { type: "string" } }, req: [],
+      label: (i) => "Market memory" + (i && i.query ? ": " + i.query : ""),
+      async run(app, S, i) { return rnd(MD.brain.memory(app, i && i.query)); } },
+    movers: { description: "Today's biggest US stock gainers, losers and most active names (Nasdaq; $5+ stocks), for the regular session, pre-market or after-hours.", props: { session: { type: "string", enum: ["regular", "pre", "after"] } }, req: [],
+      label: (i) => "Movers" + (i && i.session && i.session !== "regular" ? " (" + i.session + "-market)" : ""),
+      async run(app, S, i) { const st = { pre: "preMarket", after: "afterHours" }[i && i.session] || "currentMarket"; const m = await D.stocks.movers(st); const f = (rows) => rows.filter(r => r.price >= 5).slice(0, 10).map(r => ({ symbol: r.symbol, name: r.name, price: r.price, changePct: r.changePct })); return rnd({ asOf: m.asOf, gainers: f(m.gainers.rows), losers: f(m.losers.rows), mostActive: m.active.rows.filter(r => r.price >= 5).slice(0, 10).map(r => ({ symbol: r.symbol, price: r.price, changePct: r.changePct, volume: r.volume })) }); } },
+    earnings_info: { description: "A US stock's earnings record and setup from Nasdaq: next report date, consensus EPS with revisions, the last four surprises with the stock's two-day reaction to each, the average reaction, and the options-implied move into the report.", props: { ticker: { type: "string" } }, req: ["ticker"],
+      label: (i) => "Earnings record for " + i.ticker,
+      async run(app, S, i) { const sym = String(i.ticker || "").toUpperCase(); const m = await MD.earnings.measure(app, { id: "stock:" + sym, cls: "stock", symbol: sym, name: sym }); return rnd(m); } },
+    economic_calendar: { description: "US economic releases for a date (default today): time (GMT), event, actual, consensus and previous, from Nasdaq's economic calendar.", props: { date: { type: "string", description: "YYYY-MM-DD" } }, req: [],
+      label: (i) => "Economic calendar" + (i && i.date ? " " + i.date : ""),
+      async run(app, S, i) { const d = i && /^\d{4}-\d{2}-\d{2}$/.test(i.date || "") ? i.date : new Date().toISOString().slice(0, 10); const rows = await D.calendar.economic(d); return { date: d, events: rows.filter(x => /United States|US/i.test(x.country || "")).slice(0, 25).map(x => ({ gmt: x.gmt, event: x.event, actual: x.actual || null, consensus: x.consensus || null, previous: x.previous || null })) }; } },
     compare_returns: { description: "Measured 1-year return, volatility, max drawdown and Sharpe ratio for up to 5 tickers or coins side by side (e.g. against SPY or SGOV as baselines).", props: { symbols: { type: "array", items: { type: "string" } } }, req: ["symbols"],
       label: (i) => "Compare " + (i.symbols || []).join(", "),
       async run(app, S, i) { const syms = (Array.isArray(i.symbols) ? i.symbols : []).slice(0, 5).map(String); return Promise.all(syms.map(async (s) => { try { const a = await findAsset(s); const hs = await D.historyFor(a, "1Y"); const st = C.seriesStats(hs.points, hs.ppy || 252); return rnd({ symbol: a.symbol, returnPct: st.changePct, volPct: st.volPct, maxDrawdownPct: st.maxDrawdownPct, sharpe: st.sharpe }); } catch (e) { return { symbol: s, error: U.errorText(e) }; } })); } }
   };
+  /* Tool router. The runtime caps how many tools one request may carry (limits().tools.maxCount), so each request
+     gets the core tools, then the groups the question is about, then the rest in the caller's priority order.
+     Betting tools ride along only when the question is about betting. */
+  const INTENTS = [
+    ["betting", /\b(bets?|betting|parlays?|spreads?|moneyline|wager|stake|sportsbooks?|nfl|nba|mlb|nhl|wnba|ncaa|premier league|la liga|serie a|bundesliga|ligue 1|soccer|football|basketball|baseball|hockey|games?|match|props?|touchdowns?|dolphins|chiefs|lakers)\b/i, ["get_betting_odds", "bet_math", "get_my_bets", "get_injuries", "get_scoreboard", "get_game_forecast", "build_slips", "add_to_slip", "get_slip", "get_ai_track_record"]],
+    ["intraday", /day ?trad|intraday|scalp|vwap|opening range|\bgaps?\b|gapp|pre-?market|after-?hours|support|resistance|\bstop\b|\bentry\b|\blevels?\b|\bmovers?\b/i, ["intraday_levels", "movers", "economic_calendar", "explain_move"]],
+    ["market", /market|macro|\bfed\b|\brates?\b|yields?|inflation|\bcpi\b|jobs|economy|recession|sectors?|regime|why .*(fell|drop|rose|rall|moved?|down|up)|what moved|driving/i, ["market_pulse", "market_memory", "explain_move", "economic_calendar"]],
+    ["odds", /chance|probab|likel|will .*(rise|fall|go|hit)|predict|forecast|upside|downside|expect|targets?/i, ["base_rates", "price_range", "project_price", "options_move", "track_record"]],
+    ["earnings", /earnings?|\beps\b|guidance|quarter|results/i, ["earnings_info", "options_move"]],
+    ["smart", /congress|politic|senator|pelosi|buffett|insiders?|13f|superinvestor|smart money|hedge fund/i, ["smart_money", "insider_activity"]],
+    ["options", /options?|implied|straddle|volatil/i, ["options_move", "price_range"]],
+    ["portfolio", /portfolio|holdings?|diversif|allocat|rebalanc|my (stocks|positions)|concentrat/i, ["get_portfolio_context", "analyze_portfolio", "my_portfolio", "compare_alternatives", "compare_returns"]]];
+  function selectTools(tools, text, max, core) {
+    max = max || 20; text = String(text || "");
+    const by = new Map(tools.map(t => [t.name, t])), out = [], add = (n) => { const t = by.get(n); if (t && !out.includes(t) && out.length < max) out.push(t); };
+    (core || []).forEach(add);
+    for (const [, re, names] of INTENTS) if (re.test(text)) names.forEach(add);
+    const betting = new Set(INTENTS[0][2]), wantsBets = INTENTS[0][1].test(text);
+    for (const t of tools) if (wantsBets || !betting.has(t.name)) add(t.name);
+    return out;
+  }
+  const intentsOf = (text) => INTENTS.filter(([, re]) => re.test(String(text || ""))).map(([n]) => n);
+  // The runtime's tool cap for one request (20 when it doesn't say).
+  async function toolCap(app) { const lim = app.caps.sample && app.caps.sample.limits ? await app.caps.sample.limits().catch(() => null) : null; return (lim && lim.tools && lim.tools.maxCount) || 20; }
+
+  /* Base rates and the direction model for one asset over `days` calendar days, plus volatility-based move odds. */
+  async function baseRatesFor(a, days) {
+    const Q = MD.quant, hs = await D.dailyLong(a), ppy = hs.ppy || (a.cls === "crypto" ? 365 : 252);
+    const bars = Q.barsFor(days, ppy), br = Q.baseRates(hs.points, bars, { ppy });
+    if (!br) throw new Error("Not enough history for " + a.symbol + " over " + days + " days.");
+    const yr = hs.points.slice(-Math.round(ppy)), st = C.seriesStats(yr, ppy), model = Q.directionModel(br);
+    return { symbol: a.symbol, days, bars, history: { source: hs.source, from: iso(hs.points[0].time), to: iso(hs.points[hs.points.length - 1].time), points: hs.points.length },
+      overall: br.overall, conditions: br.conditions, now: br.now, model, volPct: st.volPct, chanceOfMoveOver10Pct: Q.bigMoveChance(st.volPct, days, 10), chanceOfMoveOver20Pct: Q.bigMoveChance(st.volPct, days, 20),
+      note: "Up/down rates count every overlapping " + bars + "-bar window; 'independent' is the honest sample size. The model shrinks toward 50% when evidence is thin and never goes beyond 25–75% on history alone." };
+  }
   // Tool objects in the shape app.caps.sample expects; failures come back as readable errors.
   function tools(app, S, names) {
     return (names || Object.keys(TOOLS)).filter(n => TOOLS[n]).map(n => {
@@ -165,6 +224,8 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
 
   // The investor profile from Settings, told to every AI feature so its judgements fit this person.
   const RISK = { low: "conservative (protect capital first)", mid: "balanced", high: "aggressive (accepts large drawdowns)" }, HZ = { short: "under a year", mid: "1–3 years", long: "5+ years" };
+  // Investor profile plus what the Market Brain has learned, for every AI prompt on the desk.
+  function contextNote(app) { const m = MD.brain ? MD.brain.note(app) : ""; return profileNote(app) + (m ? "\n" + m : ""); }
   function profileNote(app) {
     const p = (app.settings && app.settings.profile) || {};
     return "Investor profile (set by the user in Settings; respect it): risk appetite " + (RISK[p.risk] || RISK.mid) + "; typical holding period " + (HZ[p.horizon] || HZ.mid) + (p.income ? "; wants income (dividends)" : "") + (p.goals ? "; goals: " + String(p.goals).slice(0, 300) : "") + (p.avoid ? "; avoid: " + String(p.avoid).slice(0, 200) : "") + "; experience: " + ((app.settings && app.settings.mode) || "intermediate") + ".";
@@ -182,8 +243,12 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
         try {
           const dueDay = Math.floor(f.dueAt / 864e5);
           const s = await D.historyFor(f.asset, (Date.now() - f.dueAt) / 864e5 > 300 ? "5Y" : "1Y");
-          const pt = s.points.find(p => Math.floor(p.time / 86400) >= dueDay) || s.points[s.points.length - 1];
-          if (Math.floor(pt.time / 86400) < dueDay - 4) continue; // the due date's close isn't in yet
+          const after = s.points.find(p => Math.floor(p.time / 86400) >= dueDay);
+          // Wait for the due day's close; fall back to the last close before it only once the date is well past
+          // (a weekend or holiday due date), never for same-day and next-day calls.
+          if (!after && (Date.now() - f.dueAt < 3 * 864e5 || (f.horizonDays || 0) <= 2)) continue;
+          const pt = after || s.points[s.points.length - 1];
+          if (Math.floor(pt.time / 86400) < dueDay - 4) continue;
           const price = pt.close ?? pt.value, ev = C.evaluateForecast(f, price);
           if (ev && !app.store.cached("evals").some(e => e.forecastId === f.id)) { await app.store.create("evals", Object.assign({ forecastId: f.id, evaluatedAt: Date.now(), priceAtDue: price, priceDate: iso(pt.time), priceSource: s.source, probability: f.probability, source: f.source }, ev)); n++; }
         } catch (e) { failed.push({ symbol: f.symbol, error: U.errorText(e) }); }
@@ -192,7 +257,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     })().finally(() => { scoring = null; });
     return scoring;
   }
-  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", ai: "Deep Research", user: "Your own forecasts" };
+  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", "ai-day": "Day-trade plans", ai: "Deep Research", user: "Your own forecasts" };
   /* Per-source accuracy and a calibration chart: for each stated-probability band, how often calls came true. */
   function scorecard(app) {
     const fcs = app.store.cached("forecasts"), evals = app.store.cached("evals");
@@ -267,5 +332,5 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { findAsset, session, tools, TOOLS, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

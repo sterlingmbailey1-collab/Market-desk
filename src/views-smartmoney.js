@@ -577,7 +577,7 @@
         const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are analysing ${who}, for an investor deciding whether following these disclosures is useful and which positions look most interesting now.
 The app measured everything below from ${e.kind === "pol" ? "official STOCK Act disclosures (via Capitol Trades)" : "13F filings (via Dataroma)"} and exchange closes. Use these numbers as given; never invent figures, dates or trades.
 Rules: be neutral and factual. ${e.kind === "pol" ? "Disclosures cannot show why a trade was made: never suggest or imply insider trading, wrongdoing or access to non-public information. Many trades are made by spouses or outside managers. Filings arrive up to 45 days late, so a follower only gets the copy (publish-date) return." : "A 13F is a quarter-end snapshot of US long positions, filed up to 45 days later; it omits shorts, cash and non-US holdings."} A few dozen trades or one snapshot is weak evidence; a high return can be luck.
-${MD.ai.profileNote(app)}
+${MD.ai.contextNote(app)}
 ${tools ? "Use 3 to 8 tool calls: search_news for the 2–4 largest or most recent positions (one company per call), and stock_snapshot for the same tickers. Use search_web only if search_news fails. Cite only URLs the tools returned." : "Tools are unavailable, so say that news wasn't checked."}
 Measured data: ${JSON.stringify(facts)}
 Reply with ONLY JSON:

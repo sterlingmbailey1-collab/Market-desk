@@ -44,12 +44,12 @@
   }
   async function preview(app, m, S, signal) {
     const lim = await app.caps.sample.limits().catch(() => null);
-    const tools = lim && lim.tools ? A().tools(app, S, ["search_news", "zacks_view", "stock_snapshot", "search_web"]) : undefined;
+    const tools = lim && lim.tools ? A().tools(app, S, ["search_news", "zacks_view", "stock_snapshot", "search_web", "market_memory", "base_rates"]) : undefined;
     const facts = A().rnd({ symbol: m.symbol, name: m.name, price: m.price, nextReport: m.nextDate, daysToNext: m.daysToNext, nextQuarterConsensus: m.nextQuarter, nextYearConsensus: m.nextYear, lastFourReports: m.past, beatsOfLastFour: m.beats, avgAbsTwoDayReactionPct: m.avgAbsReactionPct, optionsImpliedMove: m.implied });
     const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. Write an earnings preview for ${m.name || m.symbol} (${m.symbol}) from the measured data below. ${tools ? "Use 2 to 6 tool calls: search_news for what the market expects and recent company news (one focused query each), zacks_view for estimate revisions and the Zacks view. Cite only URLs the tools returned." : ""}
 Be specific about what matters this quarter (guidance, margins, segments, demand signals). Use the measured beat rate and typical reaction as the base rate; the options-implied move includes normal daily moves until that expiry. Never invent figures. No advice to trade.
 ${A().calibrationNote(A().trackRecord(app))}
-${A().profileNote(app)}
+${A().contextNote(app)}
 Measured: ${JSON.stringify(facts)}
 Reply with ONLY JSON: {"setup": "2-3 sentences", "watch": ["3-5 metrics or topics that will decide the reaction"], "bulls": "what bulls need to hear", "bears": "what bears fear",
  "scenarios": [{"name": "Beat and raise"|"In line"|"Miss or weak guide", "probabilityPct": number, "likelyMovePct": number (signed), "why": "..."}],
