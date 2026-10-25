@@ -112,5 +112,32 @@
     return { game: g ? { home: isHome, opponent: isHome ? g.away.name : g.home.name, status: g.status || null, date: g.date || null } : null, injury: me ? { status: me.status, comment: me.comment } : null };
   }
 
-  MD.props = { PROPS_URL, DFS, parseVIProps, loadProps, parseGameLog, espnId, playerLogs, model, edge, context, slug };
+  /* NFL anytime touchdown: one "Yes" price per book. The fair chance is estimated from the median price across
+     books with an assumed margin removed (the page shows no "No" prices to de-vig against); a book far from the
+     others is flagged as a likely different market (first TD, or a stale line) and left out. */
+  const TD_URL = "https://www.vegasinsider.com/nfl/odds/player-props/", TD_MARGIN = 0.05;
+  function parseVITD(text) {
+    const t = String(text || ""); let books = null; const out = [];
+    for (const line of t.split(/\r?\n/)) {
+      if (!/^\s*\|/.test(line)) continue;
+      const c = cellsOf(line);
+      if (/^Time$|^Player$/i.test(c[0]) && c.length > 2) { books = c.slice(1); continue; }
+      if (!books || /^-+$/.test(c[0]) || /^Filter/i.test(c[0]) || !c[0]) continue;
+      const row = { player: c[0], books: {} };
+      books.forEach((b, i) => { const m = String(c[i + 1] || "").match(/^([+-]\d+|even)$/i); if (!m) return; const am = /even/i.test(m[1]) ? 100 : Number(m[1]); const dec = O.amToDec(am); row.books[b] = { am, dec, implied: 1 / dec }; });
+      const imps = Object.values(row.books).map(x => x.implied); if (imps.length < 2) continue;
+      const med = median(imps);
+      for (const x of Object.values(row.books)) x.outlier = Math.abs(x.implied - med) > 0.15;
+      const ok = Object.entries(row.books).filter(([, x]) => !x.outlier);
+      row.medianImplied = med; row.fair = Math.max(0.01, med * (1 - TD_MARGIN));
+      row.best = ok.reduce((b, [book, x]) => !b || x.dec > b.dec ? Object.assign({ book }, x) : b, null);
+      row.edge = row.best ? row.fair * row.best.dec - 1 : null;
+      row.bookCount = imps.length; row.outliers = Object.entries(row.books).filter(([, x]) => x.outlier).map(([b]) => b);
+      out.push(row);
+    }
+    return { props: out, books: books || [], url: TD_URL, margin: TD_MARGIN };
+  }
+  async function loadTD(force) { return parseVITD(await D.fetchRaw(force ? D.bust(TD_URL) : TD_URL, 60000, 5 * 60e3)); }
+
+  MD.props = { PROPS_URL, TD_URL, DFS, parseVIProps, loadProps, parseVITD, loadTD, parseGameLog, espnId, playerLogs, model, edge, context, slug };
 })(typeof window !== "undefined" ? window : globalThis);

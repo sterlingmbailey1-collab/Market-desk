@@ -12,7 +12,7 @@ const T = __dirname, V = path.join(__dirname, "..", "vendor"), page_ = path.reso
   await ctx.route(/fonts\.(googleapis|gstatic)\.com/, r => r.fulfill({ body: "", contentType: "text/css" }));
   await ctx.addInitScript(() => { if (!localStorage.getItem("__mockdb")) localStorage.setItem("__mockdb", JSON.stringify([["data/users/u_test/md/settings/main", { displayCurrency: "USD", reportingCurrency: "USD", mode: "intermediate", dashboard: ["changes", "portfolio", "fx", "watch", "alerts", "catalysts", "data"], universe: ["SPY", "AAPL"] }]])); });
   await ctx.addInitScript({ path: path.join(T, "bet-fixtures.js") });
-  await ctx.addInitScript({ content: "window.__smartFixtures = " + JSON.stringify(Object.fromEntries(["capitol-pelosi-p1", "capitol-pelosi-p2", "dataroma-brk", "dataroma-brk-activity", "vi-nba-props", "espn-nba-gamelog", "espn-nba-gamelog-2026"].map(f => [f, require("fs").readFileSync(path.join(T, "real", f + ".md"), "utf8")]))) });
+  await ctx.addInitScript({ content: "window.__smartFixtures = " + JSON.stringify(Object.fromEntries(["capitol-pelosi-p1", "capitol-pelosi-p2", "dataroma-brk", "dataroma-brk-activity", "vi-nba-props", "espn-nba-gamelog", "espn-nba-gamelog-2026", "vi-nfl-props"].map(f => [f, require("fs").readFileSync(path.join(T, "real", f + ".md"), "utf8")]))) });
   await ctx.addInitScript({ path: path.join(T, "mock-runtime.js") });
   const p = await ctx.newPage();
   const errs = []; p.on("pageerror", e => errs.push(e.message));

@@ -14,7 +14,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await ctx.route(/fonts\.(googleapis|gstatic)\.com/, r => r.fulfill({ body: "", contentType: "text/css" }));
   await ctx.route(/assets\.tcgdex\.net|images\.ygoprodeck\.com|cardchain\.example/, r => r.fulfill({ status: 404, body: "" }));
   await ctx.addInitScript({ path: path.join(__dirname, "bet-fixtures.js") });
-  await ctx.addInitScript({ content: "window.__smartFixtures = " + JSON.stringify(Object.fromEntries(["capitol-pelosi-p1", "capitol-pelosi-p2", "dataroma-brk", "dataroma-brk-activity", "vi-nba-props", "espn-nba-gamelog", "espn-nba-gamelog-2026"].map(f => [f, require("fs").readFileSync(path.join(__dirname, "real", f + ".md"), "utf8")]))) });
+  await ctx.addInitScript({ content: "window.__smartFixtures = " + JSON.stringify(Object.fromEntries(["capitol-pelosi-p1", "capitol-pelosi-p2", "dataroma-brk", "dataroma-brk-activity", "vi-nba-props", "espn-nba-gamelog", "espn-nba-gamelog-2026", "vi-nfl-props"].map(f => [f, require("fs").readFileSync(path.join(__dirname, "real", f + ".md"), "utf8")]))) });
   await ctx.addInitScript({ path: path.join(__dirname, "mock-runtime.js") });
   const page = await ctx.newPage();
   const errors = [];
@@ -270,7 +270,13 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("settings saved to the account store", savedDoc && savedDoc.reportingCurrency === "EUR" && savedDoc.mode === "beginner", JSON.stringify(savedDoc || {}).slice(0, 200));
   const lsSnap = await page.evaluate(() => Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)])));
   for (let i = 0; i < 3; i++) { await page.reload(); await page.waitForSelector(".nav a"); if (await page.evaluate(() => localStorage.length) > 0) break; await page.waitForTimeout(700); }
-  if (await page.evaluate(() => localStorage.length) === 0) { console.log("   (headless Chromium handed the reloaded page blank storage; restoring the pre-reload snapshot and reloading)"); await page.evaluate((snap) => { for (const [k, v] of Object.entries(snap)) localStorage.setItem(k, v); }, lsSnap); await page.reload(); await page.waitForSelector(".nav a"); }
+  if (await page.evaluate(() => localStorage.length) === 0) {
+    // Headless Chromium sometimes hands a reloaded file:// page blank storage (a browser quirk, not the app). Put the
+    // pre-reload storage back, refill the mock account store from it, and start the app again in place.
+    console.log("   (headless Chromium handed the reloaded page blank storage; restoring the snapshot and restarting the app in place)");
+    await page.evaluate(async (snap) => { for (const [k, v] of Object.entries(snap)) localStorage.setItem(k, v); for (const [k, v] of JSON.parse(snap.__mockdb || "[]")) window.__mock.store.set(k, v); await MD.app.boot(); }, lsSnap);
+    await page.waitForSelector(".nav a");
+  }
   await page.waitForTimeout(1500);
   const s = await page.evaluate(() => ({ r: MD.app.settings.reportingCurrency, m: MD.app.settings.mode, n: MD.app.store.cached("tx").length }));
   check("settings and ledger persist after reload", s.r === "EUR" && s.m === "beginner" && s.n === 4, JSON.stringify(s) + " before=" + JSON.stringify(dbgBefore) + " after=" + JSON.stringify(await page.evaluate(() => ({ keys: [...window.__mock.store.keys()].length, ss: (sessionStorage.getItem("__mockdb") || "").length, url: location.href }))));
@@ -553,6 +559,11 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const pkProps = await page.locator("#content").innerText();
   check("AI prop picks: picks with model vs Claude probability, passes and the review", /Claude 58% · model/i.test(pkProps) && /Passed on/i.test(pkProps) && /Review:/i.test(pkProps), pkProps.slice(-700));
   await page.screenshot({ path: path.join(shots, "e2e-props.png"), fullPage: false });
+  await page.evaluate(() => { MD.app.ls.set("bet.sport", "nfl"); MD.app.go("betting", null, { fromNav: true }); }); await page.waitForTimeout(2000);
+  const tdTxt = await page.locator("#content").innerText();
+  check("NFL anytime TD: consensus fair chance, best price, flagged outlier books", /NFL anytime touchdown/i.test(tdTxt) && /Jahmyr Gibbs/.test(tdTxt) && /flagged/.test(tdTxt), tdTxt.slice(0, 400));
+  await page.click("button:has-text('Pick touchdown scorers with AI')"); await page.waitForTimeout(2500);
+  check("AI touchdown picks against the consensus, reviewed", /to score/.test(await page.locator("#content").innerText()) && /consensus \d+%/.test(await page.locator("#content").innerText()));
   await page.evaluate(() => { MD.app.ls.set("bet.tab", "games"); MD.app.ls.set("bet.sport", "nfl"); });
 
   // ---- Ask AI from any page, with page context

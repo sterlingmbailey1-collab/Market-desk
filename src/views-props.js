@@ -47,7 +47,8 @@
 
   function view(body, app, sport) {
     body.append(h("div", { class: "banner warn" }, h("p", {}, "Player props carry a bigger margin than game lines, and one-player outcomes swing a lot. Bet small, never chase losses. If gambling stops being fun, call or text 1-800-GAMBLER.")));
-    if (sport !== "nba") { body.append(U.section("Player props", h("div", { class: "empty" }, "Player props cover NBA points for now. Pick NBA above to see them."))); return; }
+    if (sport === "nfl") return tdView(body, app);
+    if (sport !== "nba") { body.append(U.section("Player props", h("div", { class: "empty" }, "Player props cover NBA points and NFL anytime touchdowns. Pick NBA or NFL above."))); return; }
     const box = h("div", { class: "stack" });
     body.append(U.section("NBA points props", box));
     U.async(box, () => P().loadProps(), (r) => {
@@ -96,11 +97,47 @@ Reply with ONLY JSON: {"summary": "2 sentences", "picks": [{"player": "...", "si
   }
   const picksView = (app) => (res) => h("div", { class: "stack" }, h("p", {}, res.summary), res.overall ? h("p", { class: "small muted" }, h("strong", {}, "Review: "), res.overall) : null,
     res.picks.length ? res.picks.map(p => h("div", { class: "card aicard", style: "padding:10px 12px" },
-      h("div", { class: "row between", style: "flex-wrap:wrap;gap:6px" }, h("strong", {}, p.player + " " + p.side + " " + p.line), h("span", { class: "small" }, "Claude " + p.probabilityPct.toFixed(0) + "% · model " + p.modelPct.toFixed(0) + "%" + (p.price ? " · " + O.fmtAm(p.price) + " " + p.book + " · EV " + (p.ev * 100).toFixed(1) + "%" : " · no price on this page"))),
+      h("div", { class: "row between", style: "flex-wrap:wrap;gap:6px" }, h("strong", {}, p.player + " " + p.side + (p.line !== "" ? " " + p.line : "")), h("span", { class: "small" }, "Claude " + p.probabilityPct.toFixed(0) + "% · " + (p.side === "to score" ? "consensus " : "model ") + p.modelPct.toFixed(0) + "%" + (p.price ? " · " + O.fmtAm(p.price) + " " + p.book + " · EV " + (p.ev * 100).toFixed(1) + "%" : " · no price on this page"))),
       h("p", { class: "small", style: "margin:6px 0" }, p.why), p.risk ? h("p", { class: "small" }, h("strong", {}, "Risk: "), p.risk) : null, A().reviewBadge(p.review), A().sources(p.sources))) : h("div", { class: "empty" }, "No bet: nothing clears the bar today."),
     res.dropped.length ? h("p", { class: "small muted" }, "Dropped by the review: " + res.dropped.map(p => p.player + " (" + (p.review.note || "") + ")").join("; ")) : null,
     res.passes.length ? A().list("Passed on", res.passes.map(x => x.player + ": " + x.reason)) : null,
     h("p", { class: "tiny muted" }, "Claude's picks from the measured model and the news it retrieved, checked by a second review. Confirm the price in your sportsbook; Market Desk never places bets."));
+
+  /* NFL anytime touchdown: line shopping against the cross-book consensus, then AI picks with news. */
+  function tdView(body, app) {
+    const box = h("div", { class: "stack" });
+    body.append(U.section("NFL anytime touchdown", box));
+    U.async(box, () => P().loadTD(), (r) => {
+      const cols = [
+        { t: "Player", sort: (x) => x.player, v: (x) => h("strong", {}, x.player) },
+        { t: "Fair chance", n: true, sort: (x) => x.fair, v: (x) => pctTxt(x.fair, 1) },
+        { t: "Best price", n: true, sort: (x) => x.best ? x.best.dec : null, v: (x) => x.best ? h("span", { class: "projcell" }, h("b", {}, O.fmtAm(x.best.dec)), h("span", { class: "tiny muted" }, x.best.book)) : "—" },
+        { t: "Median price", n: true, sort: (x) => x.medianImplied, v: (x) => O.fmtAm(1 / x.medianImplied) },
+        { t: "EV at best", n: true, sort: (x) => x.edge, v: (x) => evTxt(x.edge) },
+        { t: "Books", n: true, sort: (x) => x.bookCount, v: (x) => h("span", {}, String(x.bookCount), x.outliers.length ? h("span", { class: "tiny warn-t", title: "Left out as a likely different market: " + x.outliers.join(", ") }, " · " + x.outliers.length + " flagged") : null) }];
+      box.append(h("p", { class: "small muted" }, r.props.length + " players · " + r.books.length + " books · VegasInsider. Fair chance = the median price across books with a " + Math.round(r.margin * 100) + "% margin removed (the page shows no 'No' prices to measure it), so EV here is how much better the best book pays than the consensus, not a model of the player."),
+        U.dataTable(cols, r.props, { key: "props.nfltd", sort: [4, -1], noun: "players", placeholder: "Filter by player…", text: (x) => x.player }),
+        U.section("AI touchdown picks", h("div", { class: "stack" }, h("p", { class: "small muted" }, "Claude checks role, red-zone usage, injuries and game script for the players where the best price beats the consensus, and picks the few with real support (or none). A second review checks each pick."),
+          MD.oppAI.runner(app, "Pick touchdown scorers with AI", (Sx, signal) => tdPicks(app, r, Sx, signal), picksView(app)))));
+    }, { loading: "Reading NFL anytime-touchdown prices from VegasInsider…" });
+  }
+  async function tdPicks(app, r, Sx, signal) {
+    const rows = r.props.filter(x => x.best).sort((a, b) => b.edge - a.edge).slice(0, 16);
+    const facts = rows.map(x => A().rnd({ player: x.player, fairChancePct: x.fair * 100, bestPrice: { book: x.best.book, american: O.fmtAm(x.best.dec), breakevenPct: 100 / x.best.dec }, medianImpliedPct: x.medianImplied * 100, evAtBestPct: x.edge * 100, books: x.bookCount, flaggedBooks: x.outliers }));
+    const lim = await app.caps.sample.limits().catch(() => null);
+    const tools = lim && lim.tools ? A().tools(app, Sx, ["search_news", "search_web"]) : undefined;
+    const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are a disciplined NFL anytime-touchdown analyst. The app read these prices (VegasInsider) and estimated each player's fair chance from the consensus across books.
+${tools ? "Use 2 to 6 tool calls (search_news or search_web) on the players you lean toward: role and snap share, red-zone and goal-line usage, injuries and game status, the matchup and expected game script. Cite only URLs the tools returned." : ""}
+Rules: the consensus is the market's best estimate; only claim value where the best price beats it AND the news supports the player's role. Touchdowns are high-variance; "no bet" is often right. Never invent numbers. At most 0.5% of bankroll per pick.
+Props: ${JSON.stringify(facts)}
+Reply with ONLY JSON: {"summary": "2 sentences", "picks": [{"player": "...", "side": "over", "line": 0.5, "book": "...", "probabilityPct": number, "why": "1-2 sentences", "risk": "...", "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}], "passes": [{"player": "...", "reason": "..."}]}`;
+    const res = await app.caps.sample.json(prompt, Object.assign({ modelTier: "complex", signal }, tools ? { tools } : { cache: false }));
+    const known = new Map(rows.map(x => [x.player, x]));
+    const picks = (res.picks || []).filter(p => known.has(p.player)).slice(0, 5).map(p => { const x = known.get(p.player); return { player: p.player, side: "to score", line: "", book: x.best.book, probabilityPct: Math.max(1, Math.min(90, Number(p.probabilityPct) || x.fair * 100)), modelPct: x.fair * 100, why: String(p.why || ""), risk: String(p.risk || ""), confidence: Math.max(0, Math.min(100, Number(p.confidence) || 0)), sources: Sx.verify(p.sources), price: x.best.dec }; });
+    const rv = await A().review(app, { task: "NFL anytime touchdown picks", S: Sx, signal, facts, items: picks.map(p => ({ id: p.player, probabilityPct: p.probabilityPct, consensusPct: p.modelPct, why: p.why, confidence: p.confidence })) });
+    for (const p of picks) { const rr = rv && rv.reviews.find(x => x.id === p.player); if (rr) p.review = rr; p.ev = (p.probabilityPct / 100) * p.price - 1; }
+    return { summary: String(res.summary || ""), picks: picks.filter(p => !(p.review && p.review.verdict === "drop")), dropped: picks.filter(p => p.review && p.review.verdict === "drop"), passes: (res.passes || []).slice(0, 8), overall: rv && rv.overall };
+  }
 
   MD.propsView = view;
   MD.propsState = S;
