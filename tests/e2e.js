@@ -189,17 +189,28 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const brain1 = await page.evaluate(() => ({ days: MD.app.store.cached("marketdays").length, pb: MD.brain.playbook(MD.app) }));
   const brTxt2 = await page.locator("#content").innerText();
   check("studying a session saves drivers, movers and new cause → effect patterns", brain1.days === 1 && brain1.pb.patterns.length === 2 && /Rates jumped after hot inflation data/i.test(brTxt2) && /Hot CPI lifted yields/i.test(brTxt2) && /Movers explained/i.test(brTxt2) && /hypothesis/i.test(brTxt2), JSON.stringify(brain1).slice(0, 400));
+  const rule1 = await page.evaluate(() => MD.brain.playbook(MD.app).patterns[0]);
+  check("new pattern carries a testable rule, backtested on a year of daily moves", rule1.rule && rule1.rule.cause.symbol === "TLT" && rule1.backtest && rule1.backtest.days > 100 && rule1.backtest.occurrences >= 0 && /1-year backtest/i.test(brTxt2) && /Rule: TLT below -1%/.test(brTxt2), JSON.stringify(rule1.backtest || {}).slice(0, 300));
   const rec1 = await page.evaluate(() => MD.app.store.cached("marketdays")[0]);
   check("session study cites verified sources and flags invented ones", rec1.drivers[0].sources.some(s => s.verified) && rec1.drivers[0].sources.some(s => !s.verified) && rec1.toolCalls > 0);
   await page.click("button:has-text('Study the latest session')"); await page.waitForTimeout(6000);
   const brain2 = await page.evaluate(() => { const pb = MD.brain.playbook(MD.app); return { n: pb.patterns.length, st: pb.patterns.map(p => [p.pattern.slice(0, 30), MD.brain.stats(p)]) }; });
   check("the next study tests the playbook: one pattern held, one failed, a repeat isn't duplicated", brain2.n === 3 && brain2.st[0][1].confirmed === 1 && brain2.st[1][1].contradicted === 1 && brain2.st[2][1].tested === 0, JSON.stringify(brain2));
+  const rec2 = await page.evaluate(() => MD.brain.latestPerDay(MD.app)[0]);
+  check("same-day rules are scored by the app from the measured moves", rec2.patternChecks.some(c => c.measured && c.verdict === "confirmed" && /TLT -1.30%/.test(c.note)), JSON.stringify(rec2.patternChecks));
   const noteTxt = await page.evaluate(() => MD.ai.contextNote(MD.app));
   check("every AI prompt gets the Market Brain's regime, drivers and patterns", /Market Brain/.test(noteTxt) && /Yields eased and tech led again/.test(noteTxt) && /Investor profile/.test(noteTxt), noteTxt.slice(0, 500));
   await page.evaluate(async () => { const r = Object.assign({}, MD.app.store.cached("marketdays")[0]); delete r.id; r.sessionDate = "2026-10-20"; r.headline = "Earlier session"; await MD.app.store.create("marketdays", r); MD.app.rerender(); }); await page.waitForTimeout(3000);
   await page.click("button:has-text('Refine the playbook')"); await page.waitForTimeout(3000);
   const pb3 = await page.evaluate(() => MD.brain.playbook(MD.app));
   check("refining the playbook rewrites, retires and names themes", /10-year yield jumps more than 0.1 point/.test(pb3.patterns[0].pattern) && pb3.patterns[pb3.patterns.length - 1].status === "retired" && pb3.themes[0].theme === "Rates and inflation" && pb3.lessons.length === 1 && /Rates and inflation/i.test(await page.locator("#content").innerText()), JSON.stringify(pb3).slice(0, 500));
+  await page.fill("textarea[aria-label=Hypothesis]", "When oil jumps, energy stocks beat the market"); await page.click("button:has-text('Test it')"); await page.waitForTimeout(3000);
+  const labTxt = await page.locator("#content").innerText();
+  check("hypothesis lab: plain words become a rule, backtested with cases, hit rate and baseline", /Rule tested: USO above \+1% → XLE minus SPY above 0% the same day/.test(labTxt) && /Effect followed/i.test(labTxt) && /On any day/i.test(labTxt) && /Verdict/i.test(labTxt), labTxt.slice(labTxt.search(/Hypothesis lab/i), labTxt.search(/Hypothesis lab/i) + 600));
+  await page.click("button:has-text('Add to the playbook')"); await page.waitForTimeout(800);
+  check("a tested idea joins the playbook", await page.evaluate(() => MD.brain.playbook(MD.app).patterns.some(p => p.source === "user" && p.rule && p.rule.cause.symbol === "USO" && p.backtest)));
+  await page.fill("textarea[aria-label=Hypothesis]", "When it rains in New York, stocks fall"); await page.click("button:has-text('Test it')"); await page.waitForTimeout(1500);
+  check("an untestable idea is explained, not forced", /Not testable with daily moves/i.test(await page.locator("#content").innerText()));
   await page.screenshot({ path: path.join(shots, "e2e-brain.png"), fullPage: true });
 
   // ---- Day Trading: scanner, desk with measured levels, position size, AI plan logged for grading, journal + coach
@@ -219,7 +230,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("AI day plan: odds up/down, setups, invalid stop flagged, reviewed", /Bias: long/i.test(planTxt) && /▲ 5\d%/.test(planTxt) && /VWAP reclaim/i.test(planTxt) && /wrong side of the entry/i.test(planTxt) && /Review:/i.test(planTxt) && await page.locator(".probbar").count() >= 1, planTxt.slice(planTxt.search(/AI plan for the session/i), planTxt.search(/AI plan for the session/i) + 700));
   check("AI day plan logged in the forecast journal, graded at the close", dayFc.length === 1 && dayFc[0].horizonDays === 1 && dayFc[0].dueAt > Date.now() && dayFc[0].flatBandPct === 0 && (await page.evaluate(() => MD.app.store.cached("dayplans").length)) === 1, JSON.stringify(dayFc));
   const tr = await page.evaluate(() => window.__mock.toolResults || {});
-  check("AI tools return measured data: base rates, move split, market memory, earnings, economic calendar", tr.base_rates && tr.base_rates.model.upPct >= 25 && tr.base_rates.model.upPct <= 75 && tr.base_rates.conditions.length >= 1 && tr.explain_move && tr.explain_move.week && Array.isArray(tr.explain_move.week.parts) && tr.market_memory && tr.market_memory.sessionsStudied === 2 && tr.market_memory.patterns.length >= 1 && tr.earnings_info && !tr.earnings_info.error && tr.economic_calendar && tr.economic_calendar.events.length === 1, JSON.stringify(Object.fromEntries(Object.entries(tr).map(([k, v]) => [k, v && v.error ? v.error : "ok"]))));
+  check("AI tools return measured data: backtests, base rates, move split, market memory, earnings, economic calendar", tr.backtest_rule && tr.backtest_rule.days > 100 && /TLT below -1%/.test(tr.backtest_rule.rule) && tr.base_rates && tr.base_rates.model.upPct >= 25 && tr.base_rates.model.upPct <= 75 && tr.base_rates.conditions.length >= 1 && tr.explain_move && tr.explain_move.week && Array.isArray(tr.explain_move.week.parts) && tr.market_memory && tr.market_memory.sessionsStudied === 2 && tr.market_memory.patterns.length >= 1 && tr.earnings_info && !tr.earnings_info.error && tr.economic_calendar && tr.economic_calendar.events.length === 1, JSON.stringify(Object.fromEntries(Object.entries(tr).map(([k, v]) => [k, v && v.error ? v.error : "ok"]))));
   const jr = page.locator("h2.sec", { hasText: "Your trade journal" }).locator("xpath=ancestor::section[1]");
   await jr.locator("input[placeholder='NVDA']").fill("MSFT");
   await jr.locator("input[type=number]").nth(0).fill("10"); await jr.locator("input[type=number]").nth(1).fill("400"); await jr.locator("input[type=number]").nth(2).fill("404"); await jr.locator("input[type=number]").nth(3).fill("398");
@@ -341,8 +352,10 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const savedDoc = await page.evaluate(() => { for (const [k, v] of window.__mock.store) if (/\/settings\/main$/.test(k)) return v; return null; });
   check("settings saved to the account store", savedDoc && savedDoc.reportingCurrency === "EUR" && savedDoc.mode === "beginner", JSON.stringify(savedDoc || {}).slice(0, 200));
   const lsSnap = await page.evaluate(() => Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)])));
-  for (let i = 0; i < 3; i++) { await page.reload(); await page.waitForSelector(".nav a"); if (await page.evaluate(() => localStorage.length) > 0) break; await page.waitForTimeout(700); }
-  if (await page.evaluate(() => localStorage.length) === 0) {
+  // The app writes a few keys as it boots, so check for the mock account database itself, not just any key.
+  const hasDb = () => page.evaluate(() => !!localStorage.getItem("__mockdb"));
+  for (let i = 0; i < 3; i++) { await page.reload(); await page.waitForSelector(".nav a"); if (await hasDb()) break; await page.waitForTimeout(700); }
+  if (!(await hasDb())) {
     // Headless Chromium sometimes hands a reloaded file:// page blank storage (a browser quirk, not the app). Put the
     // pre-reload storage back, refill the mock account store from it, and start the app again in place.
     console.log("   (headless Chromium handed the reloaded page blank storage; restoring the snapshot and restarting the app in place)");

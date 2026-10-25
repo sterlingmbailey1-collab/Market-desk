@@ -288,6 +288,22 @@
     const st = Q.tradeStats([{ side: "long", entry: 10, exit: 11, shares: 100, stop: 9.5 }, { side: "short", entry: 20, exit: 21, shares: 50, stop: 21 }, { side: "long", entry: 5, exit: 5.5, shares: 100 }]);
     eq(st.n, 3); near(st.net, 100, 1e-9); near(st.winRatePct, 200 / 3, 1e-9); near(st.profitFactor, 3, 1e-9); near(st.avgR, 0.5, 1e-9);
   });
+  test("cause → effect rules: cleaning, backtest against the baseline, today's check", () => {
+    const Q = MD.quant, r = MD.core.rng(5), g = MD.core.gauss;
+    const R0 = Q.cleanRule({ cause: { symbol: "tlt", op: "<", pct: "-1" }, effect: { symbol: "XLK", vs: "spy", op: "<", pct: 0 }, lagDays: 0 });
+    eq(R0.cause.symbol, "TLT"); eq(R0.effect.vs, "SPY"); eq(R0.cause.pct, -1); ok(!Q.cleanRule({ cause: { symbol: "TLT", op: "=", pct: 1 }, effect: { symbol: "SPY", op: "<", pct: 0 } }), "bad operator rejected");
+    eq(Q.ruleText(R0), "TLT below -1% → XLK minus SPY below 0% the same day");
+    // Built so the rule holds: on days TLT drops >1%, XLK trails SPY by 0.5% plus noise.
+    let t = 100, s = 100, x = 100; const T = [], S = [], X = [];
+    for (let i = 0; i < 400; i++) { const rt = 0.012 * g(r), rs = 0.01 * g(r), rx = rs + (rt < -0.01 ? -0.006 : 0) + 0.002 * g(r); t *= 1 + rt; s *= 1 + rs; x *= 1 + rx; const tm = 1.6e9 + i * 86400; T.push({ time: tm, close: t }); S.push({ time: tm, close: s }); X.push({ time: tm, close: x }); }
+    const b = Q.backtestRule(R0, { TLT: T, SPY: S, XLK: X });
+    ok(b.occurrences > 40 && b.heldPct > 85 && b.baselinePct < 70 && b.z > 3, JSON.stringify(b).slice(0, 200)); eq(b.days, 399); ok(b.recent.length === 6);
+    eq(Q.backtestVerdict(b), "Strong: well above chance");
+    ok(Q.backtestRule(R0, { TLT: T, SPY: S }).error, "missing history reported");
+    const lag = Q.backtestRule(Object.assign({}, R0, { lagDays: 1 }), { TLT: T, SPY: S, XLK: X }); ok(lag.z < 2, "no next-day effect was built in");
+    const td = Q.ruleToday(R0, { TLT: -1.4, SPY: 0.2, XLK: -0.6 }); ok(td.causeHappened && td.effectFollowed); near(td.effectPct, -0.8, 1e-9);
+    ok(!Q.ruleToday(R0, { TLT: 0.3, SPY: 0, XLK: 0 }).causeHappened); eq(Q.ruleToday(R0, { TLT: -2 }), null);
+  });
   test("New York session clock and NYSE holidays", () => {
     const Q = MD.quant;
     const a = Q.session(new Date("2026-10-26T14:00:00Z")); eq(a.phase, "open"); near(a.fraction, 30 / 390, 1e-9); eq(a.minutesToClose, 360);

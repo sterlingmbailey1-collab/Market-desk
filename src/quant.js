@@ -135,6 +135,61 @@
     return vx > 0 && vy > 0 ? c / Math.sqrt(vx * vy) : null;
   }
 
+  /* ---------- testable cause → effect rules ---------- */
+  /* A rule over daily % moves: {cause: {symbol, op: "<"|">", pct}, effect: {symbol, vs?, op, pct}, lagDays: 0|1}.
+     "When TLT falls more than 1%, XLK trails SPY the same day" =
+     {cause: {symbol: "TLT", op: "<", pct: -1}, effect: {symbol: "XLK", vs: "SPY", op: "<", pct: 0}, lagDays: 0}. */
+  const opHolds = (op, x, pct) => op === "<" ? x < pct : x > pct;
+  function cleanRule(r) {
+    if (!r || !r.cause || !r.effect) return null;
+    const sym = (s) => String(s || "").toUpperCase().replace(/[^A-Z.\-]/g, "").slice(0, 8), op = (o) => o === "<" || o === ">" ? o : null, num = (x) => isFinite(Number(x)) ? Math.max(-50, Math.min(50, Number(x))) : null;
+    const c = { symbol: sym(r.cause.symbol), op: op(r.cause.op), pct: num(r.cause.pct) }, e = { symbol: sym(r.effect.symbol), vs: r.effect.vs ? sym(r.effect.vs) : null, op: op(r.effect.op), pct: num(r.effect.pct) ?? 0 };
+    if (!c.symbol || !c.op || c.pct == null || !e.symbol || !e.op || (e.vs && e.vs === e.symbol)) return null;
+    return { cause: c, effect: e, lagDays: Number(r.lagDays) === 1 ? 1 : 0 };
+  }
+  function ruleText(r) {
+    if (!r) return "";
+    const c = r.cause, e = r.effect, sign = (x) => (x > 0 ? "+" : "") + x + "%";
+    return c.symbol + " " + (c.op === "<" ? "below " : "above ") + sign(c.pct) + " → " + e.symbol + (e.vs ? " minus " + e.vs : "") + " " + (e.op === "<" ? "below " : "above ") + sign(e.pct) + (r.lagDays ? " the next day" : " the same day");
+  }
+  /* On the days the cause held, how often the effect followed, against how often the effect happens on any day.
+     `series` maps symbols to daily points. z is the binomial z-score of the difference. */
+  function backtestRule(rule, series) {
+    const R = {}; for (const [s, pts] of Object.entries(series)) if (pts && pts.length > 2) R[s] = dailyReturns(pts);
+    const c = rule.cause, e = rule.effect, lag = rule.lagDays ? 1 : 0, need = [c.symbol, e.symbol].concat(e.vs ? [e.vs] : []);
+    const missing = need.filter(s => !R[s]); if (missing.length) return { error: "No history for " + missing.join(", ") };
+    const days = [...R[c.symbol].keys()].filter(d => need.every(s => R[s].has(d))).sort((a, b) => a - b);
+    let occ = 0, held = 0, all = 0, allHeld = 0; const recent = [];
+    for (let i = 0; i + lag < days.length; i++) {
+      const d2 = days[i + lag], ev = (R[e.symbol].get(d2) - (e.vs ? R[e.vs].get(d2) : 0)) * 100, okE = opHolds(e.op, ev, e.pct);
+      all++; if (okE) allHeld++;
+      const cv = R[c.symbol].get(days[i]) * 100;
+      if (opHolds(c.op, cv, c.pct)) { occ++; if (okE) held++; recent.push({ date: new Date(days[i] * 864e5).toISOString().slice(0, 10), causePct: r1(cv), effectPct: r1(ev), held: okE }); }
+    }
+    const base = all ? allHeld / all : null, rate = occ ? held / occ : null;
+    const z = occ && base > 0 && base < 1 ? (rate - base) / Math.sqrt(base * (1 - base) / occ) : null;
+    return { occurrences: occ, held, heldPct: rate == null ? null : r1(rate * 100), baselinePct: base == null ? null : r1(base * 100), liftPts: rate == null || base == null ? null : r1((rate - base) * 100), z: z == null ? null : Math.round(z * 10) / 10, days: all,
+      from: days.length ? new Date(days[0] * 864e5).toISOString().slice(0, 10) : null, to: days.length ? new Date(days[days.length - 1] * 864e5).toISOString().slice(0, 10) : null, recent: recent.slice(-6) };
+  }
+  // Whether a same-day rule's cause happened in today's moves ({symbol: % change}), and if so whether the effect followed.
+  function ruleToday(rule, moves) {
+    if (!rule || rule.lagDays) return null;
+    const c = rule.cause, e = rule.effect;
+    if ([c.symbol, e.symbol, e.vs].filter(Boolean).some(s => moves[s] == null)) return null;
+    if (!opHolds(c.op, moves[c.symbol], c.pct)) return { causeHappened: false };
+    const ev = moves[e.symbol] - (e.vs ? moves[e.vs] : 0);
+    return { causeHappened: true, effectFollowed: opHolds(e.op, ev, e.pct), causePct: r1(moves[c.symbol]), effectPct: r1(ev) };
+  }
+  // How convincing a backtest is, in words.
+  function backtestVerdict(b) {
+    if (!b || b.error) return b && b.error ? b.error : "Not tested";
+    if (b.occurrences < 8) return "Too few cases to judge (" + b.occurrences + ")";
+    if (b.z >= 2) return "Strong: well above chance";
+    if (b.z >= 1) return "Some evidence";
+    if (b.z <= -1) return "Against it: the effect is rarer than usual";
+    return "No better than chance";
+  }
+
   /* ---------- day trading ---------- */
   // Session VWAP with ±1σ bands from bars {time, high, low, close, volume}.
   function vwap(bars) {
@@ -214,6 +269,6 @@
     return { phase, date: t.ymd, tradingDay: trading, earlyClose: EARLY.has(t.ymd), closeAt: close === 780 ? "1:00 p.m." : "4:00 p.m.", fraction: Math.max(0, Math.min(1, frac)), minutesToClose: phase === "open" ? Math.round(close - t.mins) : null, minutesToOpen: toOpen, nyMinutes: t.mins };
   }
 
-  MD.quant = { rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -22,6 +22,8 @@
   const BTC = { id: "crypto:bitcoin", cls: "crypto", cgId: "bitcoin", symbol: "BTC", name: "Bitcoin" };
   const assetOf = (s) => s === "BTC" ? BTC : etf(s);
   const r1 = (x) => x == null || !isFinite(x) ? null : Math.round(x * 10) / 10;
+  // How Claude writes a testable rule (quant.js backtests it over daily moves).
+  const RULE_HELP = "Rules are over DAILY % moves. Instruments: " + FACTORS.map(f => f[0] + " (" + f[1] + ")").join(", ") + ", BTC (Bitcoin); any other US stock or ETF ticker also works (e.g. JETS airlines, KBE banks, XHB homebuilders, SOXX chips). Shape: {\"cause\": {\"symbol\": \"TLT\", \"op\": \"<\", \"pct\": -1}, \"effect\": {\"symbol\": \"XLK\", \"vs\": \"SPY\", \"op\": \"<\", \"pct\": 0}, \"lagDays\": 0} means: on days TLT falls more than 1%, XLK's move minus SPY's is below 0 the same day (lagDays 1 = the next day). \"vs\" is optional.";
   async function pool(items, n, fn) { const out = new Array(items.length); let i = 0; await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; try { out[k] = await fn(items[k], k); } catch (e) { out[k] = { error: e }; } } })); return out; }
 
   /* ---------- measured market picture ---------- */
@@ -90,6 +92,35 @@
       today, week, typicalAssetSpecificDailyPct: r1(residDaily), unexplainedZ: z == null ? null : Math.round(z * 10) / 10, verdict, note: cls === "crypto" ? "Coin moves are 24-hour changes; the ETFs' are session changes." : null };
   }
 
+  /* ---------- testable rules ---------- */
+  // Daily histories for a rule's symbols: the pulse's 1-year histories when loaded, otherwise fetched.
+  async function seriesFor(app, syms, tf, P) {
+    const out = {};
+    await pool(syms, 4, async (s) => {
+      if (tf === "1Y" && P && P.by[s] && P.by[s].hist) { out[s] = P.by[s].hist.points; return; }
+      const a = s === "BTC" ? BTC : NAME[s] || D.stocks.ETFS.some(e => e[0] === s) ? etf(s) : { id: "stock:" + s, cls: "stock", symbol: s, name: s };
+      try { out[s] = (await D.historyFor(a, tf)).points; } catch { if (a.cls === "stock") try { out[s] = (await D.historyFor(etf(s), tf)).points; } catch {} }
+    });
+    return out;
+  }
+  async function backtest(app, rule, tf, P) {
+    const syms = [...new Set([rule.cause.symbol, rule.effect.symbol].concat(rule.effect.vs ? [rule.effect.vs] : []))];
+    return Object.assign(Q.backtestRule(rule, await seriesFor(app, syms, tf || "1Y", P)), { lookback: tf || "1Y", at: Date.now() });
+  }
+  const btLine = (b) => !b ? "" : b.error ? b.error : "cause happened " + b.occurrences + " times; effect followed " + b.held + " (" + (b.heldPct ?? "—") + "%) vs " + (b.baselinePct ?? "—") + "% on all days" + (b.z != null ? " (z " + b.z + ")" : "");
+  // Turn a plain-English idea into a rule and backtest it.
+  async function testIdea(app, text, tf) {
+    const s = app.caps.sample; if (!s) throw Object.assign(new Error("Claude isn't available in this view."), { code: "no_sample" });
+    const r = await s.json(`Turn this market hypothesis into a rule the app can backtest, or say plainly why it can't be tested with daily price moves. ${RULE_HELP}
+Use ETFs as proxies where sensible (yields up = TLT down; oil = USO; airlines = JETS). Pick thresholds that match the idea: a "big" daily move is usually 1–2% for stock funds, 3–5% for bitcoin.
+Hypothesis: ${JSON.stringify(String(text).slice(0, 400))}
+Reply with ONLY JSON: {"testable": true|false, "why": "one sentence: what the rule measures, or why it can't be tested", "pattern": "When <cause>, <effect>", "rule": {...} or null}`, { cache: false });
+    const rule = r.testable ? Q.cleanRule(r.rule) : null;
+    if (!rule) return { testable: false, why: String(r.why || "This idea can't be expressed as a rule over daily moves.") };
+    const P = await pulse(app, { history: true }).catch(() => null);
+    return { testable: true, why: String(r.why || ""), pattern: String(r.pattern || "").slice(0, 220), rule, backtest: await backtest(app, rule, tf, P) };
+  }
+
   /* ---------- the playbook (cause → effect patterns with a scored record) ---------- */
   const PB_ID = "playbook";
   function playbook(app) { const d = app.store.cached("brain").find(x => x.id === PB_ID); return d ? JSON.parse(JSON.stringify(d)) : { patterns: [], themes: [], lessons: [], narrative: "" }; }
@@ -131,13 +162,14 @@
     const pb = playbook(app), active = pb.patterns.filter(p => p.status !== "retired");
     const measured = { sessionDate, sessionPhase: sess.phase, instruments: P.rows.map(r => ({ symbol: r.symbol, name: r.name, todayPct: r1(r.changePct), fiveDayPct: r1(r.ret5d), oneMonthPct: r1(r.ret1m) })), regime: P.regime, largeCapMovers: bigMovers, notableMovers: notable, crypto: cryptoMoves, economicReleases: events, largeCapEarnings: reports };
     const prior = latestPerDay(app).filter(r => r.sessionDate !== sessionDate).slice(0, 5).map(r => ({ date: r.sessionDate, headline: r.headline, drivers: (r.drivers || []).map(d => d.driver) }));
-    const tools = MD.ai.tools(app, S, ["search_news", "search_web", "read_page", "crypto_news", "explain_move", "stock_snapshot"]);
+    const tools = MD.ai.tools(app, S, ["search_news", "search_web", "read_page", "crypto_news", "explain_move", "stock_snapshot", "backtest_rule"]);
     e = step("Claude is explaining the session and testing the playbook (usually 1–3 minutes)");
     const prompt = `You are Market Desk's market analyst. Your job is to understand WHY markets moved in the session of ${sessionDate}${sess.phase === "open" ? " (still in progress)" : ""}, so the desk learns cause and effect over time.
 The app measured the session below. Use 4 to 10 tool calls: search_news for the big moves and the macro story (one topic per call), explain_move for one or two large movers whose move needs separating from the market, search_web if news comes up empty. Cite only URLs the tools returned. Never invent figures; use the measured numbers.
-Explain the session: the main drivers (with evidence), which instruments each one moved and how much (measured), and the biggest movers' reasons. Then test the playbook: for each existing pattern whose CAUSE actually occurred this session, say whether the EFFECT followed (confirmed) or not (contradicted); skip patterns not tested. Propose at most 3 new patterns only if this session gives a clear, checkable example of a cause and its effect (phrase them as "When <cause>, <effect>"). Be honest about one-off noise.
+Explain the session: the main drivers (with evidence), which instruments each one moved and how much (measured), and the biggest movers' reasons. Then test the playbook: for each existing pattern whose CAUSE actually occurred this session, say whether the EFFECT followed (confirmed) or not (contradicted); skip patterns not tested and patterns marked scoredByApp (the app scores those from the measured moves). Propose at most 3 new patterns only if this session gives a clear, checkable example of a cause and its effect (phrase them as "When <cause>, <effect>"), each with a testable rule when one exists so the app can backtest it. Be honest about one-off noise.
+${RULE_HELP}
 Measured session: ${JSON.stringify(measured)}
-Playbook patterns: ${JSON.stringify(active.map(p => ({ id: p.id, pattern: p.pattern, record: stats(p) })))}
+Playbook patterns: ${JSON.stringify(active.map(p => ({ id: p.id, pattern: p.pattern, record: stats(p), rule: p.rule ? Q.ruleText(p.rule) : null, scoredByApp: !!(p.rule && !p.rule.lagDays), backtest1y: p.backtest && !p.backtest.error ? { cases: p.backtest.occurrences, heldPct: p.backtest.heldPct, baselinePct: p.backtest.baselinePct } : null })))}
 Recent sessions you studied: ${JSON.stringify(prior)}
 Reply with ONLY JSON:
 {"headline": "one sentence: what the session was about",
@@ -145,7 +177,7 @@ Reply with ONLY JSON:
  "drivers": [{"driver": "short name", "category": "rates"|"inflation"|"growth data"|"earnings"|"central banks"|"policy"|"geopolitics"|"AI & tech"|"energy"|"crypto"|"flows & positioning"|"other", "explanation": "how it moved markets, citing measured moves", "effects": [{"on": "SPY or a sector ETF or ticker", "direction": "up"|"down", "movePct": number}], "strength": "major"|"moderate"|"minor", "persistence": "one-day"|"developing"|"ongoing theme", "sources": [{"title": "...", "url": "https://..."}]}],
  "movers": [{"symbol": "...", "movePct": number, "why": "one sentence", "source": "https://... or null"}],
  "patternChecks": [{"id": "pattern id", "verdict": "confirmed"|"contradicted", "note": "the measured evidence"}],
- "newPatterns": [{"pattern": "When <cause>, <effect>", "cause": "...", "effect": "...", "category": "same list as drivers", "evidence": "this session's measured example"}],
+ "newPatterns": [{"pattern": "When <cause>, <effect>", "cause": "...", "effect": "...", "category": "same list as drivers", "evidence": "this session's measured example", "rule": {...} or null}],
  "regime": {"label": "a few words", "note": "one sentence on what kind of market this is and what it rewards"},
  "watchNext": ["2-4 things to watch next session"],
  "confidence": 0-100}`;
@@ -168,8 +200,21 @@ Reply with ONLY JSON:
       const text = String(n.pattern || "").slice(0, 220); if (!text) continue;
       const dup = pb.patterns.find(p => similar(p.pattern, text) >= 0.55);
       if (dup) { if (!dup.tests || !dup.tests[sessionDate]) { dup.tests = Object.assign({}, dup.tests, { [sessionDate]: "confirmed" }); recap.patternChecks.push({ id: dup.id, pattern: dup.pattern, verdict: "confirmed", note: "Seen again: " + String(n.evidence || "").slice(0, 200) }); } continue; }
-      const p = { id: "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), pattern: text, cause: String(n.cause || ""), effect: String(n.effect || ""), category: String(n.category || "other"), firstSeen: sessionDate, evidence: String(n.evidence || "").slice(0, 300), tests: {}, status: "active" };
+      const p = { id: "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), pattern: text, cause: String(n.cause || ""), effect: String(n.effect || ""), category: String(n.category || "other"), firstSeen: sessionDate, evidence: String(n.evidence || "").slice(0, 300), tests: {}, status: "active", rule: Q.cleanRule(n.rule) };
       pb.patterns.push(p); recap.newPatternIds.push(p.id);
+    }
+    // Backtest every new rule on a year of daily moves, and score same-day rules from the session's measured moves
+    // (the app's verdict replaces Claude's for those).
+    const newRules = pb.patterns.filter(p => p.rule && recap.newPatternIds.includes(p.id));
+    if (newRules.length) { e = step("Backtesting " + newRules.length + " new rule" + (newRules.length > 1 ? "s" : "") + " on a year of daily moves"); for (const p of newRules) p.backtest = await backtest(app, p.rule, "1Y", P).catch(x => ({ error: U.errorText(x) })); S.done(e, "ok"); }
+    const moves = Object.fromEntries(P.rows.filter(x => x.changePct != null).map(x => [x.symbol, x.changePct]));
+    for (const p of pb.patterns.filter(x => x.status === "active" && x.rule && !x.rule.lagDays && !recap.newPatternIds.includes(x.id))) {
+      const t = Q.ruleToday(p.rule, moves); if (!t || !t.causeHappened) continue;
+      const v = t.effectFollowed ? "confirmed" : "contradicted";
+      p.tests = Object.assign({}, p.tests, { [sessionDate]: v }); p.testSrc = Object.assign({}, p.testSrc, { [sessionDate]: "measured" }); p.lastTested = sessionDate;
+      p.lastNote = "Measured: " + p.rule.cause.symbol + " " + fmtP(t.causePct) + ", effect " + fmtP(t.effectPct);
+      const entry = { id: p.id, pattern: p.pattern, verdict: v, note: p.lastNote, measured: true }, i = recap.patternChecks.findIndex(c => c.id === p.id);
+      if (i >= 0) recap.patternChecks[i] = entry; else recap.patternChecks.push(entry);
     }
     // Retire patterns that keep failing once they have a real record.
     for (const p of pb.patterns) { const st = stats(p); if (p.status !== "retired" && st.tested >= 4 && st.reliability < 0.35) { p.status = "retired"; p.retiredOn = sessionDate; p.retiredWhy = "Held " + st.confirmed + " of " + st.tested + " times"; } }
@@ -190,21 +235,26 @@ Reply with ONLY JSON:
 - rewrite vague patterns so a future session can clearly test them (keep the meaning),
 - retire patterns the record doesn't support (held less than half the time after 4+ tests) or that were one-off noise,
 - name the recurring themes (with how many sessions they drove) and whether each is rising, steady or fading,
-- write 3-5 lessons for an investor about what has been moving this market, grounded in the record.
-Never invent sessions or results. Patterns with few tests are hypotheses; say so.
-Patterns: ${JSON.stringify(pb.patterns.map(p => Object.assign({ id: p.id, pattern: p.pattern, status: p.status, firstSeen: p.firstSeen }, stats(p))))}
+- write 3-5 lessons for an investor about what has been moving this market, grounded in the record,
+- give a testable rule for any kept pattern that lacks one, when it can be expressed over daily moves.
+Never invent sessions or results. Patterns with few tests are hypotheses; say so. Weigh each pattern's 1-year backtest (backtest1y) as well as its session record.
+${RULE_HELP}
+Patterns: ${JSON.stringify(pb.patterns.map(p => Object.assign({ id: p.id, pattern: p.pattern, status: p.status, firstSeen: p.firstSeen, rule: p.rule ? Q.ruleText(p.rule) : null, backtest1y: p.backtest && !p.backtest.error ? { cases: p.backtest.occurrences, heldPct: p.backtest.heldPct, baselinePct: p.backtest.baselinePct, z: p.backtest.z } : null }, stats(p))))}
 Driver categories over these sessions: ${JSON.stringify(cats)}
 Sessions: ${JSON.stringify(days.map(d => ({ date: d.sessionDate, headline: d.headline, drivers: (d.drivers || []).map(x => x.driver + " (" + x.category + ", " + x.strength + ")") })))}
 Measured regime now: ${JSON.stringify(P && P.regime)}
-Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewrite"|"merge"|"retire", "pattern": "new wording when rewriting", "mergeInto": "id when merging", "reason": "short"}], "themes": [{"theme": "...", "sessions": number, "status": "rising"|"steady"|"fading", "note": "..."}], "narrative": "3-4 sentences on the market's story across these sessions", "lessons": ["..."]}`, { modelTier: "complex", signal: opts.signal, cache: false });
+Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewrite"|"merge"|"retire", "pattern": "new wording when rewriting", "mergeInto": "id when merging", "reason": "short", "rule": {...} or null}], "themes": [{"theme": "...", "sessions": number, "status": "rising"|"steady"|"fading", "note": "..."}], "narrative": "3-4 sentences on the market's story across these sessions", "lessons": ["..."]}`, { modelTier: "complex", signal: opts.signal, cache: false });
     const byId = new Map(pb.patterns.map(p => [p.id, p])), changes = [];
     for (const a of Array.isArray(r.patterns) ? r.patterns : []) {
       const p = byId.get(String(a.id)); if (!p) continue;
+      const nr = Q.cleanRule(a.rule); if (nr && !p.rule) { p.rule = nr; changes.push({ id: p.id, action: "rule", from: p.pattern, to: Q.ruleText(nr), reason: "Now testable" }); }
       if (a.action === "rewrite" && a.pattern) { changes.push({ id: p.id, action: "rewrite", from: p.pattern, to: String(a.pattern).slice(0, 220), reason: String(a.reason || "") }); p.pattern = String(a.pattern).slice(0, 220); }
       else if (a.action === "merge" && byId.has(String(a.mergeInto)) && String(a.mergeInto) !== p.id) { const into = byId.get(String(a.mergeInto)); into.tests = Object.assign({}, p.tests, into.tests); p.status = "merged"; p.mergedInto = into.id; changes.push({ id: p.id, action: "merge", from: p.pattern, to: into.pattern, reason: String(a.reason || "") }); }
       else if (a.action === "retire" && p.status !== "retired") { p.status = "retired"; p.retiredWhy = String(a.reason || "Retired when the playbook was refined"); changes.push({ id: p.id, action: "retire", from: p.pattern, reason: p.retiredWhy }); }
     }
     pb.patterns = pb.patterns.filter(p => p.status !== "merged");
+    // Re-run every active rule's backtest on fresh data.
+    for (const p of pb.patterns.filter(x => x.rule && x.status === "active")) p.backtest = await backtest(app, p.rule, "1Y", P).catch(x => ({ error: U.errorText(x) }));
     Object.assign(pb, { themes: (Array.isArray(r.themes) ? r.themes : []).slice(0, 8).map(t => ({ theme: String(t.theme || ""), sessions: Number(t.sessions) || null, status: String(t.status || ""), note: String(t.note || "") })), narrative: String(r.narrative || "").slice(0, 1200), lessons: (Array.isArray(r.lessons) ? r.lessons : []).slice(0, 5).map(String), refinedAt: Date.now(), refinedFrom: days.length, lastChanges: changes });
     if (!app.demo) await app.store.put("brain", PB_ID, Object.assign(pb, { id: PB_ID }));
     return pb;
@@ -217,7 +267,8 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
     const pb = playbook(app), last = days[0], rg = (pulseCache && pulseCache.regime) || (last.measured && last.measured.regime) || null;
     const ranked = pb.patterns.filter(p => p.status === "active").map(p => Object.assign({ st: stats(p) }, p));
     const proven = ranked.filter(p => p.st.tested >= 2).sort((a, b) => b.st.reliability * Math.log(1 + b.st.tested) - a.st.reliability * Math.log(1 + a.st.tested)).slice(0, 4);
-    const fresh = ranked.filter(p => p.st.tested < 2).slice(-2);
+    const fresh = ranked.filter(p => p.st.tested < 2 && !(p.backtest && p.backtest.z >= 1)).slice(-2);
+    const backed = ranked.filter(p => p.backtest && !p.backtest.error && p.backtest.occurrences >= 8 && p.backtest.z >= 1).sort((a, b) => b.backtest.z - a.backtest.z).slice(0, 3);
     const cats = {}; for (const d of days.slice(0, 10)) for (const x of d.drivers || []) cats[x.category] = (cats[x.category] || 0) + 1;
     const top = Object.entries(cats).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => k + " (" + n + " of the last " + Math.min(10, days.length) + " sessions)");
     return ("Market Brain (the desk's own study of " + days.length + " session" + (days.length > 1 ? "s" : "") + "; latest " + last.sessionDate + "): " + (last.headline || "") +
@@ -225,6 +276,7 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
       (top.length ? " Recurring drivers: " + top.join(", ") + "." : "") +
       (pb.themes && pb.themes.length ? " Themes: " + pb.themes.slice(0, 3).map(t => t.theme + " (" + t.status + ")").join("; ") + "." : "") +
       (proven.length ? " Patterns with a record: " + proven.map(p => "\"" + p.pattern + "\" held " + p.st.confirmed + " of " + p.st.tested + " times").join("; ") + "." : "") +
+      (backed.length ? " Backtested over a year of daily moves: " + backed.map(p => "\"" + p.pattern + "\" held " + p.backtest.held + " of " + p.backtest.occurrences + " times (" + p.backtest.heldPct + "% vs " + p.backtest.baselinePct + "% on all days)").join("; ") + "." : "") +
       (fresh.length ? " Untested hypotheses: " + fresh.map(p => "\"" + p.pattern + "\"").join("; ") + "." : "") +
       " Use this as context and check it against current data; patterns can break.").slice(0, 1800);
   }
@@ -233,7 +285,7 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
     const q = String(query || "").trim().toLowerCase(), days = latestPerDay(app), pb = playbook(app);
     const hit = (t) => !q || String(t || "").toLowerCase().includes(q);
     return { sessionsStudied: days.length, regimeNow: (pulseCache && pulseCache.regime) || (days[0] && days[0].measured && days[0].measured.regime) || null, narrative: pb.narrative || null, themes: pb.themes || [], lessons: pb.lessons || [],
-      patterns: pb.patterns.filter(p => p.status === "active" && (hit(p.pattern) || hit(p.category))).slice(0, 12).map(p => Object.assign({ pattern: p.pattern, category: p.category, firstSeen: p.firstSeen }, stats(p))),
+      patterns: pb.patterns.filter(p => p.status === "active" && (hit(p.pattern) || hit(p.category) || (p.rule && hit(Q.ruleText(p.rule))))).slice(0, 12).map(p => Object.assign({ pattern: p.pattern, category: p.category, firstSeen: p.firstSeen, rule: p.rule ? Q.ruleText(p.rule) : null, backtest1y: p.backtest && !p.backtest.error ? { cases: p.backtest.occurrences, held: p.backtest.held, heldPct: p.backtest.heldPct, baselinePct: p.backtest.baselinePct, z: p.backtest.z } : null }, stats(p))),
       sessions: days.filter(d => !q || hit(d.headline) || hit(d.summary) || (d.drivers || []).some(x => hit(x.driver) || hit(x.explanation) || (x.effects || []).some(e => hit(e.on))) || (d.movers || []).some(m => hit(m.symbol))).slice(0, 8)
         .map(d => ({ date: d.sessionDate, headline: d.headline, drivers: (d.drivers || []).map(x => ({ driver: x.driver, category: x.category, effects: x.effects })), movers: (d.movers || []).filter(m => !q || hit(m.symbol)).slice(0, 5) })) };
   }
@@ -275,7 +327,7 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
         d.effects.length ? h("div", { class: "row", style: "gap:4px;flex-wrap:wrap" }, d.effects.map(x => h("span", { class: "pill " + (x.direction === "up" ? "ok" : "bad") }, (x.direction === "up" ? "▲ " : "▼ ") + x.on + (x.movePct != null ? " " + fmtP(x.movePct) : "")))) : null,
         d.persistence ? h("span", { class: "tiny muted" }, "Persistence: " + d.persistence) : null, MD.ai.sources(d.sources))))),
       r.movers && r.movers.length ? h("div", {}, h("span", { class: "label" }, "Movers explained"), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, r.movers.map(m => h("li", {}, h("strong", {}, m.symbol + " " + (m.movePct != null ? fmtP(m.movePct) : "") + ": "), m.why, m.source ? h("span", {}, " ", h("a", { href: m.source.url, target: "_blank", rel: "noopener noreferrer" }, "source"), m.source.verified ? null : h("span", { class: "warn-t" }, " (unverified)")) : null)))) : null,
-      r.patternChecks && r.patternChecks.length ? h("div", {}, h("span", { class: "label" }, "Playbook tested this session"), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, r.patternChecks.map(c => h("li", {}, h("span", { class: c.verdict === "confirmed" ? "up" : "down" }, c.verdict === "confirmed" ? "Held: " : "Failed: "), "\"" + c.pattern + "\" ", h("span", { class: "muted" }, c.note))))) : null,
+      r.patternChecks && r.patternChecks.length ? h("div", {}, h("span", { class: "label" }, "Playbook tested this session"), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, r.patternChecks.map(c => h("li", {}, h("span", { class: c.verdict === "confirmed" ? "up" : "down" }, c.verdict === "confirmed" ? "Held: " : "Failed: "), "\"" + c.pattern + "\" ", h("span", { class: "muted" }, c.note), c.measured ? h("span", { class: "chip sm" }, "scored from measured moves") : null)))) : null,
       MD.ai.list("Watch next session", r.watchNext));
   }
   function playbookView(app, pb, refreshBtn) {
@@ -283,13 +335,14 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
     return h("div", { class: "stack" },
       pb.narrative ? h("p", {}, pb.narrative) : null,
       pb.themes && pb.themes.length ? h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" }, pb.themes.map(t => h("span", { class: "chip", title: t.note }, t.theme + (t.sessions ? " · " + t.sessions : "") + (t.status ? " · " + t.status : "")))) : null,
-      rows.length ? U.table([{ t: "Pattern", v: (p) => h("span", { class: "stack", style: "gap:1px" }, h("span", { class: p.status === "retired" ? "faint" : "" }, p.pattern), h("span", { class: "tiny muted" }, (p.category || "") + " · first seen " + (p.firstSeen || "—") + (p.status === "retired" ? " · retired: " + (p.retiredWhy || "") : "") + (p.lastNote ? " · last test: " + p.lastNote : ""))) },
+      rows.length ? U.table([{ t: "Pattern", v: (p) => h("span", { class: "stack", style: "gap:1px" }, h("span", { class: p.status === "retired" ? "faint" : "" }, p.pattern), h("span", { class: "tiny muted" }, (p.category || "") + " · first seen " + (p.firstSeen || "—") + (p.source === "user" ? " · your idea" : "") + (p.status === "retired" ? " · retired: " + (p.retiredWhy || "") : "") + (p.lastNote ? " · last test: " + p.lastNote : "")), p.rule ? h("span", { class: "tiny num" }, "Rule: " + Q.ruleText(p.rule)) : null) },
+        { t: "1-year backtest", v: (p) => !p.backtest ? h("span", { class: "tiny muted" }, p.rule ? "not run" : "no rule") : p.backtest.error ? h("span", { class: "tiny warn-t" }, p.backtest.error) : h("span", { class: "stack", style: "gap:0;justify-items:end" }, h("span", { class: "num" }, p.backtest.held + "/" + p.backtest.occurrences + " (" + (p.backtest.heldPct ?? "—") + "%)"), h("span", { class: "tiny muted" }, "vs " + (p.backtest.baselinePct ?? "—") + "% normally · " + Q.backtestVerdict(p.backtest))), n: true },
         { t: "Tested", v: (p) => String(p.st.tested), n: true }, { t: "Held", v: (p) => String(p.st.confirmed), n: true }, { t: "Failed", v: (p) => String(p.st.contradicted), n: true },
         { t: "Reliability", v: (p) => p.st.tested ? h("span", { class: "row", style: "gap:6px;align-items:center;justify-content:flex-end" }, h("span", { class: "meter", style: "width:60px" }, h("i", { style: "width:" + (p.st.reliability * 100).toFixed(0) + "%" })), h("span", { class: "num" }, (p.st.reliability * 100).toFixed(0) + "%")) : h("span", { class: "tiny muted" }, "hypothesis"), n: true }], rows)
         : h("div", { class: "empty" }, "No patterns yet. Each studied session can add cause → effect patterns; later sessions test them."),
       MD.ai.list("Lessons so far", pb.lessons),
       pb.lastChanges && pb.lastChanges.length ? h("details", { class: "small" }, h("summary", { class: "label", style: "cursor:pointer" }, "Last refinement: " + pb.lastChanges.length + " change" + (pb.lastChanges.length > 1 ? "s" : "")), h("ul", {}, pb.lastChanges.map(c => h("li", {}, c.action + ": \"" + c.from + "\"" + (c.to ? " → \"" + c.to + "\"" : "") + (c.reason ? " (" + c.reason + ")" : ""))))) : null,
-      h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("p", { class: "tiny muted" }, "Reliability = (times held + 1) ÷ (times tested + 2), so an untested pattern starts at 50%. Patterns that fail most of 4+ tests are retired automatically." + (pb.refinedAt ? " Last refined " + U.fmtTs(pb.refinedAt) + "." : "")), refreshBtn));
+      h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("p", { class: "tiny muted" }, "Reliability = (times held + 1) ÷ (times tested + 2), so an untested pattern starts at 50%. Patterns that fail most of 4+ tests are retired automatically. Patterns with a same-day rule are scored by the app from the measured moves; the backtest re-runs on fresh data when the playbook is refined." + (pb.refinedAt ? " Last refined " + U.fmtTs(pb.refinedAt) + "." : "")), refreshBtn));
   }
 
   V.brain = function (root, app) {
@@ -330,6 +383,7 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
       refine.disabled = false;
     } }, "Refine the playbook");
     root.append(U.section("Playbook: what causes what", h("div", { class: "stack" }, playbookView(app, pb, h("span", { class: "row", style: "gap:8px;align-items:center" }, pbPhase, refine)))));
+    root.append(U.section("Hypothesis lab: test an idea against the data", labView(app)));
     if (days.length) root.append(U.section("Sessions studied", U.dataTable([{ t: "Session", v: (d) => d.sessionDate, sort: (d) => d.sessionDate }, { t: "Headline", v: (d) => d.headline }, { t: "Drivers", v: (d) => (d.drivers || []).map(x => x.category).join(", ") }, { t: "Playbook tests", v: (d) => String((d.patternChecks || []).length), n: true }], days, { key: "brain.days", sort: [0, -1], noun: "sessions", filter: false, onRow: (d) => { app.ls.set("brainOpen", d.id); app.rerender(); window.scrollTo(0, 0); } })));
   };
 
@@ -369,6 +423,40 @@ Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": ".
     return sec;
   }
 
+  function labView(app) {
+    const box = h("div", { class: "stack" }), out = h("div", { class: "stack" });
+    const input = h("textarea", { rows: 2, placeholder: "e.g. When oil jumps more than 2%, airline stocks fall", "aria-label": "Hypothesis" });
+    const tf = h("select", { "aria-label": "Look-back" }, h("option", { value: "1Y" }, "1 year"), h("option", { value: "3Y" }, "3 years"));
+    const btn = h("button", { class: "btn", type: "button", disabled: !app.caps.sample, onclick: async () => {
+      const text = input.value.trim(); if (!text) return;
+      btn.disabled = true; out.replaceChildren(h("div", { class: "skeleton" }, "Turning it into a rule and testing it on daily moves…"));
+      try {
+        const r = await testIdea(app, text, tf.value);
+        if (!r.testable) { out.replaceChildren(h("p", { class: "small" }, h("strong", {}, "Not testable with daily moves: "), r.why)); }
+        else {
+          const b = r.backtest, add = h("button", { class: "btn ghost sm", type: "button", onclick: async () => {
+            if (app.demo) { U.toast("Demo mode: not saved"); return; }
+            const pb = playbook(app); pb.patterns.push({ id: "p" + Date.now().toString(36), pattern: r.pattern || text, cause: "", effect: "", category: "your idea", firstSeen: Q.session().date, tests: {}, status: "active", rule: r.rule, backtest: b.lookback === "1Y" ? b : await backtest(app, r.rule, "1Y", pulseCache).catch(() => b), source: "user" });
+            await app.store.put("brain", PB_ID, Object.assign(pb, { id: PB_ID })); add.disabled = true; add.textContent = "Added"; U.toast("Added to the playbook", "Each session now tests it; every AI on the desk sees its record.");
+          } }, "Add to the playbook");
+          out.replaceChildren(h("div", { class: "card" }, h("div", { class: "bd stack" },
+            h("strong", {}, r.pattern), h("span", { class: "small num" }, "Rule tested: " + Q.ruleText(r.rule)), r.why ? h("span", { class: "small muted" }, r.why) : null,
+            b.error ? h("p", { class: "warn-t small" }, b.error) : h("div", { class: "kpis k4" },
+              h("div", { class: "kpi" }, h("span", { class: "label" }, "Cause happened"), h("b", { class: "v" }, String(b.occurrences)), h("span", { class: "s" }, "of " + b.days + " days · " + b.from + " to " + b.to)),
+              h("div", { class: "kpi" }, h("span", { class: "label" }, "Effect followed"), h("b", { class: "v" }, (b.heldPct ?? "—") + "%"), h("span", { class: "s" }, b.held + " of " + b.occurrences)),
+              h("div", { class: "kpi" }, h("span", { class: "label" }, "On any day"), h("b", { class: "v" }, (b.baselinePct ?? "—") + "%"), h("span", { class: "s" }, "how often the effect happens anyway")),
+              h("div", { class: "kpi" }, h("span", { class: "label" }, "Verdict"), h("b", { class: "v " + (b.z >= 2 ? "up" : b.z <= -1 ? "down" : "") }, b.liftPts == null ? "—" : (b.liftPts > 0 ? "+" : "") + b.liftPts + " pts"), h("span", { class: "s" }, Q.backtestVerdict(b) + (b.z != null ? " (z " + b.z + ")" : "")))),
+            b.recent && b.recent.length ? h("details", { class: "small" }, h("summary", { class: "label", style: "cursor:pointer" }, "Latest cases"), U.table([{ t: "Day", v: "date" }, { t: "Cause", v: (x) => fmtP(x.causePct), n: true }, { t: "Effect", v: (x) => fmtP(x.effectPct), n: true }, { t: "Held", v: (x) => x.held ? "✓" : "✗" }], b.recent.slice().reverse())) : null,
+            h("p", { class: "tiny muted" }, "Daily closes from Nasdaq (bitcoin from Kraken). Past patterns can break; a small number of cases or a z-score under 2 is weak evidence."), b.error ? null : add)));
+        }
+      } catch (e) { out.replaceChildren(U.errorBox({ message: MD.ai.errText(e) })); }
+      btn.disabled = false;
+    } }, "Test it");
+    box.append(h("p", { class: "small muted" }, "Describe a cause and effect in plain words. Claude turns it into a rule over daily moves (ETFs stand in for sectors and themes) and the app checks it against history: how often the effect followed the cause, compared with how often it happens on any day."),
+      h("div", { class: "row", style: "gap:8px;align-items:flex-end;flex-wrap:wrap" }, h("div", { style: "flex:1 1 280px;min-width:0" }, input), U.field("Look-back", tf), btn), out);
+    return box;
+  }
+
   function dashboardCard(box, app) {
     const days = latestPerDay(app), last = days[0], pb = playbook(app);
     if (!last) { box.append(h("p", { class: "small muted" }, "The Market Brain studies each session and learns what moves what. Study a session to start."), h("button", { class: "btn sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")); return; }
@@ -379,5 +467,5 @@ Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": ".
       h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")));
   }
 
-  MD.brain = { whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
+  MD.brain = { testIdea, backtest, RULE_HELP, labView, whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
 })(typeof window !== "undefined" ? window : globalThis);
