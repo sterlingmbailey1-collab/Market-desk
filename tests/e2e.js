@@ -663,6 +663,8 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const buyTxt = await page.locator("#sec-buy").innerText();
   check("if you buy: weight, portfolio volatility and drawdown before and after, correlation, and the AI decision's ceiling", /Weight after/i.test(buyTxt) && /Portfolio volatility/i.test(buyTxt) && /\d+\.\d% → \d+\.\d%/.test(buyTxt) && /Correlation/i.test(buyTxt) && /AI decision of .* size ceiling at/.test(buyTxt) && /read-only/.test(buyTxt) && Number(await page.locator("#sec-buy input[type=number]").inputValue()) > 0, buyTxt.slice(0, 900));
   await page.locator("#sec-buy").screenshot({ path: path.join(shots, "e2e-buy.png") });
+  const fitRes = await page.evaluate(async () => { const d = await MD.decide.decide(MD.app, { id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" }, {}); const pr = (window.__mock.fullPrompts || []).filter(x => /Decide what this investor should do/.test(x)).pop() || ""; return { fit: d.fit, inPrompt: /"portfolioFit":\{"testedPositionPctOfPortfolio":\d+/.test(pr) }; });
+  check("AI decision weighs portfolio fit: correlation, volatility and worst drop for a max-size position, measured and given to Claude", !!(fitRes.fit && fitRes.fit.correlationWithPortfolio != null && fitRes.fit.portfolioVolPct.before > 0 && fitRes.inPrompt), JSON.stringify(fitRes));
 
   // ---- Opportunities AI: scan review, comparison scorecard, idea finder
   await page.evaluate(() => { MD.app.ls.set("oppTab", "scan"); MD.app.go("opportunities", null, { fromNav: true }); }); await page.waitForTimeout(800);

@@ -20,14 +20,24 @@
     const total = pv ? Number(pv.totals.valueR) || 0 : 0, row = pv ? pv.rows.find(r => r.p.assetId === asset.id || r.p.symbol === asset.symbol) : null;
     const position = row && row.p.qty.gt(0) ? { weightPct: total ? r1(Number(row.v.valueR) / total * 100) : null, gainPct: row.v.pnlPctN != null ? r1(Number(row.v.pnlPctN)) : null } : null;
     S.done(e, "ok", br ? " → history: higher " + br.model.upPct + "% of the time in situations like today's" : "");
+    // Portfolio fit: what a position at the investor's maximum size would have done to their portfolio over the past year.
+    let fit = null;
+    if (total > 0 && hs && MD.rebalance) {
+      e = S.step("run", "Measuring how a " + cap + "% position would fit your portfolio");
+      try {
+        const P = await Promise.race([MD.rebalance.previewBuy(app, asset, { pct: cap, pv, history: hs }), new Promise((_, rej) => setTimeout(() => rej(new Error("timed out")), 45000))]), t = P.t;
+        fit = { testedPositionPctOfPortfolio: cap, correlationWithPortfolio: t.corr != null ? +t.corr.toFixed(2) : null, portfolioVolPct: { before: r1(t.volBefore), after: r1(t.volAfter) }, worstDrop1yPct: { before: r1(t.ddBefore), after: r1(t.ddAfter) }, weightAfterPct: r1(t.weightAfter) };
+        S.done(e, "ok", " → correlation " + (fit.correlationWithPortfolio ?? "—") + ", volatility " + fit.portfolioVolPct.before + "% → " + fit.portfolioVolPct.after + "%");
+      } catch (err) { S.done(e, "fail", " → " + U.errorText(err)); }
+    }
     const measured = { symbol: asset.symbol, name: (q && q.name) || asset.name, class: asset.cls, price: q ? q.price : null, horizonDays: days, investor: { risk: prof.risk || "mid", horizon: prof.horizon || "mid", maxPositionPct: cap, income: !!prof.income },
       baseRates: br ? { modelUpPct: br.model.upPct, overallUpPct: r1(br.overall.upPct), independent: br.overall.independent, typicalIfUpPct: br.model.avgUpPct, typicalIfDownPct: br.model.avgDownPct, conditions: br.conditions.map(c => ({ condition: c.label, upPct: r1(c.upPct), windows: c.n })) } : null,
       risk: st ? { volPct: r1(st.volPct), maxDrawdown1yPct: r1(st.maxDrawdownPct), return1yPct: r1(st.changePct) } : null, trend: tech ? { trend: tech.trend, rsi14: r1(tech.rsi14), fromHighPct: r1(tech.fromHighPct) } : null,
-      yourPosition: position, portfolioValue: total ? Math.round(total) : null, nextEarnings: q && q.nextEarnings || null };
+      yourPosition: position, portfolioValue: total ? Math.round(total) : null, portfolioFit: fit, nextEarnings: q && q.nextEarnings || null };
     const lim = await s.limits().catch(() => null);
     const tools = lim && lim.tools ? MD.ai.tools(app, S, isStock ? ["search_news", "zacks_view", "earnings_info", "insider_activity", "smart_money", "options_move", "explain_move", "market_memory", "search_web"] : ["crypto_news", "search_news", "explain_move", "market_memory", "search_web"]) : undefined;
     e = S.step("run", "Claude is deciding (usually 1–2 minutes)");
-    const r = await s.json(`Decide what this investor should do with ${asset.symbol} (${measured.name}) over their horizon of about ${days} days: "buy", "accumulate" (add slowly), "hold", "trim", "sell", "avoid" or "wait" (for a specific level or event). Fit the decision to their risk appetite, holding period and current position (yourPosition is null if they don't own it).
+    const r = await s.json(`Decide what this investor should do with ${asset.symbol} (${measured.name}) over their horizon of about ${days} days: "buy", "accumulate" (add slowly), "hold", "trim", "sell", "avoid" or "wait" (for a specific level or event). Fit the decision to their risk appetite, holding period and current position (yourPosition is null if they don't own it). portfolioFit (when present) is what a position at their maximum size would have done to their portfolio over the past year: weigh diversification (low correlation) against concentration and added volatility when choosing the decision and size.
 Start from the measured base rate (baseRates.modelUpPct: how often it was higher over this horizon in situations like today's) and move away only for evidence history can't know: valuation, earnings revisions, news, insiders, the market regime. ${tools ? "Use 3 to 8 tool calls; cite only URLs the tools returned." : ""} Give the chance it is higher at the horizon's end, the typical gain if it rises and loss if it falls (use the measured typical sizes unless you have a reason), an entry plan (now, in steps, or at a level), an exit plan (where you'd be wrong; where you'd take profit), and what would change the decision. Never tell them to put in an order; "wait" and "avoid" are valid.
 ${MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-decide"))}
 ${MD.ai.contextNote(app)}
@@ -47,7 +57,7 @@ Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoi
     up = Math.round(up);
     const ifUp = Math.abs(Number(r.ifUpPct)) || (br && br.model.avgUpPct) || 10, ifDown = Math.abs(Number(r.ifDownPct)) || Math.abs((br && br.model.avgDownPct) || 10);
     const math = Q.decisionMath({ upPct: up, upMovePct: ifUp, downMovePct: ifDown, capPct: cap });
-    const out = { assetId: asset.id, symbol: asset.symbol, at: Date.now(), days, decision, headline: String(r.headline || ""), upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, reviewer: review && review.probabilityPct != null ? Math.round(review.probabilityPct) : null, final: up }, calibration: cal.applied ? cal : null,
+    const out = { fit, assetId: asset.id, symbol: asset.symbol, at: Date.now(), days, decision, headline: String(r.headline || ""), upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, reviewer: review && review.probabilityPct != null ? Math.round(review.probabilityPct) : null, final: up }, calibration: cal.applied ? cal : null,
       ifUpPct: r1(ifUp), ifDownPct: r1(ifDown), math, aiSizePct: Math.max(0, Math.min(100, Number(r.positionSizePct) || 0)), cap, entryPlan: String(r.entryPlan || ""), exitPlan: r.exitPlan || null, reasons: (r.reasons || []).slice(0, 5).map(String), risks: (r.risks || []).slice(0, 4).map(String), changeMyMind: String(r.changeMyMind || ""), confidence: conf, review, sources: S.verify(r.sources), price: measured.price, position, toolCalls: S.calls };
     if (!app.demo && out.price > 0 && up !== 50) {
       const f = await app.store.create("forecasts", { assetId: asset.id, asset: MD.common.slim(asset), symbol: asset.symbol, source: "ai-decide", horizonDays: days, dueAt: Date.now() + days * 864e5, priceAtCreation: out.price, currency: "USD", priceSource: q ? q.source : "quote", direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: out.headline + " (" + decision + ")", flatBandPct: 1, claudeUpPct: out.probs.claude, modelUpPct: out.probs.model }).catch(() => null);
@@ -69,6 +79,7 @@ Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoi
         h("div", { class: "kpi" }, h("span", { class: "label" }, "Size ceiling (maths)"), h("b", { class: "v" }, m.ceilingPct + "%"), h("span", { class: "s" }, "¼ Kelly, capped at your " + d.cap + "% max")),
         h("div", { class: "kpi" }, h("span", { class: "label" }, "Claude suggests"), h("b", { class: "v" }, d.aiSizePct + "%"), h("span", { class: "s" }, d.position ? "you hold " + (d.position.weightPct ?? "—") + "% now" : "of the portfolio"))) : null,
       d.aiSizePct > (m ? m.ceilingPct : 100) + 0.5 ? h("p", { class: "small warn-t" }, "Claude's suggested size is above what the odds and payoff support; the smaller number is the safer one.") : null,
+      d.fit ? h("p", { class: "small" }, h("strong", {}, "Portfolio fit: "), "correlation " + (d.fit.correlationWithPortfolio ?? "—") + " with your holdings; a " + d.fit.testedPositionPctOfPortfolio + "% position would have taken the portfolio's volatility from " + d.fit.portfolioVolPct.before + "% to " + d.fit.portfolioVolPct.after + "% and its worst drop from " + d.fit.worstDrop1yPct.before + "% to " + d.fit.worstDrop1yPct.after + "% over the past year (measured).") : null,
       d.entryPlan ? h("p", { class: "small" }, h("strong", {}, "Entry: "), d.entryPlan) : null,
       d.exitPlan ? h("p", { class: "small" }, h("strong", {}, "Exit: "), "wrong if " + (d.exitPlan.wrongIf || "—") + (d.exitPlan.stopPct ? " (about −" + Math.abs(d.exitPlan.stopPct) + "%)" : "") + (d.exitPlan.takeProfitPct ? "; take profit around +" + Math.abs(d.exitPlan.takeProfitPct) + "%" : "")) : null,
       MD.ai.list("Why", d.reasons), MD.ai.list("Risks", d.risks), d.changeMyMind ? h("p", { class: "small" }, h("strong", {}, "Would change the decision: "), d.changeMyMind) : null,

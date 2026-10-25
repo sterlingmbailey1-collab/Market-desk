@@ -111,6 +111,20 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
   /* "If you buy": what a purchase would have done to the portfolio over the past year (today's holdings and exchange
      rates held throughout), against the single-position cap for the investor's risk setting and the AI decision's size
      ceiling when there is one. Nothing is bought: the desk is read-only. */
+  // Measures a purchase against today's holdings: `amount` in the reporting currency, or `pct` of the portfolio.
+  async function previewBuy(app, asset, opts = {}) {
+    const R = app.settings.reportingCurrency, pv = opts.pv || await app.valuePortfolio(R), m = await MD.portfolioAnalysis.measure(app, pv, R);
+    if (!(m.total > 0)) throw new Error("Add holdings in Portfolio first: the preview compares a purchase with what you hold.");
+    const A = opts.amount > 0 ? Number(opts.amount) : Math.round(m.total * (opts.pct > 0 ? opts.pct : 5) / 100);
+    const hs = opts.history || await D.historyFor(asset, "1Y"), byDay = new Map(hs.points.map(p => [Math.floor(p.time / 86400), p.close ?? p.value]));
+    let cur = null; const prices = m.series.map(p => { const d = Math.floor(p.time / 86400); if (byDay.has(d)) cur = byDay.get(d); else if (cur == null) for (let k = d; k >= d - 6; k--) if (byDay.has(k)) { cur = byDay.get(k); break; } return cur; });
+    const first = prices.findIndex(x => x > 0); if (first < 0) throw new Error("No price history for " + asset.symbol + " over the past year.");
+    const cash = m.items.filter(it => it.cls === "cash").reduce((s, it) => s + it.value, 0), held = m.items.filter(it => it.symbol === asset.symbol).reduce((s, it) => s + it.value, 0);
+    const fromCash = opts.payFromCash !== false && cash >= A;
+    const t = MD.quant.tradePreview({ values: m.series.slice(first).map(p => p.value), prices: prices.slice(first), amount: A, fromCash, existing: held });
+    if (!t) throw new Error("Not enough overlapping history to measure this purchase.");
+    return { t, m, A, R, cash, held, fromCash, source: hs.source };
+  }
   function buyCard(app, asset) {
     const R = app.settings.reportingCurrency, out = h("div", { class: "stack" }), prof = app.settings.profile || {}, cap = ({ low: 5, mid: 10, high: 20 })[prof.risk] || 10;
     const amt = h("input", { type: "number", min: 0, step: "100", placeholder: "e.g. 1000" }), cashChk = h("input", { type: "checkbox", checked: true });
@@ -121,18 +135,10 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
     btn.onclick = async () => {
       btn.disabled = true; out.replaceChildren(h("p", { class: "small muted" }, "Measuring your holdings and " + asset.symbol + " over the past year…"));
       try {
-        const pv = await app.valuePortfolio(R), m = await MD.portfolioAnalysis.measure(app, pv, R);
-        if (!(m.total > 0)) throw new Error("Add holdings in Portfolio first: the preview compares a purchase with what you hold.");
         const dec = app.store.cached("decisions").find(x => x.assetId === asset.id || x.id === String(asset.id || asset.symbol).replace(/[^\w-]/g, "_"));
         const ceil = dec && dec.math ? dec.math.ceilingPct : null;
-        let A = Number(amt.value); if (!(A > 0)) { A = Math.round(m.total * (ceil > 0 ? ceil : 5) / 100); amt.value = A; }
-        const hs = await D.historyFor(asset, "1Y"), byDay = new Map(hs.points.map(p => [Math.floor(p.time / 86400), p.close ?? p.value]));
-        let cur = null; const prices = m.series.map(p => { const d = Math.floor(p.time / 86400); if (byDay.has(d)) cur = byDay.get(d); else if (cur == null) for (let k = d; k >= d - 6; k--) if (byDay.has(k)) { cur = byDay.get(k); break; } return cur; });
-        const first = prices.findIndex(x => x > 0); if (first < 0) throw new Error("No price history for " + asset.symbol + " over the past year.");
-        const cash = m.items.filter(it => it.cls === "cash").reduce((s, it) => s + it.value, 0), held = m.items.filter(it => it.symbol === asset.symbol).reduce((s, it) => s + it.value, 0);
-        const fromCash = cashChk.checked && cash >= A;
-        const t = MD.quant.tradePreview({ values: m.series.slice(first).map(p => p.value), prices: prices.slice(first), amount: A, fromCash, existing: held });
-        if (!t) throw new Error("Not enough overlapping history to measure this purchase.");
+        const P = await previewBuy(app, asset, { amount: Number(amt.value), pct: ceil > 0 ? ceil : 5, payFromCash: cashChk.checked }), { t, A, cash, fromCash } = P, hs = { source: P.source };
+        amt.value = A;
         const arrow = (a, b, dp = 1) => a.toFixed(dp) + "% → " + b.toFixed(dp) + "%", dv = t.volAfter - t.volBefore;
         const notes = [];
         notes.push(Math.abs(dv) < 0.2 ? "Barely changes how much the portfolio swings." : dv < 0 ? "Lowers the portfolio's swings by " + (-dv).toFixed(1) + " points a year: " + asset.symbol + " has tended to move differently from what you hold." : "Raises the portfolio's swings by " + dv.toFixed(1) + " points a year" + (t.assetVol > t.volBefore ? " (" + asset.symbol + " swings " + t.assetVol.toFixed(0) + "% a year on its own, against the portfolio's " + t.volBefore.toFixed(0) + "%)." : "."));
@@ -153,5 +159,5 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
     };
     return sec;
   }
-  MD.rebalance = { buyCard, targets, volOf, plan, stress, section };
+  MD.rebalance = { previewBuy, buyCard, targets, volOf, plan, stress, section };
 })(typeof window !== "undefined" ? window : globalThis);
