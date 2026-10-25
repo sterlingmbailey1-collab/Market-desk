@@ -87,6 +87,12 @@
         if (Number(i.target) > 0) { out.target = Number(i.target); out.chanceFinishAbovePct = p.probAbove(out.target) * 100; out.chanceTouchPct = p.probTouch(out.target) * 100; }
         return rnd(out);
       } },
+    portfolio_fit: { description: "What buying a stock, ETF or coin would have done to the user's portfolio over the past year: weight after, portfolio volatility and worst drop before and after, and correlation with the holdings. Give the position as a percent of the portfolio (default 5). Measured with today's holdings held constant; not a forecast.", props: { symbol: { type: "string" }, pct: { type: "number" } }, req: ["symbol"],
+      label: (i) => "Portfolio fit: " + i.symbol + " at " + (i.pct || 5) + "% of the portfolio",
+      async run(app, S, i) { const a = await findAsset(String(i.symbol || "")), pct = Math.max(0.5, Math.min(50, Number(i.pct) || 5)); const P = await MD.rebalance.previewBuy(app, a, { pct }), t = P.t; return rnd({ symbol: a.symbol, positionPctTested: pct, amount: P.A, currency: P.R, paidFromCash: P.fromCash, weightBeforePct: t.weightBefore, weightAfterPct: t.weightAfter, portfolioVolPct: { before: t.volBefore, after: t.volAfter }, worstDrop1yPct: { before: t.ddBefore, after: t.ddAfter }, correlationWithPortfolio: t.corr, assetVolPct: t.assetVol, tradingDays: t.days, priceSource: P.source }); } },
+    open_calls: { description: "The desk's open AI calls (recommendations, quick takes, AI decisions, research) priced now: the move since each call and the chance it still finishes on its side by the due date, from the asset's volatility alone.", props: {}, req: [],
+      label: () => "Open AI calls",
+      async run(app) { const rows = await openCalls(app, { max: 15 }); return rnd({ calls: rows.map(r => ({ symbol: r.f.symbol, by: SOURCE_LABEL[r.f.source] || r.f.source, call: r.f.direction, statedPct: r.f.probability ? Math.round(r.f.probability * 100) : null, madeOn: new Date(r.f.createdAt).toISOString().slice(0, 10), due: new Date(r.f.dueAt).toISOString().slice(0, 10), movePct: r.movePct ?? null, oddsNowPct: r.st ? r.st.oddsNowPct : null, error: r.error || undefined })) }); } },
     my_portfolio: { description: "The user's current holdings in their reporting currency: each holding's weight, class, currency and gain since purchase, plus the watchlist.", props: {}, req: [],
       label: () => "Your portfolio",
       async run(app) { const pv = await app.valuePortfolio(); const total = Number(pv.totals.valueR) || 0; return rnd({ reportingCurrency: pv.R, totalValue: total, holdings: pv.rows.filter(r => r.p.qty.gt(0)).map(r => ({ symbol: r.p.symbol, name: r.p.name, class: r.p.assetClass, weightPct: total ? Number(r.v.valueR || 0) / total * 100 : null, gainPct: r.v.pnlPctN != null ? Number(r.v.pnlPctN) : null })), watchlist: app.store.cached("watch").map(w => w.symbol).slice(0, 30), demo: !!app.demo }); } },
@@ -136,7 +142,9 @@
     ["earnings", /earnings?|\beps\b|guidance|quarter|results/i, ["earnings_info", "options_move"]],
     ["smart", /congress|politic|senator|pelosi|buffett|insiders?|13f|superinvestor|smart money|hedge fund/i, ["smart_money", "insider_activity"]],
     ["options", /options?|implied|straddle|volatil/i, ["options_move", "price_range"]],
-    ["portfolio", /portfolio|holdings?|diversif|allocat|rebalanc|my (stocks|positions)|concentrat/i, ["get_portfolio_context", "analyze_portfolio", "my_portfolio", "compare_alternatives", "compare_returns"]]];
+    ["portfolio", /portfolio|holdings?|diversif|allocat|rebalanc|my (stocks|positions)|concentrat/i, ["get_portfolio_context", "analyze_portfolio", "my_portfolio", "compare_alternatives", "compare_returns"]],
+    ["buying", /should i (buy|add|get into)|buy more|add (to|more)|position size|how much (should|to) (buy|put|invest)|(fit|fits) (in|into|with) my/i, ["portfolio_fit", "base_rates"]],
+    ["calls", /open calls|your (calls|picks|recommendations)|track record|how (are|is) (the|your) (calls|picks|recommendations)|still (right|on track)/i, ["open_calls", "track_record"]]];
   function selectTools(tools, text, max, core) {
     max = max || 20; text = String(text || "");
     const by = new Map(tools.map(t => [t.name, t])), out = [], add = (n) => { const t = by.get(n); if (t && !out.includes(t) && out.length < max) out.push(t); };

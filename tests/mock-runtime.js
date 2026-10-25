@@ -164,7 +164,7 @@
       window.__mock.advisorTools = opts.tools.map(t => t.name); window.__mock.advisorResults = {};
       const args = { lookup_asset: { query: "AAPL" }, get_technicals: { query: "AAPL" }, project_price: { query: "AAPL", days: 90, target: 300 }, get_betting_odds: { league: "nfl", team: "Dolphins" }, bet_math: { odds: "+250", probabilityPct: 30, stake: 40, bankroll: 1000 }, get_my_bets: {}, zacks_view: { ticker: "AAPL" },
         get_injuries: { league: "nfl", team: "Dolphins" }, get_scoreboard: { league: "nfl" }, get_game_forecast: { league: "nfl", team: "Dolphins" }, build_slips: { league: "nfl" }, add_to_slip: { league: "nfl", team: "Jets", market: "total", side: "under" }, get_slip: {}, get_ai_track_record: {},
-        intraday_levels: { symbol: "AAPL" }, market_pulse: {}, movers: { session: "regular" }, base_rates: { symbol: "AAPL", days: 30 } };
+        intraday_levels: { symbol: "AAPL" }, market_pulse: {}, movers: { session: "regular" }, base_rates: { symbol: "AAPL", days: 30 }, portfolio_fit: { symbol: "AAPL", pct: 5 }, open_calls: {} };
       for (const t of opts.tools.filter(t => ["get_portfolio_context"].concat(Object.keys(args)).includes(t.name))) { try { window.__mock.advisorResults[t.name] = await t.execute(args[t.name] || {}, { signal: new AbortController().signal }); } catch (e) { window.__mock.advisorResults[t.name] = { error: String(e && e.message) }; } }
     }
     const text = "Mock answer: little changed.";
