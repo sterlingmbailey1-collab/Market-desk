@@ -152,14 +152,18 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.click("button:has-text('Generate recommendations')"); await page.waitForTimeout(9000);
   const picks = await page.evaluate(() => MD.app.store.cached("picks"));
   const pickFc = await page.evaluate(() => MD.app.store.cached("forecasts").filter(f => f.source === "ai-picks"));
-  check("recommendations generated, saved and journaled", picks.length === 1 && picks[0].picks.length === 3 && pickFc.length === 3, JSON.stringify({ n: picks.length, p: picks[0] && picks[0].picks.length, f: pickFc.length, log: (await page.locator(".log").innerText()).slice(-300) }));
+  check("recommendations generated, reviewed, saved and journaled", picks.length === 1 && picks[0].picks.length === 2 && pickFc.length === 2, JSON.stringify({ n: picks.length, p: picks[0] && picks[0].picks.length, f: pickFc.length, log: (await page.locator(".log").innerText()).slice(-300) }));
   await page.waitForTimeout(800);
   const logTxt = await page.locator("#prediction-log").innerText();
-  check("prediction log lists each pick with time, prices then/now, projection and target date", await page.locator("#prediction-log table.tbl tbody tr").count() === 3 && /Price then/i.test(logTxt) && /Projected for target date/i.test(logTxt) && /\d{1,2}:\d{2}/.test(logTxt) && !/…/.test(await page.locator("#prediction-log tbody").innerText()), logTxt.slice(0, 400));
+  check("prediction log lists each pick with time, prices then/now, projection and target date", await page.locator("#prediction-log table.tbl tbody tr").count() === 2 && /Price then/i.test(logTxt) && /Projected for target date/i.test(logTxt) && /\d{1,2}:\d{2}/.test(logTxt) && !/…/.test(await page.locator("#prediction-log tbody").innerText()), logTxt.slice(0, 400));
   const pkTxt = await page.locator("#content").innerText();
   check("pick explains why, direction and time window", /Why it could move/i.test(pkTxt) && /Time window/i.test(pkTxt) && /Leans up/i.test(pkTxt) && /Big move, either way/i.test(pkTxt), pkTxt.slice(0, 400));
   check("pick sources: retrieved news verified, invented URL flagged", picks[0] && picks[0].picks[0].sources.find(x => /bigdata/.test(x.url)).verified === true && picks[0].picks[0].sources.find(x => /invented/.test(x.url)).verified === false);
   check("'either way' pick journaled as a move forecast", pickFc.some(f => f.direction === "move" && f.movePct > 0));
+  check("review pass: one pick dropped with its reason, one revised", picks[0].review && picks[0].review.dropped === 1 && picks[0].review.revised === 1 && picks[0].excluded.some(x => /Dropped by the review/.test(x.reason)) && picks[0].picks[1].review.verdict === "revise", JSON.stringify(picks[0].review));
+  check("pick card: bull and bear case, what would change the view, review note", /Bull case/i.test(pkTxt) && /Bear case/i.test(pkTxt) && /What would change the view/i.test(pkTxt) && /Review: holds up/i.test(pkTxt));
+  check("confidence blends Claude, the review, measured signals and evidence", picks[0].picks.every(p => p.confidenceParts && p.confidenceParts.signals != null && p.confidence >= 0 && p.confidence <= 100) && picks[0].picks[1].confidenceParts.reviewed === 30);
+  check("Claude used the research tools", picks[0].toolCalls > 0 && picks[0].sourcesRetrieved > 0, JSON.stringify({ t: picks[0].toolCalls, s: picks[0].sourcesRetrieved }));
   await page.screenshot({ path: path.join(shots, "e2e-picks.png"), fullPage: true });
 
   // ---- Connector missing: contained, clear message
@@ -250,7 +254,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   // ---- Settings persist across reload
   await page.evaluate(() => MD.app.saveSettings({ reportingCurrency: "EUR", mode: "beginner" }));
   await page.waitForTimeout(1200);
-  const dbgBefore = await page.evaluate(() => ({ keys: [...window.__mock.store.keys()].length, ss: (sessionStorage.getItem("__mockdb") || "").length, url: location.href }));
+  const dbgBefore = await page.evaluate(() => ({ keys: [...window.__mock.store.keys()].length, ls: localStorage.length, chars: Object.keys(localStorage).reduce((s, k) => s + k.length + (localStorage.getItem(k) || "").length, 0), big: Object.keys(localStorage).map(k => [k, (localStorage.getItem(k) || "").length]).sort((a, b) => b[1] - a[1]).slice(0, 4), url: location.href }));
   // Headless Chromium occasionally hands a reloaded file:// page a blank, temporary storage area (the data is
   // back on the next load). Reload again in that case; the real artifact stores data in the claude.ai account.
   for (let i = 0; i < 6; i++) { await page.reload(); await page.waitForSelector(".nav a"); if (await page.evaluate(() => localStorage.length) > 0) break; await page.waitForTimeout(700); }
@@ -424,6 +428,25 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.evaluate(() => { window.__mock.failVI = false; MD.app.ls.set("bet.sport", "nfl"); });
   await page.evaluate(() => MD.app.go("dashboard", null, { fromNav: true })); await page.waitForTimeout(1500);
   check("dashboard: Betting today card with open bets and AI record", /Betting today/i.test(await page.locator("#content").innerText()) && /AI record/i.test(await page.locator("#content").innerText()));
+
+  // ---- Opportunities AI: scan review, comparison scorecard, idea finder
+  await page.evaluate(() => { MD.app.ls.set("oppTab", "scan"); MD.app.go("opportunities", null, { fromNav: true }); }); await page.waitForTimeout(800);
+  await page.click("button:has-text('Run scan')"); await page.waitForTimeout(3500);
+  await page.click("button:has-text('AI review of these results')"); await page.waitForTimeout(3500);
+  const scanAi = await page.locator("#content").innerText();
+  check("scan AI review: verdicts, scores, best idea, review pass", /Best idea:/i.test(scanAi) && /Research further · 80/i.test(scanAi) && /Review: holds up/i.test(scanAi) && /Portfolio fit/i.test(scanAi), scanAi.slice(-600));
+  await page.evaluate(() => { MD.app.ls.set("compareList", [{ id: "etf:SPY", cls: "etf", symbol: "SPY", name: "SPDR S&P 500" }, { id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" }]); MD.app.ls.set("oppTab", "compare"); MD.app.go("opportunities", null, { fromNav: true }); }); await page.waitForTimeout(2500);
+  await page.click("button:has-text('AI comparison scorecard')"); await page.waitForTimeout(3500);
+  const cmpAi = await page.locator("#content").innerText();
+  check("comparison scorecard: winner, scores, bull/bear, confidence", /Overall: SPY/i.test(cmpAi) && /Best for stability: SPY/i.test(cmpAi) && /SPY bull/i.test(cmpAi) && /Confidence/i.test(cmpAi), cmpAi.slice(-600));
+  await page.evaluate(() => { MD.app.ls.set("oppTab", "ideas"); MD.app.go("opportunities", null, { fromNav: true }); }); await page.waitForTimeout(800);
+  await page.fill("textarea", "picks and shovels for AI data centres"); await page.click("button:has-text('Find ideas')"); await page.waitForTimeout(5000);
+  const ideaTxt = await page.locator("#content").innerText();
+  check("idea finder: ideas verified against exchange data and reviewed", /NVDA/.test(ideaTxt) && /SMH/.test(ideaTxt) && /Measured by the app/i.test(ideaTxt) && /1Y return/i.test(ideaTxt) && /Review:/i.test(ideaTxt), ideaTxt.slice(-700));
+  check("idea search saved", await page.evaluate(() => MD.app.store.cached("ideas").length === 1 && MD.app.store.cached("ideas")[0].ideas.length >= 2));
+  await page.screenshot({ path: path.join(shots, "e2e-ideas.png"), fullPage: false });
+  await page.click("button:has-text('Watch')"); await page.waitForTimeout(400);
+  check("add an idea to the watchlist", await page.evaluate(() => MD.app.store.cached("watch").some(w => w.symbol === "NVDA" || w.symbol === "SMH" || w.symbol === "BE")));
 
   // ---- Smart Money
   const navOrder = await page.evaluate(() => [...document.querySelectorAll(".nav a")].map(a => a.getAttribute("href")));

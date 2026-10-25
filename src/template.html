@@ -573,6 +573,19 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
 .injlist { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 0.85rem; }
 .betchat { max-height: 420px; overflow: auto; }
 .betassist .chip { cursor: pointer; }
+/* AI kit */
+.aimeters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 8px; }
+.aireview { display: grid; gap: 4px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--sheet-2); justify-items: start; }
+.aireview.positive { border-color: color-mix(in srgb, var(--up) 30%, var(--line)); } .aireview.negative { border-color: color-mix(in srgb, var(--down) 35%, var(--line)); } .aireview.neutral { border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); }
+.aireview ul { margin: 0; padding-left: 1.1em; display: grid; gap: 2px; }
+.bullbear { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.bb { padding: 8px 10px; border-radius: 10px; background: var(--sheet-2); border-left: 3px solid var(--line); min-width: 0; } .bb p { margin: 2px 0 0; }
+.bb.up { border-left-color: var(--up); } .bb.down { border-left-color: var(--down); }
+@media (max-width: 600px) { .bullbear { grid-template-columns: minmax(0, 1fr); } }
+.aicard .hd { gap: 8px; } .aicard.dim { opacity: 0.62; }
+.rank { font: 700 0.8rem var(--font-data); color: var(--faint); }
+.score { display: inline-block; min-width: 2.2em; text-align: center; padding: 1px 6px; border-radius: 6px; font: 600 0.8rem var(--font-data); background: var(--sheet-2); }
+.score.s4 { background: var(--up-soft); color: var(--up); } .score.s3 { background: color-mix(in srgb, var(--up) 8%, var(--sheet-2)); } .score.s0, .score.s1 { background: var(--down-soft); color: var(--down); }
 /* Smart Money */
 .spin.sm { display: inline-block; width: 10px; height: 10px; border-width: 2px; vertical-align: -1px; }
 .party { display: inline-grid; place-items: center; min-width: 20px; height: 18px; padding: 0 5px; border-radius: 999px; font: 700 0.62rem var(--font-data); letter-spacing: 0.03em; background: var(--sheet-2); color: var(--muted); border: 1px solid var(--line); flex: none; }

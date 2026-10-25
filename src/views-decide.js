@@ -259,9 +259,10 @@ Facts: ${facts.join(" | ") || "no material moves"} | Alerts: ${d.alerts.map(a =>
   V.opportunities = function (root, app) {
     const ctx = app.ctx.opportunities || {};
     const tab = ctx.compare ? "compare" : (app.ls.get("oppTab", "scan"));
-    root.append(head("Opportunities", "Screens and comparisons built only from measured data. A screen result is a lead to research, not a recommendation."),
-      U.tabs([["scan", "Scanner"], ["compare", "Investment decision comparator"]], tab, (k) => { app.ls.set("oppTab", k); app.ctx.opportunities = k === "compare" ? { compare: ctx.compare || [] } : {}; app.rerender(); }));
+    root.append(head("Opportunities", "Screens, comparisons and AI idea finding built on measured data. Claude researches with news and market-data tools, a second review checks its reasoning, and every number comes from the app. A result is a lead to research, not a recommendation."),
+      U.tabs([["scan", "Scanner"], ["compare", "Investment decision comparator"], ["ideas", "AI idea finder"]], tab, (k) => { app.ls.set("oppTab", k); app.ctx.opportunities = k === "compare" ? { compare: ctx.compare || [] } : {}; app.rerender(); }));
     if (tab === "compare") return comparator(root, app, ctx.compare || []);
+    if (tab === "ideas") return MD.oppAI.ideaFinder(root, app);
     scanner(root, app, ctx.screen);
   };
   const PRESETS = {
@@ -281,12 +282,15 @@ Facts: ${facts.join(" | ") || "no material moves"} | Alerts: ${d.alerts.map(a =>
     for (const p of positions.values()) if (p.qty.gt(0) && marketable(p.assetClass)) universe.set(p.assetId, Object.assign({ id: p.assetId, cls: p.assetClass, symbol: p.symbol, name: p.name }, p.meta || {}));
     const presetSel = h("select", { style: "width:auto" }, Object.entries(PRESETS).map(([k, [l]]) => h("option", { value: k, selected: k === presetSaved }, l)));
     const out = h("div", { class: "stack" });
-    let results = null;
+    let results = null, ranked = [];
+    const aiBox = h("div", { class: "stack" }, h("div", { class: "empty" }, "Run a scan first."));
     const paint = () => {
       app.ls.set("scanPreset", presetSel.value);
       if (!results) return;
       const f = PRESETS[presetSel.value][1];
       const rows = results.filter(r => r.s).sort((a, b) => f(b.s) - f(a.s));
+      ranked = rows;
+      if (!aiBox._ready) { aiBox._ready = true; aiBox.replaceChildren(MD.oppAI.scanReview(app, () => ranked, PRESETS[presetSel.value][0])); }
       out.replaceChildren(U.table([{ t: "Asset", v: (r) => r.a.symbol }, { t: "Class", v: (r) => r.a.cls }, { t: "3M", v: (r) => U.chg(r.s.r3m), n: true }, { t: "1Y", v: (r) => U.chg(r.s.r1y), n: true }, { t: "Volatility", v: (r) => r.s.vol.toFixed(1) + "%", n: true }, { t: "Max DD", v: (r) => h("span", { class: "num down" }, r.s.mdd.toFixed(1) + "%"), n: true }, { t: "From 1Y high", v: (r) => U.chg(r.s.fromHigh), n: true }, { t: "vs 200-day avg", v: (r) => r.s.above200 == null ? "—" : r.s.above200 ? "Above" : "Below" }, { t: "Sharpe", v: (r) => isFinite(r.s.sharpe) ? r.s.sharpe.toFixed(2) : "—", n: true, cls: "adv" }, { t: "FCF margin", v: (r) => r.s.fcfMargin != null ? r.s.fcfMargin.toFixed(1) + "%" : "—", n: true },
         { t: "", v: (r) => h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: (e) => { e.stopPropagation(); app.go("research", { asset: X.slim(r.a) }); } }, "Research"), h("button", { class: "btn ghost sm", type: "button", onclick: (e) => { e.stopPropagation(); app.go("opportunities", { compare: [X.slim(r.a)] }); app.ls.set("oppTab", "compare"); } }, "Compare")) }], rows, { onRow: (r) => app.openAsset(r.a) }),
         results.some(r => r.err) ? h("p", { class: "small warn-t" }, "Skipped (no data): " + results.filter(r => r.err).map(r => r.a.symbol).join(", ")) : null,
@@ -311,7 +315,7 @@ Facts: ${facts.join(" | ") || "no material moves"} | Alerts: ${d.alerts.map(a =>
       h("div", { class: "row" }, h("label", { class: "row" }, h("span", { class: "label" }, "Rank by"), presetSel), h("button", { class: "btn", type: "button", onclick: () => runScan(presetSel.value === "fcf") }, "Run scan"), h("button", { class: "btn ghost", type: "button", onclick: () => runScan(true) }, "Run with fundamentals (slower)")),
       screenText ? h("div", { class: "banner info" }, h("p", {}, "From your request: “" + screenText + "”. International primary listings aren't scannable; the universe includes US-listed ADRs you add in Settings.")) : null,
       h("p", { class: "small muted" }, "Universe: " + [...universe.values()].map(a => a.symbol).join(", ") + ". Edit it in Settings; holdings and watchlist are included automatically."),
-      out)));
+      out)), U.section("AI review of the scan", h("div", { class: "stack" }, h("p", { class: "small muted" }, "Claude checks the top eight results with news, Zacks, the price picture and smart-money tools, judges each for a 6–12 month holding (Research further, Watch or Pass), and a second review checks the reasoning."), aiBox)));
   }
   function comparator(root, app, initial) {
     const R = app.settings.reportingCurrency;
@@ -343,14 +347,7 @@ Facts: ${facts.join(" | ") || "no material moves"} | Alerts: ${d.alerts.map(a =>
         { t: "Latest research", v: (r) => { const rp = reports.filter(x => x.assetId === r.a.id).sort((x, y) => y.createdAt - x.createdAt)[0]; return rp ? (rp.report && rp.report.verdict ? rp.report.verdict.label : "Report") + " · " + U.fmtDate(rp.createdAt) : "None"; } }], res),
         res.some(r => r.err) ? h("p", { class: "small warn-t" }, res.filter(r => r.err).map(r => r.a.symbol + ": " + U.errorText(r.err)).join(" · ")) : null,
         h("p", { class: "small muted" }, "Same period, same risk-free rate, same cost assumptions for every asset. Returns are price-only (dividends excluded) in each asset's own currency."));
-      const ai = h("div", { class: "prose" });
-      out.append(h("div", { class: "row" }, h("button", { class: "btn ghost", type: "button", onclick: async () => {
-        const s = app.caps.sample; if (!s) { ai.replaceChildren(U.errorBox({ message: "Claude isn't available in this view." })); return; }
-        const facts = ok.map(r => ({ asset: r.a.symbol, name: r.a.name, cls: r.a.cls, returnPct: +r.st.changePct.toFixed(2), volPct: +r.st.volPct.toFixed(1), maxDrawdownPct: +r.st.maxDrawdownPct.toFixed(1), currency: r.s.currency || "USD" }));
-        ai.replaceChildren(h("div", { class: "skeleton" }, "Thinking…"));
-        try { const t = await s(`Compare these investments for an investor reporting in ${R}, using ONLY the measured data below (period ${tf}). Discuss risk-adjusted return, drawdown, currency exposure, liquidity, and opportunity cost versus cash and a broad index. Say clearly when the data can't distinguish them, and that "none of these" or "wait" can be the right answer. 6-10 sentences, no markdown headings.\n${JSON.stringify(facts)}`, { cache: false, onText: ({ text }) => ai.replaceChildren(h("div", { style: "white-space:pre-wrap" }, text)) }); ai.replaceChildren(h("div", { style: "white-space:pre-wrap" }, t.text), h("p", { class: "small muted" }, "Written by Claude from the table above; not advice.")); }
-        catch (e) { ai.replaceChildren(U.errorBox({ message: "Couldn't write the comparison." })); }
-      } }, "Ask Claude to compare these")), ai);
+      out.append(U.section("AI comparison", h("div", { class: "stack" }, h("p", { class: "small muted" }, "Claude scores each investment on growth, risk, valuation, momentum and fit to your portfolio using news, Zacks and price tools; a second review checks the scores against the evidence."), MD.oppAI.compareAI(app, ok, tf, R))));
     }, { loading: "Loading price history…" });
   }
 

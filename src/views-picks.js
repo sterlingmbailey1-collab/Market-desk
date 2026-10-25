@@ -74,27 +74,41 @@
     return cands.sort((a, b) => b.score - a.score).slice(0, 14);
   }
 
-  /* ---------- 2. Claude chooses and explains ---------- */
-  async function generate(app, opts, log, signal) {
+  /* ---------- 2. Claude chooses, explains and gets reviewed ---------- */
+  // How well the measured signals line up with the call (0–100): momentum and Zacks for a direction, options vs history for "either".
+  function signalAgreement(p, c) {
+    if (p.lean === "either") return c.impliedMovePct != null && c.expectedMovePct ? Math.min(90, 40 + 25 * (c.impliedMovePct / c.expectedMovePct)) : 50;
+    const dir = p.lean === "up" ? 1 : -1; let pts = 0, n = 0;
+    if (c.ret3m != null || c.ret1m != null) { n++; if (Math.sign(c.ret3m ?? c.ret1m) === dir) pts++; }
+    if (c.zacksRank != null) { n++; if ((dir > 0 && c.zacksRank <= 2) || (dir < 0 && c.zacksRank >= 4)) pts++; else if (c.zacksRank === 3) pts += 0.5; }
+    if (c.fromHighPct != null) { n++; if ((dir > 0 && c.fromHighPct > -15) || (dir < 0 && c.fromHighPct < -15)) pts++; }
+    if (c.smartMoney && c.smartMoney.length) { n++; if (dir > 0) pts++; }
+    return n ? Math.round(25 + 65 * pts / n) : 50;
+  }
+  async function generate(app, opts, log, signal, onStep) {
     const s = app.caps.sample; if (!s) throw Object.assign(new Error("Claude isn't available in this view."), { code: "no_sample" });
     const lim = await s.limits().catch(() => null);
     const [wLabel, days] = WINDOWS[opts.window];
     const cands = await buildCandidates(app, opts, log);
     if (!cands.length) throw new Error("No candidates could be measured right now. Try again in a few minutes.");
-    const sources = [];
-    const tools = lim && lim.tools ? [{ name: "search_web", description: "Search recent news and primary sources about a candidate. Returns titles, URLs and highlights.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
-      async execute(i) { const q = String(i.query || ""); log("run", "Web search: " + q); try { const r = await D.webSearch(q, "Recent news, catalysts and risks that could cause a large price move. Include dates.", 5); for (const x of r.results) if (!sources.some(y => y.url === x.url)) sources.push(Object.assign(x, { retrievedAt: Date.now() })); log("ok", r.results.length + " results"); return r.text.slice(0, 14000); } catch (e) { log("fail", "Search failed"); throw new Error(U.errorText(e)); } } },
-      { name: "search_news", description: "Search Bigdata.com's indexed financial news for one company or topic (publisher, timestamp, excerpts). One company per call, in natural language.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
-        async execute(i) { const q = String(i.query || ""); log("run", "Bigdata.com news: " + q); try { const r = await D.bigdataNews(q, 5); for (const x of r.items) if (x.url && !sources.some(y => y.url === x.url)) sources.push({ url: x.url, title: x.title, retrievedAt: Date.now() }); log("ok", r.items.length + " articles"); return r.items.map(x => ({ headline: x.title, publisher: x.source, published: x.ts ? new Date(x.ts).toISOString() : null, url: x.url, excerpt: String(x.text || "").slice(0, 1500) })); } catch (e) { log("fail", "Bigdata.com search failed"); throw new Error(U.errorText(e)); } } },
-      { name: "crypto_news", description: "Latest news for one coin from CoinMarketCap. Matching is loose: check each headline is about the coin.", inputSchema: { type: "object", properties: { symbol: { type: "string" } }, required: ["symbol"] },
-        async execute(i) { const sym = String(i.symbol || "").toUpperCase(); log("run", "CoinMarketCap news: " + sym); try { const r = await D.cmc.news(sym, 6); for (const x of r.items) if (!sources.some(y => y.url === x.url)) sources.push({ url: x.url, title: x.title, retrievedAt: Date.now() }); log("ok", r.items.length + " items"); return r.items.map(x => ({ title: x.title, published: x.ts ? new Date(x.ts).toISOString() : null, url: x.url, excerpt: String(x.text || x.description || "").slice(0, 1200) })); } catch (e) { log("fail", "CoinMarketCap news failed"); throw new Error(U.errorText(e)); } } }] : undefined;
+    // Extra measured signals: Zacks Rank for stocks, and who among the tracked Congress members and investors holds it.
+    log("run", "Adding Zacks Rank and smart-money ownership");
+    await pool(cands.filter(c => c.asset.cls === "stock"), 4, async (c) => { try { const m = await D.zacks.metrics(c.asset.symbol); c.zacksRank = m.n("zacks_rank"); c.zacksTarget = m.n("zacks_target_price"); c.zacksUrl = m.url; } catch {} });
+    for (const c of cands) c.smartMoney = MD.smartView && c.asset.cls === "stock" ? MD.smartView.whoOwns(app, c.asset.symbol).map(w => w.name) : [];
+    log("ok", cands.filter(c => c.zacksRank != null).length + " with a Zacks Rank, " + cands.filter(c => c.smartMoney.length).length + " held or traded by tracked people");
+    const S = MD.ai.session(onStep || ((e) => log(e.kind, e.text)));
+    for (const c of cands) if (c.zacksUrl) S.add(c.zacksUrl, "Zacks " + c.asset.symbol, "data");
+    const tools = lim && lim.tools ? MD.ai.tools(app, S, ["search_news", "crypto_news", "search_web", "stock_snapshot", "zacks_view", "options_move", "smart_money"]) : undefined;
     const table = cands.map(c => ({ symbol: c.asset.symbol, name: c.asset.name, class: c.asset.cls, price: +Number(c.price).toPrecision(6), marketCapB: c.marketCap ? +(c.marketCap / 1e9).toFixed(1) : null, todayPct: c.dayChangePct != null ? +Number(c.dayChangePct).toFixed(2) : null,
       optionsImpliedMovePct: c.impliedMovePct != null ? +c.impliedMovePct.toFixed(1) : null, optionsExpiry: c.impliedExpiry, optionsDays: c.impliedDays, nearestExpiryMove: c.nearImplied, volatilityImplied1SigmaMovePct: c.expectedMovePct != null ? +c.expectedMovePct.toFixed(1) : null, annualVolPct: c.volPct != null ? +c.volPct.toFixed(1) : null,
-      earnings: c.earnings, shortInterestDaysToCover: c.shortDaysToCover != null ? +c.shortDaysToCover.toFixed(1) : null, return1mPct: c.ret1m != null ? +Number(c.ret1m).toFixed(1) : null, return3mPct: c.ret3m != null ? +c.ret3m.toFixed(1) : null, return7dPct: c.ret7d != null ? +Number(c.ret7d).toFixed(1) : null, fromYearHighPct: c.fromHighPct != null ? +c.fromHighPct.toFixed(1) : null, movementScore: +c.score.toFixed(1) }));
+      earnings: c.earnings, shortInterestDaysToCover: c.shortDaysToCover != null ? +c.shortDaysToCover.toFixed(1) : null, return1mPct: c.ret1m != null ? +Number(c.ret1m).toFixed(1) : null, return3mPct: c.ret3m != null ? +c.ret3m.toFixed(1) : null, return7dPct: c.ret7d != null ? +Number(c.ret7d).toFixed(1) : null, fromYearHighPct: c.fromHighPct != null ? +c.fromHighPct.toFixed(1) : null,
+      zacksRank: c.zacksRank ?? null, zacksTarget: c.zacksTarget ?? null, smartMoney: c.smartMoney.length ? c.smartMoney : null, movementScore: +c.score.toFixed(1) }));
+    const calib = MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-picks"));
     log("run", "Asking Claude to choose and explain (usually 1–3 minutes)");
     const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are picking assets that could make a LARGE price move (up or down) within the window "${wLabel}" (about ${days} days), for an investor who wants to watch them closely.
-Use ONLY the measured candidates below (measured by the app from exchange and options data). ${tools ? "Check recent news and catalysts for the strongest candidates with 3 to 8 tool calls: search_news (Bigdata.com) for stocks, crypto_news for coins, search_web for anything else or if a news tool fails. Cite only URLs returned by the tools." : "Web search is unavailable; say so in each pick's risks."}
-Pick the ${opts.count} with the best case for a large move. For each, judge direction honestly: "up" or "down" only when the evidence leans that way, otherwise "either" (a big move with no clear direction). Anchor the expected move to the options-implied move when present (it is the market's own estimate) and to the volatility-implied move otherwise; if you expect more than the market prices, say why. Anchor the time window to a dated catalyst (earnings date, options expiry) when there is one. Do not invent prices, dates or figures.
+Use ONLY the measured candidates below (measured by the app from exchange, options, Zacks and disclosure data). ${tools ? "Investigate the strongest candidates with 4 to 10 tool calls before deciding: search_news (Bigdata.com) for stocks, crypto_news for coins, stock_snapshot for the price picture, options_move or zacks_view where they would change your view, search_web if a news tool fails. Cite only URLs returned by the tools." : "Web search is unavailable; say so in each pick's risks."}
+Pick the ${opts.count} with the best case for a large move. For each, judge direction honestly: "up" or "down" only when the evidence leans that way, otherwise "either" (a big move with no clear direction). Anchor the expected move to the options-implied move when present (it is the market's own estimate) and to the volatility-implied move otherwise; if you expect more than the market prices, say why. Anchor the time window to a dated catalyst (earnings date, options expiry) when there is one. Give the strongest case on each side and what would change your mind. Do not invent prices, dates or figures.
+${calib}
 Measured candidates: ${JSON.stringify(table)}
 Reply with ONLY JSON:
 {"summary": "2-3 sentences on the overall picture and how uncertain this is",
@@ -102,26 +116,47 @@ Reply with ONLY JSON:
    "expectedMovePct": {"low": number, "high": number} (size of the move you expect in the window, as positive percents),
    "timeframe": {"days": number, "label": "e.g. 'by Nov 21 (options expiry)' or 'around earnings on Oct 30'", "anchor": "earnings"|"options expiry"|"event"|"trend"},
    "why": ["3-5 short reasons citing the measured numbers and news"], "catalyst": {"event": "...", "date": "YYYY-MM-DD or TBD"},
+   "bullCase": "the strongest case for a move up", "bearCase": "the strongest case for a move down", "changeMyMind": "the specific evidence that would make you drop this call",
    "invalidation": "what would mean the big move is unlikely", "risks": "biggest risk to this call", "confidence": 0-100,
    "sources": [{"title": "...", "url": "https://..."}]}],
  "excluded": [{"symbol": "...", "reason": "short reason a high-scoring candidate was left out"}]}`;
     const r = await s.json(prompt, Object.assign({ modelTier: "complex", signal }, tools ? { tools } : { cache: false }));
-    const retrieved = new Set(sources.map(x => x.url));
     const bySym = new Map(cands.map(c => [c.asset.symbol, c]));
-    const picks = (Array.isArray(r.picks) ? r.picks : []).filter(p => bySym.has(p.symbol)).slice(0, opts.count).map(p => {
+    let picks = (Array.isArray(r.picks) ? r.picks : []).filter(p => bySym.has(p.symbol)).slice(0, opts.count).map(p => {
       const c = bySym.get(p.symbol);
       const lo = Math.max(0, Number(p.expectedMovePct && p.expectedMovePct.low) || 0), hi = Math.max(lo, Number(p.expectedMovePct && p.expectedMovePct.high) || lo);
       return { symbol: p.symbol, asset: c.asset, lean: ["up", "down", "either"].includes(p.lean) ? p.lean : "either", leanProbabilityPct: Math.max(50, Math.min(85, Number(p.leanProbabilityPct) || 50)), moveLow: lo, moveHigh: hi,
         timeframeDays: Math.max(1, Math.min(400, Math.round(Number(p.timeframe && p.timeframe.days) || days))), timeframeLabel: (p.timeframe && p.timeframe.label) || wLabel, anchor: (p.timeframe && p.timeframe.anchor) || "trend",
         why: Array.isArray(p.why) ? p.why.slice(0, 6).map(String) : [], catalyst: p.catalyst || null, invalidation: p.invalidation || "", risks: p.risks || "", confidence: Math.max(0, Math.min(100, Number(p.confidence) || 0)),
-        sources: (Array.isArray(p.sources) ? p.sources : []).filter(x => x && /^https?:\/\//.test(x.url)).map(x => ({ title: x.title || x.url, url: x.url, verified: retrieved.has(x.url) })),
-        measured: { price: c.price, impliedMovePct: c.impliedMovePct, impliedExpiry: c.impliedExpiry, optionsAsOf: c.optionsAsOf, expectedMovePct: c.expectedMovePct, volPct: c.volPct, earnings: c.earnings, shortDaysToCover: c.shortDaysToCover, ret1m: c.ret1m, ret3m: c.ret3m, fromHighPct: c.fromHighPct, score: c.score } };
+        bullCase: String(p.bullCase || ""), bearCase: String(p.bearCase || ""), changeMyMind: String(p.changeMyMind || ""),
+        sources: S.verify(p.sources),
+        measured: { price: c.price, impliedMovePct: c.impliedMovePct, impliedExpiry: c.impliedExpiry, optionsAsOf: c.optionsAsOf, expectedMovePct: c.expectedMovePct, volPct: c.volPct, earnings: c.earnings, shortDaysToCover: c.shortDaysToCover, ret1m: c.ret1m, ret3m: c.ret3m, fromHighPct: c.fromHighPct, score: c.score, zacksRank: c.zacksRank ?? null, smartMoney: c.smartMoney } };
     });
     if (!picks.length) throw Object.assign(new Error("Claude didn't return usable picks. Try again."), { code: "invalid_json" });
+    // Second reader: checks each pick against the measured table and the sources retrieved.
+    const rv = await MD.ai.review(app, { task: "Which assets could make a large move in " + wLabel + ", which way, and why", S, signal,
+      items: picks.map(p => ({ id: p.symbol, lean: p.lean, leanProbabilityPct: p.leanProbabilityPct, expectedMovePct: [p.moveLow, p.moveHigh], timeframe: p.timeframeLabel, why: p.why, catalyst: p.catalyst, bullCase: p.bullCase, bearCase: p.bearCase, confidence: p.confidence, sources: p.sources.map(x => x.url) })),
+      facts: table.filter(t => picks.some(p => p.symbol === t.symbol)) });
+    const dropped = [];
+    for (const p of picks) {
+      const c = bySym.get(p.symbol), rev = rv && rv.reviews.find(x => x.id === p.symbol);
+      if (rev) {
+        p.review = rev;
+        if (rev.adjustedConfidence != null && rev.adjustedConfidence < p.confidence) { const k = p.confidence ? rev.adjustedConfidence / p.confidence : 1; p.leanProbabilityPct = Math.round(50 + (p.leanProbabilityPct - 50) * k); }
+      }
+      const verified = p.sources.filter(x => x.verified).length;
+      p.confidenceParts = { claude: p.confidence, reviewed: rev && rev.adjustedConfidence != null ? rev.adjustedConfidence : null, signals: signalAgreement(p, c), evidence: Math.min(100, verified * 25 + (p.catalyst && /^\d{4}-\d{2}-\d{2}$/.test(p.catalyst.date || "") ? 25 : 0)) };
+      p.confidence = MD.ai.blend([{ value: p.confidenceParts.reviewed ?? p.confidenceParts.claude, weight: 0.5 }, { value: p.confidenceParts.signals, weight: 0.3 }, { value: p.confidenceParts.evidence, weight: 0.2 }]);
+      if (rev && rev.verdict === "drop") dropped.push(p);
+    }
+    if (dropped.length && dropped.length < picks.length) picks = picks.filter(p => !dropped.includes(p));
+    else dropped.length = 0;
     log("run", "Recording current prices");
     await pool(picks, 5, async (p) => { try { const q = await app.quote(p.asset, 0); p.priceAtPick = q.price; p.currency = q.currency || "USD"; p.priceSource = q.source; } catch { p.priceAtPick = p.measured.price; p.currency = "USD"; p.priceSource = "screener snapshot"; } });
     log("ok", "Done");
-    return { window: opts.window, windowLabel: wLabel, scope: { stocks: !!opts.stocks, crypto: !!opts.crypto }, summary: r.summary || "", picks, excluded: Array.isArray(r.excluded) ? r.excluded.slice(0, 8) : [], candidates: cands.length, sourcesRetrieved: sources.length, demo: !!app.demo };
+    return { window: opts.window, windowLabel: wLabel, scope: { stocks: !!opts.stocks, crypto: !!opts.crypto }, summary: r.summary || "", picks, excluded: (Array.isArray(r.excluded) ? r.excluded.slice(0, 8) : []).concat(dropped.map(p => ({ symbol: p.symbol, reason: "Dropped by the review: " + (p.review.note || p.review.issues.join("; ")) }))),
+      review: rv ? { overall: rv.overall, kept: rv.reviews.filter(x => x.verdict === "keep").length, revised: rv.reviews.filter(x => x.verdict === "revise").length, dropped: dropped.length } : null,
+      candidates: cands.length, sourcesRetrieved: S.sources.length, toolCalls: S.calls, demo: !!app.demo };
   }
 
   async function journal(app, set) {
@@ -143,17 +178,17 @@ Reply with ONLY JSON:
     root.append(MD.marketsHelpers.head("Recommendations", "Claude's watchlist of assets that could make a large move, with why, which way it leans and roughly how long it may take. Built from measured market data; every pick is logged in your forecast journal and scored when its window ends."));
     root.append(h("div", { class: "banner warn" }, h("p", {}, "These are research leads, not advice to buy or sell. Large-move candidates are high risk by nature: a big expected move means big losses are as plausible as big gains, and most calls like these don't play out as described.")));
     const f = { stocks: h("input", { type: "checkbox", checked: app.ls.get("pk.stocks", true) }), crypto: h("input", { type: "checkbox", checked: app.ls.get("pk.crypto", true) }), window: h("select", {}, Object.entries(WINDOWS).map(([k, [l]]) => h("option", { value: k, selected: k === app.ls.get("pk.window", "3m") }, l))), count: h("select", {}, ["4", "6", "8"].map(n => h("option", { value: n, selected: n === app.ls.get("pk.count", "6") }, n + " picks"))) };
-    const log = h("div", { class: "log" }), phase = h("div", { class: "label" });
+    const log = MD.ai.logBox(), phase = h("div", { class: "label" });
     let ctl = null;
     const go = h("button", { class: "btn", type: "button" }, sets.length ? "Generate a fresh set" : "Generate recommendations");
     const stop = h("button", { class: "btn ghost", type: "button", hidden: true, onclick: () => ctl && ctl.abort() }, "Stop");
     go.onclick = async () => {
       if (!f.stocks.checked && !f.crypto.checked) { U.toast("Pick stocks, crypto or both", null, true); return; }
       app.ls.set("pk.stocks", f.stocks.checked); app.ls.set("pk.crypto", f.crypto.checked); app.ls.set("pk.window", f.window.value); app.ls.set("pk.count", f.count.value);
-      ctl = new AbortController(); go.disabled = true; stop.hidden = false; log.replaceChildren(); phase.textContent = "Working…";
-      const L = (kind, text) => { log.append(h("div", { class: kind }, new Date().toLocaleTimeString() + "  " + text)); log.scrollTop = log.scrollHeight; };
+      ctl = new AbortController(); go.disabled = true; stop.hidden = false; log.clear(); phase.textContent = "Working…";
+      const L = (kind, text) => log.add({ at: Date.now(), kind, text });
       try {
-        const set = await generate(app, { stocks: f.stocks.checked, crypto: f.crypto.checked, window: f.window.value, count: Number(f.count.value) }, L, ctl.signal);
+        const set = await generate(app, { stocks: f.stocks.checked, crypto: f.crypto.checked, window: f.window.value, count: Number(f.count.value) }, L, ctl.signal, (e) => log.add(e));
         if (app.demo) { phase.textContent = "Done (demo mode: not saved)"; body.replaceChildren(setView(app, Object.assign({ id: "unsaved", createdAt: Date.now() }, set))); }
         else { const saved = await app.store.create("picks", set); await journal(app, saved); app.ls.set("picksOpen", saved.id); phase.textContent = "Done · saved and logged in your forecast journal"; app.rerender(); }
       } catch (e) { phase.textContent = e && e.code === "cancelled" ? "Stopped." : ""; if (!(e && e.code === "cancelled")) L("fail", ({ no_sample: "Claude isn't available in this view.", not_granted: "Claude access was declined for this page.", rate_limited: "Usage limit reached; try again later.", invalid_json: "The answer came back unreadable; try again." })[e && e.code] || (e && e.message) || "Failed."); }
@@ -161,7 +196,7 @@ Reply with ONLY JSON:
     };
     root.append(U.section("Generate", h("div", { class: "stack" },
       h("div", { class: "form" }, h("label", { class: "chk" }, f.stocks, "US stocks"), h("label", { class: "chk" }, f.crypto, "Crypto"), U.field("Window", f.window), U.field("How many", f.count), h("div", { class: "field" }, h("div", { class: "row" }, go, stop))),
-      h("p", { class: "small muted" }, "Takes about 1–3 minutes and uses your Claude usage plus roughly 40–70 data requests through Exa, and a few news searches through Bigdata.com and CoinMarketCap when they're connected. Stocks are limited to US-listed companies above $5B market cap and $5 a share; coins to the top 60 above $1B, excluding stablecoins and wrapped tokens."),
+      h("p", { class: "small muted" }, "Takes about 2–4 minutes: the app measures the candidates, Claude investigates them with news, price, options, Zacks and smart-money tools, and a second review checks every pick against the evidence before it's shown. Uses your Claude usage plus roughly 40–70 data requests through Exa, a few news searches through Bigdata.com and CoinMarketCap, and Zacks lookups when they're connected. Stocks are limited to US-listed companies above $5B market cap and $5 a share; coins to the top 60 above $1B, excluding stablecoins and wrapped tokens."),
       phase, log)));
     const body = h("div", { class: "stack" });
     root.append(body);
@@ -242,8 +277,9 @@ Reply with ONLY JSON:
 
   function setView(app, set) {
     const wrap = h("div", { class: "stack" });
-    wrap.append(h("div", { class: "row between" }, h("div", { class: "stack", style: "gap:2px" }, h("h2", { style: "font-size:1.2rem" }, set.picks.length + " picks · " + set.windowLabel), h("span", { class: "small muted" }, "Generated " + U.fmtTs(set.createdAt) + " from " + set.candidates + " measured candidates and " + set.sourcesRetrieved + " retrieved sources" + (set.demo ? " · demo" : ""))), h("span", { class: "small muted" }, "Prices refresh every minute")));
+    wrap.append(h("div", { class: "row between" }, h("div", { class: "stack", style: "gap:2px" }, h("h2", { style: "font-size:1.2rem" }, set.picks.length + " picks · " + set.windowLabel), h("span", { class: "small muted" }, "Generated " + U.fmtTs(set.createdAt) + " from " + set.candidates + " measured candidates, " + set.sourcesRetrieved + " retrieved sources" + (set.toolCalls ? " and " + set.toolCalls + " research steps" : "") + (set.demo ? " · demo" : ""))), h("span", { class: "small muted" }, "Prices refresh every minute")));
     if (set.summary) wrap.append(h("p", {}, set.summary));
+    if (set.review) wrap.append(h("div", { class: "aireview " + (set.review.dropped ? "neutral" : "positive") }, h("span", { class: "verdict sm " + (set.review.dropped ? "neutral" : "positive") }, "Reviewed"), h("span", { class: "small" }, set.review.kept + " held up, " + set.review.revised + " revised, " + set.review.dropped + " dropped. " + (set.review.overall || ""))));
     const grid = h("div", { class: "grid g2" });
     const priceEls = new Map();
     for (const p of set.picks) {
@@ -263,6 +299,10 @@ Reply with ONLY JSON:
           p.catalyst && p.catalyst.event ? h("p", { class: "small" }, h("strong", {}, "Catalyst: "), p.catalyst.event + (p.catalyst.date && p.catalyst.date !== "TBD" ? " (" + p.catalyst.date + ")" : "")) : null,
           p.invalidation ? h("p", { class: "small" }, h("strong", {}, "What would make it unlikely: "), p.invalidation) : null,
           p.risks ? h("p", { class: "small" }, h("strong", {}, "Biggest risk: "), p.risks) : null,
+          p.bullCase || p.bearCase ? h("div", { class: "bullbear" }, h("div", { class: "bb up" }, h("span", { class: "label" }, "Bull case"), h("p", { class: "small" }, p.bullCase || "—")), h("div", { class: "bb down" }, h("span", { class: "label" }, "Bear case"), h("p", { class: "small" }, p.bearCase || "—"))) : null,
+          p.changeMyMind ? h("p", { class: "small" }, h("strong", {}, "What would change the view: "), p.changeMyMind) : null,
+          MD.ai.reviewBadge(p.review),
+          p.confidenceParts ? h("details", { class: "small" }, h("summary", { class: "label", style: "cursor:pointer" }, "Confidence " + p.confidence + "/100: how it's built"), MD.ai.meters([{ label: "Claude", value: p.confidenceParts.claude, note: "Claude's own confidence" }, { label: "After review", value: p.confidenceParts.reviewed, note: "The second reader's adjusted confidence" }, { label: "Signals agree", value: p.confidenceParts.signals, note: "Momentum, Zacks Rank, 52-week position, options vs history" }, { label: "Evidence", value: p.confidenceParts.evidence, note: "Verified sources and a dated catalyst" }])) : null,
           p.sources.length ? h("div", { class: "small" }, h("span", { class: "label" }, "Sources "), p.sources.map((s, i) => h("span", {}, i ? " · " : "", h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, (s.title || s.url).slice(0, 60)), s.verified ? null : h("span", { class: "warn-t" }, " (unverified)")))) : h("p", { class: "small faint" }, "No sources cited."),
           h("p", { class: "tiny muted" }, "Logged in your forecast journal; scored on " + due.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) + ".")),
         h("div", { class: "ft" },
