@@ -8042,8 +8042,35 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     return h("div", { class: "stack" },
       rows.length ? U.table([{ t: "Source", v: "label" }, { t: "Logged", v: (r) => String(r.logged), n: true }, { t: "Scored", v: (r) => String(r.scored), n: true }, { t: "Came true", v: (r) => r.hitPct != null ? r.hitPct.toFixed(0) + "%" : "—", n: true }, { t: "Brier (lower is better)", v: (r) => r.brier != null ? r.brier.toFixed(3) : "—", n: true }, { t: "If followed (avg)", v: (r) => r.followedPct == null ? "—" : h("span", { class: r.followedPct > 0 ? "up" : r.followedPct < 0 ? "down" : "", title: "Average return of its up/down calls if each had been acted on (down calls as shorts), " + r.followedN + " calls" }, (r.followedPct > 0 ? "+" : "") + r.followedPct.toFixed(2) + "%"), n: true }, { t: "Claude vs history", v: (r) => { const bw = blendFor(app, r.source); return bw.learned ? h("span", { title: "Brier on " + bw.n + " graded calls: Claude " + bw.brierClaude.toFixed(3) + ", history " + bw.brierModel.toFixed(3) + " (lower is better)" }, "blend " + Math.round(bw.wClaude * 100) + "/" + Math.round(100 - bw.wClaude * 100)) : h("span", { class: "muted" }, bw.n ? bw.n + "/10 graded" : "—"); } }, { t: "S&P 500 same windows", v: (r) => { if (!r.windows.length) return "—"; const el = h("span", { class: "num muted" }, "…"); spyOver(r.windows).then(v => { el.textContent = v == null ? "—" : (v > 0 ? "+" : "") + v.toFixed(2) + "%"; }, () => { el.textContent = "—"; }); return el; }, n: true }, { t: "By stated probability", v: (r) => r.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join(" · ") || "—" }], rows) : h("div", { class: "empty" }, "No forecasts logged yet."),
       all.scored ? h("div", { class: "row", style: "gap:16px;flex-wrap:wrap;align-items:center" }, h("div", { html: svg, style: "color:var(--muted);flex:1 1 260px;min-width:0" }), h("p", { class: "small muted", style: "flex:1 1 220px" }, "Each dot is a band of stated probability; its height is how often those calls came true. Dots below the dashed line mean the AI was overconfident in that band. Every AI that logs forecasts is told this record and asked to calibrate.")) : null,
-      lessonsPanel(app),
+      lessonsPanel(app), howItDecides(app),
       h("p", { class: "tiny muted" }, "Due forecasts are scored automatically while the page is open, from the close on their due date. A Brier score of 0.25 is what always saying 50% would earn."));
+  }
+
+  /* How a probability on the desk is made, with the live state of each step: what has been studied and learned, and,
+     per feature, how much its odds lean on Claude versus measured history and whether calibration has started. */
+  const BLENDED = new Set(["ai-picks", "ai-decide", "ai-market"]), CALIBRATED = new Set(["ai-picks", "ai-decide", "ai-market", "ai-day"]);
+  function howItDecides(app) {
+    const days = MD.brain ? MD.brain.latestPerDay(app).length : 0, pb = MD.brain ? MD.brain.playbook(app) : { patterns: [] }, active = pb.patterns.filter(p => p.status === "active").length;
+    const L = latestLessons(app), W = MD.brain && MD.brain.reviews ? MD.brain.reviews(app)[0] : null;
+    const rows = ["ai-picks", "ai-decide", "ai-market", "ai-day", "ai-take", "ai"].map(s => {
+      const tr = trackRecord(app, s), bw = BLENDED.has(s) ? blendFor(app, s) : null, cal = CALIBRATED.has(s) ? calibrateUp(app, s, 60) : null;
+      return { s, label: SOURCE_LABEL[s], tr, bw, cal };
+    });
+    const step = (title, text) => h("li", {}, h("strong", {}, title + ". "), text);
+    return h("details", { class: "howai" }, h("summary", { class: "label", style: "cursor:pointer" }, "How the desk's AI decides"),
+      h("ol", { class: "small", style: "margin:8px 0 0;padding-left:1.3em;display:grid;gap:6px" },
+        step("Measure", "The page computes the numbers first: prices, the asset's own base rate (how often it was higher over the same horizon in situations like today's), options-implied moves, volatility, Zacks, insiders, smart money and what moved it (market, sector, rates, dollar, oil)."),
+        step("Research", "Claude investigates with tools (news, web pages, earnings, options, filings) and reasons over what they return. Citations are checked against the pages actually retrieved; unverified ones are flagged."),
+        step("Context", "Every prompt carries your investor profile, the Market Brain (" + days + " session" + (days === 1 ? "" : "s") + " studied, " + active + " active pattern" + (active === 1 ? "" : "s") + ")" + (W ? ", the weekly review of " + W.week : "") + ", the desk's past calls on the asset and the latest lessons" + (L ? " (" + U.fmtDate(L.createdAt) + ")" : " (none yet)") + "."),
+        step("Review", "A second, sceptical reader checks each call against the measured data and sources, keeps, revises or drops it, and gives its own probability, which is averaged in."),
+        step("Blend", "Claude's probability is blended with the measured history. The weights start at 65% Claude / 35% history and are learned from each feature's graded calls (whichever has been more accurate gets more weight)."),
+        step("Calibrate", "Once a feature has 10 graded calls, stated odds are pulled toward how often calls at that level actually came true."),
+        step("Log, grade, monitor", "Every call is logged with its price and graded from the close on its due date. Open calls are priced every two hours and you're told when one turns."),
+        step("Learn", "After 10 more graded calls Claude re-studies the record and writes lessons; the weekly review adds what the week taught. Both reach every forecasting prompt.")),
+      U.table([{ t: "Feature", v: (r) => r.label }, { t: "Graded", v: (r) => String(r.tr.scored), n: true }, { t: "Came true", v: (r) => r.tr.hitPct != null ? r.tr.hitPct.toFixed(0) + "%" : "—", n: true },
+        { t: "Weight on Claude", v: (r) => !r.bw ? "—" : Math.round(r.bw.wClaude * 100) + "% " + (r.bw.learned ? "(learned)" : "(default; learns at 10, " + r.bw.n + " so far)") },
+        { t: "Calibration", v: (r) => !r.cal ? "—" : r.cal.applied ? "active (" + r.cal.scored + " graded)" : r.cal.scored >= 10 ? "checked; no correction needed" : "starts at 10 (" + r.cal.scored + " so far)" }], rows),
+      h("p", { class: "tiny muted" }, "Read-only throughout: the desk never trades or bets. Numbers come from the page's own measurements; Claude never supplies prices."));
   }
 
   /* ---------- per-asset memory ---------- */
