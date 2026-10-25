@@ -29,12 +29,12 @@
   function legOf(g, k, side, book) {
     const mk = g.markets[k], q = mk.books[book][side];
     const pick = k === "ml" ? (side === "draw" ? "Draw" : sideName(g, side) + (g.soccer ? " to win" : " moneyline")) : k === "total" ? sideName(g, side) + " " + q.line : sideName(g, side) + " " + lineTxt(k, side, q.line);
-    return { id: g.id + "|" + k + "|" + side + "|" + book, gameId: g.id, sport: g.sport, game: title(g), start: g.start || null, market: k, marketLabel: mk.label, side, pick, book, dec: q.dec, line: q.line, p: q.p ?? null, push: q.push || 0, modelP: q.modelP ?? null, addedAt: Date.now() };
+    return { id: g.id + "|" + k + "|" + side + "|" + book, gameId: g.id, sport: g.sport, game: title(g), home: g.home.name, away: g.away.name, soccer: !!g.soccer, start: g.start || null, startDate: g.espn && g.espn.date || null, market: k, marketLabel: mk.label, side, pick, book, dec: q.dec, line: q.line, p: q.p ?? null, push: q.push || 0, modelP: q.modelP ?? null, addedAt: Date.now() };
   }
-  function addLeg(app, leg) {
+  function addLeg(app, leg, quiet) {
     const legs = slip(app).filter(l => l.id !== leg.id && !(l.gameId === leg.gameId && l.market === leg.market && l.side === leg.side));
     legs.push(leg); setSlip(app, legs);
-    U.toast("Added to bet slip", leg.pick + " · " + leg.book + " " + odds(app, leg.dec) + " · " + legs.length + " on the slip");
+    if (!quiet) U.toast("Added to bet slip", leg.pick + " · " + leg.book + " " + odds(app, leg.dec) + " · " + legs.length + " on the slip");
   }
 
   /* ---------- tracked bets (account storage) ---------- */
@@ -43,92 +43,165 @@
 
   V.betting = function (root, app) {
     const ctx = app.ctx.betting;
-    if (ctx && ctx.gameId) return gameView(root, app, ctx);
-    return listView(root, app);
+    const off = app.on("betslip", () => { const p = root.querySelector(".slippanel"); if (p) p.replaceWith(slipPanel(app)); const bar = root.querySelector(".slipbar"); if (bar) bar.replaceWith(slipBar(app)); });
+    const main = h("div", { class: "stack betmain" });
+    root.append(h("div", { class: "betshell" }, main, h("aside", { class: "betaside" }, slipPanel(app))), slipBar(app));
+    let stop = null;
+    if (ctx && ctx.gameId) gameView(main, app, ctx); else stop = listView(main, app);
+    // Re-read odds every 5 minutes while the tab is open (price alerts are checked on each read).
+    const timer = setInterval(() => { const sport = ctx && ctx.gameId ? ctx.sport : app.ls.get("bet.sport", "nfl"); B.load(sport, true).then(r => checkAlerts(app, r)).catch(() => {}); }, 5 * 60e3);
+    return () => { off(); clearInterval(timer); stop && stop(); };
   };
 
   /* ================= list ================= */
-  function sportSelect(app, cur, onPick) {
-    const sel = h("select", { "aria-label": "Sport or league", class: "sportsel" });
+  const SHORT = { nfl: "NFL", ncaaf: "NCAAF", nba: "NBA", ncaab: "NCAAB", wnba: "WNBA", mlb: "MLB", nhl: "NHL", epl: "Premier League", laliga: "La Liga", seriea: "Serie A", bundesliga: "Bundesliga", ligue1: "Ligue 1" };
+  function leagueChips(app, cur, onPick) {
     const groups = [...new Set(B.SPORTS.map(s => s.group))];
-    for (const g of groups) sel.append(h("optgroup", { label: g }, B.SPORTS.filter(s => s.group === g).map(s => h("option", { value: s.id, selected: s.id === cur }, sportLabel(s)))));
-    sel.onchange = () => onPick(sel.value);
-    return sel;
+    return h("div", { class: "leagues", role: "group", "aria-label": "League" }, groups.map((gname, gi) => h("div", { class: "lg-group" }, gi ? h("span", { class: "lg-sep", "aria-hidden": "true" }) : null,
+      B.SPORTS.filter(s => s.group === gname).map(s => h("button", { type: "button", class: "lg", "aria-pressed": String(s.id === cur), title: sportLabel(s), "data-league": s.id, onclick: () => onPick(s.id) }, SHORT[s.id] || s.name, s.country ? h("span", { class: "lg-c" }, s.country) : null)))));
   }
   function rgNote() {
-    return h("div", { class: "banner info rg" }, h("p", { class: "small" }, h("strong", {}, "Bet responsibly. "), "Only stake what you can afford to lose, and check that sports betting is legal where you are and that you meet the age limit (21+ in most US states, 18+ in the UK and EU). Help is free and confidential: call or text ", h("b", { class: "mono" }, "1-800-GAMBLER"), " (US), or visit ", h("a", { href: "https://www.begambleaware.org/", target: "_blank", rel: "noopener noreferrer" }, "BeGambleAware"), " (UK). Market Desk reads published odds and never places bets."));
+    return h("details", { class: "rg" }, h("summary", { class: "tiny" }, h("strong", {}, "Bet responsibly."), " Only stake what you can afford to lose. Help: ", h("b", { class: "mono" }, "1-800-GAMBLER"), " (US) · Market Desk never places bets."),
+      h("p", { class: "small" }, "Check that sports betting is legal where you are and that you meet the age limit (21+ in most US states, 18+ in the UK and EU). Help is free and confidential: call or text ", h("b", { class: "mono" }, "1-800-GAMBLER"), " (US), or visit ", h("a", { href: "https://www.begambleaware.org/", target: "_blank", rel: "noopener noreferrer" }, "BeGambleAware"), " (UK). You can set a daily loss limit and a stake cap under My bets."));
   }
+  const VIEWS = [["games", "Games"], ["picks", "AI picks"], ["value", "Value & arbitrage"], ["bets", "My bets"], ["calc", "Calculators"], ["assistant", "AI assistant"]];
   function listView(root, app) {
     let sport = app.ls.get("bet.sport", "nfl"); if (!B.SPORTS.some(s => s.id === sport)) sport = "nfl";
-    let tab = app.ls.get("bet.tab", "games");
-    const P = prefs(app);
-    const tabsBox = h("div", {}), body = h("div", { class: "stack" });
-    const fmtSeg = () => U.seg(["American", "Decimal", "Fractional"], P.oddsFormat[0].toUpperCase() + P.oddsFormat.slice(1), (v) => { setPrefs(app, { oddsFormat: v.toLowerCase() }); app.rerender(); });
-    const refresh = h("button", { class: "btn ghost sm", type: "button", onclick: () => { B.cacheClear(); paint(); } }, "Refresh odds");
-    root.append(head("Sports Betting", "Every book's price for each bet, the chance it wins once the bookmaker's margin is taken out, and tools to size, compare and track bets."),
-      rgNote(),
-      h("div", { class: "row betbar" }, U.field("Sport or league", sportSelect(app, sport, (v) => { sport = v; app.ls.set("bet.sport", v); paint(); })), h("div", { class: "field" }, h("span", { class: "label" }, "Odds format"), fmtSeg()), h("div", { class: "field" }, h("span", { class: "label" }, " "), refresh)),
-      tabsBox, body);
-    const paintTabs = () => tabsBox.replaceChildren(U.tabs([["games", "Games & odds"], ["value", "Value & arbitrage"], ["slip", "Bet slip (" + slip(app).length + ")"], ["bets", "My bets"], ["calc", "Calculators"]], tab, (k) => { tab = k; app.ls.set("bet.tab", k); paint(); }));
-    const off = app.on("betslip", paintTabs);
+    let tab = app.ls.get("bet.tab", "games"); if (!VIEWS.some(v => v[0] === tab)) tab = "games";
+    const chips = h("div", {}), tabsBox = h("div", {}), body = h("div", { class: "stack" });
+    root.append(h("div", { class: "page-head bethead" }, h("div", { class: "stack", style: "gap:2px" }, h("h1", { class: "page" }, "Sports Betting"), h("p", { class: "sub" }, "Odds from every book, the real chance of each bet, AI forecasts and picks, and tools to size and track your bets."))),
+      rgNote(), chips, tabsBox, body);
+    const paintHead = () => { chips.replaceChildren(leagueChips(app, sport, (v) => { sport = v; app.ls.set("bet.sport", v); paint(); })); tabsBox.replaceChildren(U.tabs(VIEWS, tab, (k) => { tab = k; app.ls.set("bet.tab", k); paint(); })); };
     function paint() {
-      paintTabs();
-      body._loadId = (body._loadId || 0) + 1; // drop any odds load still in flight for the previous tab
+      paintHead();
+      body._loadId = (body._loadId || 0) + 1; // drop any odds load still in flight for the previous view
       body.replaceChildren();
-      if (tab === "slip") return slipView(body, app);
       if (tab === "bets") return betsView(body, app);
       if (tab === "calc") return calcView(body, app);
-      U.async(body, () => B.load(sport), (r) => tab === "value" ? valueView(body, app, r) : gamesView(body, app, r), { loading: "Reading odds for " + sportLabel(B.sportOf(sport)) + " from " + (B.sportOf(sport).soccer ? "SportsLine, Kalshi and the Statz model" : "VegasInsider") + "…" });
+      if (tab === "assistant") return body.append(U.section("AI betting assistant", MD.betAI.assistant(app, () => ({ league: sport }))));
+      const sp = B.sportOf(sport);
+      U.async(body, () => B.load(sport), (r) => { checkAlerts(app, r); (tab === "value" ? valueView : tab === "picks" ? picksView : gamesView)(body, app, r); }, { loading: "Reading odds for " + sportLabel(sp) + " from " + (sp.soccer ? "SportsLine, Kalshi, ESPN and the Statz model" : "VegasInsider and ESPN") + "…" });
     }
     paint();
-    return () => off();
+    return null;
   }
   function sourcesLine(r) {
     return h("div", { class: "srcline tiny muted" }, "Sources: ", ...r.sources.flatMap((s, i) => [i ? " · " : "", h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, s.name), s.updated ? " (page updated " + U.fmtDate(s.updated) + ")" : ""]), " · read " + ago(r.loadedAt) + ". Odds move quickly and the copy read can lag: confirm the price in the sportsbook before betting.");
   }
+  const dayOf = (g) => { if (!g.start) return "later"; const d = B.etYmd(g.start), t = B.etYmd(), t1 = B.etYmd(Date.now() + 864e5); return d === t ? "today" : d === t1 ? "tomorrow" : d < t ? "today" : "later"; };
   function gamesView(body, app, r) {
     const sp = r.sport, P = prefs(app);
-    let show = app.ls.get("bet.show", "upcoming");
-    const upcoming = r.games.filter(g => g.status !== "final" && g.status !== "past");
-    const list = show === "all" ? r.games : upcoming;
-    const grid = h("div", { class: "gcards" }, list.map(g => gameCard(app, g, sp)));
+    let day = app.ls.get("bet.day", "all"), valueOnly = app.ls.get("bet.valueOnly", false), showDone = app.ls.get("bet.show", "upcoming") === "all";
+    const listBox = h("div", { class: "gamelist" }), info = h("span", { class: "tiny muted" });
+    const fc = MD.betAI.cache(app);
+    const hasValue = (g) => Object.values(g.markets).some(mk => Object.values(mk.books).some(q => mk.sides.some(s => q[s] && (q[s].edge > 0.01 || q[s].modelEdge > 0.03)))) || Object.values(g.markets).some(m => m.arb && m.arb.arb);
+    const paintList = () => {
+      let list = r.games.filter(g => showDone || (g.status !== "final" && g.status !== "past"));
+      if (day !== "all") list = list.filter(g => dayOf(g) === day);
+      if (valueOnly) list = list.filter(hasValue);
+      info.textContent = list.length + " of " + r.games.length + " games · " + (r.books.length ? r.books.length + " books" : "no books") + (fc.size ? " · AI forecasts: " + r.games.filter(g => fc.has(g.id)).length : "");
+      listBox.replaceChildren(...(list.length ? list.map(g => gameRow(app, g, sp)) : [h("div", { class: "empty" }, r.games.length ? "No games match these filters." : "No games are listed for " + sp.name + " right now. The league may be between games or out of season.")]));
+    };
+    const slateBtn = h("button", { class: "btn sm", type: "button" }, fc.size && r.games.some(g => fc.has(g.id)) ? "Re-run AI forecast for all games" : "AI forecast for all games");
+    slateBtn.onclick = async () => {
+      slateBtn.disabled = true; slateBtn.textContent = "Forecasting…";
+      try { const out = await MD.betAI.forecastSlate(app, r); U.toast("AI forecasts ready", out.length + " games · first forecasts are logged to the AI track record"); paintList(); }
+      catch (e) { U.toast("Forecast didn't finish", MD.betAI.errText(e), true); }
+      slateBtn.disabled = false; slateBtn.textContent = "Re-run AI forecast for all games";
+    };
+    const fmtSeg = U.seg(["American", "Decimal", "Fractional"], P.oddsFormat[0].toUpperCase() + P.oddsFormat.slice(1), (v) => { setPrefs(app, { oddsFormat: v.toLowerCase() }); app.rerender(); });
+    const vChk = h("input", { type: "checkbox", checked: !!valueOnly }); vChk.onchange = () => { valueOnly = vChk.checked; app.ls.set("bet.valueOnly", valueOnly); paintList(); };
+    const dChk = h("input", { type: "checkbox", checked: !!showDone }); dChk.onchange = () => { showDone = dChk.checked; app.ls.set("bet.show", showDone ? "all" : "upcoming"); paintList(); };
     body.append(
-      h("div", { class: "row between" }, h("div", { class: "row" }, h("strong", {}, sportLabel(sp)), h("span", { class: "tiny muted" }, upcoming.length + " upcoming · " + r.games.length + " listed · " + (r.books.length ? r.books.length + " books: " + r.books.join(", ") : "no books"))),
-        U.seg(["Upcoming", "All incl. finished"], show === "all" ? "All incl. finished" : "Upcoming", (v) => { app.ls.set("bet.show", v === "Upcoming" ? "upcoming" : "all"); body.replaceChildren(); gamesView(body, app, r); })),
+      h("div", { class: "row between betbar" },
+        h("div", { class: "row" }, U.seg(["All", "Today", "Tomorrow", "Later"], day[0].toUpperCase() + day.slice(1), (v) => { day = v.toLowerCase(); app.ls.set("bet.day", day); body.replaceChildren(); gamesView(body, app, r); }), h("label", { class: "chk" }, vChk, " Value only"), h("label", { class: "chk" }, dChk, " Finished too")),
+        h("div", { class: "row" }, slateBtn, fmtSeg, h("button", { class: "btn ghost sm", type: "button", onclick: () => { B.cacheClear(); app.rerender(); } }, "Refresh odds"))),
+      info,
       r.errors && r.errors.length ? h("div", { class: "banner warn" }, h("p", { class: "small" }, "Some sources didn't answer: " + r.errors.join(" · ") + ". What loaded is shown.")) : null,
-      list.length ? grid : h("div", { class: "empty" }, r.games.length ? "No upcoming games listed. Switch to “All incl. finished” to see the rest." : "No games are listed for " + sp.name + " right now. The league may be between games or out of season."),
-      sourcesLine(r),
-      h("p", { class: "tiny muted" }, "“Fair” is the chance each side wins with the bookmaker's margin removed: the median, across books, of each book's prices scaled so they add to 100%." + (sp.soccer ? " For soccer results, the fair split comes from Kalshi's exchange prices (they include the draw), or the Statz model when Kalshi has no market." : "") + " Edge is how much a price pays above that fair chance. * Kalshi exchange price, before its trading fee. Click a game for every book, line and calculator."));
+      listBox, sourcesLine(r),
+      h("p", { class: "tiny muted" }, "Win % is the fair chance with the bookmaker's margin removed" + (sp.soccer ? " (Kalshi's exchange prices, else the Statz model)" : "") + "; ✦ marks the AI's pick and its confidence. * Kalshi price before its trading fee."));
+    paintList();
   }
   function bestCell(app, g, k, side) {
     const mk = g.markets[k]; if (!mk || !mk.best || !mk.best[side]) return h("span", { class: "faint" }, "—");
     const b = mk.best[side], q = mk.books[b.book][side];
-    return h("span", { class: "bc", title: b.exchange ? "Kalshi exchange price before its trading fee" : "" }, h("b", { class: "num" }, (k === "ml" ? "" : lineTxt(k, side, b.line) + " ") + odds(app, b.dec)), h("span", { class: "tiny muted" }, " " + b.book + (b.exchange ? "*" : "")), q.edge != null && q.edge > 0.005 ? h("span", { class: "evtag" }, edgeTxt(q.edge)) : null);
+    return h("span", { class: "bc", title: b.exchange ? "Kalshi exchange price before its trading fee" : "Best price: " + b.book }, h("b", { class: "num" }, (k === "ml" ? "" : lineTxt(k, side, b.line) + " ") + odds(app, b.dec)), h("span", { class: "tiny muted" }, " " + b.book + (b.exchange ? "*" : "")), q.edge != null && q.edge > 0.005 ? h("span", { class: "evtag" }, edgeTxt(q.edge)) : null);
   }
   function probBar(p, cls) { return h("span", { class: "pbar " + (cls || "") }, h("i", { style: "width:" + Math.max(0, Math.min(100, (p || 0) * 100)).toFixed(1) + "%" })); }
-  function gameCard(app, g, sp) {
-    const ml = g.markets.ml;
+  function injBadge(list) { const out = (list || []).filter(p => p.severe).length, q = (list || []).filter(p => !p.severe && /questionable|day-to-day|doubtful/i.test(p.status)).length; return out || q ? h("span", { class: "injb", title: (list || []).map(p => p.name + ": " + p.status).join("\n") }, out ? out + " out" : "", out && q ? " · " : "", q ? q + " q" : "") : null; }
+  function gameRow(app, g, sp) {
+    const ml = g.markets.ml, f = MD.betAI.cache(app).get(g.id);
     const sides = g.soccer ? ["home", "draw", "away"] : ["away", "home"];
     const pOf = (s) => ml && ml.fair ? ml.fair[s] : g.model ? g.model[s] : null;
+    const rec = (s) => g.espn ? h("span", {}, g.espn[s].record + (g.espn[s].split ? " (" + g.espn[s].split + (g.espn[s].splitKind ? " " + g.espn[s].splitKind.toLowerCase() : "") + ")" : "")) : null;
     const badges = [];
-    const evs = Object.entries(g.markets).flatMap(([k, mk]) => Object.entries(mk.books).flatMap(([b, q]) => mk.sides.filter(s => q[s] && q[s].edge > 0.01).map(s => ({ k, b, s, e: q[s].edge }))));
-    if (evs.length) { const top = evs.sort((a, b) => b.e - a.e)[0]; badges.push(h("span", { class: "chip ev" }, "Best edge " + edgeTxt(top.e) + " · " + top.b)); }
+    const evs = Object.entries(g.markets).flatMap(([k, mk]) => Object.entries(mk.books).flatMap(([b, q]) => mk.sides.filter(s => q[s] && q[s].edge > 0.01).map(s => ({ b, e: q[s].edge }))));
+    if (evs.length) { const top = evs.sort((a, b) => b.e - a.e)[0]; badges.push(h("span", { class: "chip ev" }, "Edge " + edgeTxt(top.e) + " · " + top.b)); }
     const arb = Object.values(g.markets).find(m => m.arb && m.arb.arb);
-    if (arb) badges.push(h("span", { class: "chip arb" }, "Arbitrage " + arb.arb.profitPct.toFixed(2) + "%"));
+    if (arb) badges.push(h("span", { class: "chip arb" }, "Arb " + arb.arb.profitPct.toFixed(2) + "%"));
+    if (g.espn && g.espn.tempF != null) badges.push(h("span", { class: "chip" }, g.espn.tempF + "°F"));
     if (g.model) badges.push(h("span", { class: "chip" }, "Statz model"));
     if (g.kalshi) badges.push(h("span", { class: "chip" }, "Kalshi"));
-    const open = () => app.openGame(g);
-    return h("button", { class: "gcard", type: "button", onclick: open },
-      h("div", { class: "row between gc-top" }, h("span", { class: "tiny" }, whenTxt(g)), h("span", { class: "gstat " + g.status.replace(/\s/g, "") }, STATUS[g.status] || g.status)),
-      h("div", { class: "gc-teams" }, sides.map(s => h("div", { class: "gc-row" },
-        h("span", { class: "gc-name" }, s === "draw" ? "Draw" : sideName(g, s), s === "home" && !g.soccer ? h("span", { class: "tiny faint" }, " home") : null),
-        h("span", { class: "gc-p" }, probBar(pOf(s)), h("span", { class: "num small" }, pct(pOf(s), 0))),
-        h("span", { class: "gc-odds" }, ml ? bestCell(app, g, "ml", s) : h("span", { class: "faint tiny" }, "no price"))))),
-      h("div", { class: "gc-lines tiny" },
-        g.markets.spread && g.markets.spread.mainLine != null ? h("span", {}, (g.soccer ? "Handicap " : "Spread ") + g.away.name.split(" ").slice(-1)[0] + " " + lineTxt("spread", "away", g.markets.spread.mainLine)) : null,
-        g.markets.total && g.markets.total.mainLine != null ? h("span", {}, "Total " + g.markets.total.mainLine + (g.markets.total.fair ? " · over " + pct(g.markets.total.fair.over, 0) : "")) : null,
-        Object.values(g.markets).length ? h("span", {}, Math.max(...Object.values(g.markets).map(m => m.bookCount || 0)) + " books") : h("span", {}, "Model only: no odds listed yet")),
-      badges.length ? h("div", { class: "row gc-badges" }, badges) : null);
+    return h("button", { class: "gamerow" + (f ? " has-ai" : ""), type: "button", onclick: () => app.openGame(g) },
+      h("span", { class: "gr-when" }, h("span", { class: "tiny" }, whenTxt(g)), h("span", { class: "gstat " + g.status.replace(/\s/g, "") }, STATUS[g.status] || g.status)),
+      h("span", { class: "gr-teams" }, sides.map(s => h("span", { class: "gr-side" + (f && f.winner === s ? " ai-pick" : "") },
+        h("span", { class: "gr-name" }, h("span", { class: "gr-team" }, s === "draw" ? "Draw" : sideName(g, s)), s !== "draw" && (g.espn || (g.injuries && g.injuries[s] && g.injuries[s].length)) ? h("span", { class: "gr-meta" }, rec(s), g.injuries ? injBadge(g.injuries[s]) : null) : null),
+        h("span", { class: "gr-p" }, probBar(pOf(s)), h("span", { class: "num small" }, pct(pOf(s), 0))),
+        h("span", { class: "gr-odds" }, ml ? bestCell(app, g, "ml", s) : h("span", { class: "faint tiny" }, "no price"))))),
+      h("span", { class: "gr-side2" },
+        f ? h("span", { class: "aipick", title: "AI forecast (" + f.mode + "): " + sideName(g, f.winner) + " " + pct(f.probs[f.winner]) + ", confidence " + f.confidence + "/100" }, "✦ " + (f.winner === "draw" ? "Draw" : sideName(g, f.winner).split(" ").slice(-1)[0]) + " " + pct(f.probs[f.winner]), h("span", { class: "conf-dot", style: "--c:" + f.confidence }), f.predicted ? h("span", { class: "tiny muted" }, " " + (g.soccer ? f.predicted.home + "–" + f.predicted.away : f.predicted.away + "–" + f.predicted.home)) : null) : null,
+        h("span", { class: "tiny muted" }, [g.markets.spread && g.markets.spread.mainLine != null ? (g.soccer ? "Hcp " : "Spread ") + sideName(g, "away").split(" ").slice(-1)[0] + " " + lineTxt("spread", "away", g.markets.spread.mainLine) : null, g.markets.total && g.markets.total.mainLine != null ? "Total " + g.markets.total.mainLine : null, Object.keys(g.markets).length ? null : "Model only: no odds yet"].filter(Boolean).join(" · ")),
+        badges.length ? h("span", { class: "row gc-badges" }, badges) : null));
+  }
+
+  /* ---------- AI picks: slate forecasts, ready-made slips, track record ---------- */
+  function picksView(body, app, r) {
+    const A = MD.betAI, fc = A.cache(app), sp = r.sport;
+    const fcs = r.games.filter(g => fc.has(g.id)).map(g => ({ g, f: fc.get(g.id) }));
+    const run = h("button", { class: "btn", type: "button" }, fcs.length ? "Re-run the slate forecast" : "Forecast every " + sp.name + " game with AI");
+    run.onclick = async () => { run.disabled = true; run.textContent = "Forecasting…"; try { await A.forecastSlate(app, r); body.replaceChildren(); picksView(body, app, r); } catch (e) { U.toast("Forecast didn't finish", A.errText(e), true); run.disabled = false; run.textContent = "Try again"; } };
+    body.append(U.section("Most likely results", h("div", { class: "stack" },
+      h("div", { class: "row between" }, h("p", { class: "small", style: "margin:0;max-width:62ch" }, "A quick AI pass over every game using the odds, ESPN injuries, records and home/away splits" + (sp.soccer ? ", and the Statz model" : "") + ". Open a game for an in-depth forecast with live news."), run),
+      fcs.length ? U.table([
+        { t: "Game", v: (x) => h("span", { class: "stack", style: "gap:2px;justify-items:start;text-align:left" }, h("button", { class: "linkbtn", type: "button", style: "text-align:left", onclick: () => app.openGame(x.g) }, title(x.g)), h("span", { class: "tiny muted" }, whenTxt(x.g) + (x.f.summary || x.f.why ? " · " + (x.f.summary || x.f.why) : ""))) },
+        { t: "AI pick", v: (x) => h("b", {}, sideName(x.g, x.f.winner)) },
+        { t: "AI chance", v: (x) => pct(x.f.probs[x.f.winner]), n: true },
+        { t: "Market", v: (x) => x.f.fair && x.f.fair[x.f.winner] != null ? pct(x.f.fair[x.f.winner]) : "—", n: true },
+        { t: "Score", v: (x) => x.f.predicted ? (x.g.soccer ? x.f.predicted.home + "–" + x.f.predicted.away : x.f.predicted.away + "–" + x.f.predicted.home) : "—", n: true },
+        { t: "Confidence", v: (x) => confMeter(x.f) }
+      ], fcs.sort((a, b) => b.f.confidence - a.f.confidence)) : h("div", { class: "empty" }, "No forecasts yet for " + sp.name + ". Run the slate forecast, or open a game for an in-depth one."))));
+    const s = A.buildSlips(app, r);
+    const legRow = (x) => h("div", { class: "sl-leg" }, h("b", {}, x.label), h("span", { class: "num small" }, odds(app, x.dec) + " · " + x.book), h("span", { class: "tiny muted" }, title(x.g) + " · " + pct(x.p) + " chance (" + x.src + ")"));
+    const addSlip = (legs) => { for (const x of legs) { const l = legOf(x.g, x.k, x.side, x.book); if (x.src === "AI") l.aiP = x.p; addLeg(app, l, true); } U.toast("Slip loaded", legs.length + " legs on your bet slip"); };
+    body.append(U.section("Ready-made slips", s.slips.length ? h("div", { class: "grid g3 slips" }, s.slips.map(x => h("div", { class: "slipcard" },
+      h("div", { class: "row between" }, h("strong", {}, x.name), h("span", { class: "num" }, odds(app, x.dec))),
+      h("p", { class: "tiny muted" }, x.blurb), ...x.legs.map(legRow),
+      h("div", { class: "sl-stats" }, [["All win", x.p != null ? pct(x.p, 1) : "—"], ["$10 pays", U.money(10 * (x.dec - 1), "USD")], ["Expected", x.edge != null ? edgeTxt(x.edge) : "—"]].map(([k, v]) => h("div", {}, h("span", { class: "label" }, k), h("b", { class: "num" }, v)))),
+      h("button", { class: "btn sm", type: "button", onclick: () => addSlip(x.legs) }, "Put on my bet slip")))) : h("div", { class: "empty" }, "Not enough priced games with probabilities to build slips."),
+      [h("span", { class: "tiny muted" }, "Chances multiply as if games were independent. Each slip uses the best book per leg; a real parlay is priced at one book.")]));
+    if (s.upsets.length || s.singles.length) body.append(h("div", { class: "grid g2" },
+      U.section("Top singles", s.singles.length ? h("div", { class: "stack" }, s.singles.map(x => h("div", { class: "row between sl-single" }, legRow(x), h("button", { class: "btn ghost sm", type: "button", onclick: () => { const l = legOf(x.g, x.k, x.side, x.book); if (x.src === "AI") l.aiP = x.p; addLeg(app, l); } }, "+ Slip")))) : h("div", { class: "empty" }, "None above 55%.")),
+      U.section("Upset watch", s.upsets.length ? h("div", { class: "stack" }, s.upsets.map(x => h("div", { class: "row between sl-single" }, legRow(x), h("button", { class: "btn ghost sm", type: "button", onclick: () => { const l = legOf(x.g, x.k, x.side, x.book); l.aiP = x.p; addLeg(app, l); } }, "+ Slip")))) : h("div", { class: "empty" }, "No underdog the AI rates well above the market."))));
+    body.append(trackRecord(app), sourcesLine(r));
+  }
+  function confMeter(f) {
+    const p = f.parts || {};
+    return h("span", { class: "confm", title: "AI " + p.ai + " · data coverage " + p.coverage + " · agreement with market " + p.agreement }, h("span", { class: "meter" }, h("i", { style: "width:" + f.confidence + "%" })), h("span", { class: "num tiny" }, f.confidence + "/100"));
+  }
+  function trackRecord(app) {
+    const A = MD.betAI, box = h("div", { class: "stack" });
+    const paint = () => {
+      const rec = A.record(app);
+      box.replaceChildren(
+        h("div", { class: "grid g4" }, [["Picks graded", String(rec.graded), ""], ["Hit rate", rec.hitRate != null ? pct(rec.hitRate) + " vs " + pct(rec.avgP) + " expected" : "—", ""], ["Brier score", rec.brier != null ? rec.brier.toFixed(3) : "—", ""], ["Return at best price", rec.roi != null ? edgeTxt(rec.roi) + " per pick" : "—", rec.roi != null ? U.signCls(rec.roi) : ""]].map(([k, v, c]) => h("div", { class: "tile" }, h("span", { class: "label" }, k), h("span", { class: "v " + c }, v)))),
+        rec.graded ? U.table([{ t: "Stated chance", v: "label" }, { t: "Picks", v: (b) => String(b.n), n: true }, { t: "Expected hit rate", v: (b) => b.n ? pct(b.expected) : "—", n: true }, { t: "Actual", v: (b) => b.n ? pct(b.actual) : "—", n: true }], rec.buckets) : null,
+        rec.rows.length ? U.dataTable([{ t: "Game", v: "game", sort: (x) => x.game }, { t: "Date", v: (x) => x.startDate || U.fmtDate(x.at), sort: (x) => x.start || x.at }, { t: "AI pick", v: "pickName" }, { t: "Chance", v: (x) => pct(x.p), sort: (x) => x.p, n: true }, { t: "Conf.", v: (x) => String(x.confidence ?? "—"), sort: (x) => x.confidence, n: true }, { t: "Result", v: (x) => x.grade ? h("span", { class: "gstat " + (x.grade.result === "hit" ? "won" : x.grade.result === "miss" ? "lost" : "") }, x.grade.result + (x.grade.score ? " · " + x.grade.score.away + "–" + x.grade.score.home : "")) : h("span", { class: "tiny muted" }, "pending"), sort: (x) => x.grade ? x.grade.result : "zz" }], rec.rows, { key: "betpicks", sort: [1, -1], pageSize: 15, noun: "AI picks", placeholder: "Filter picks…" }) : h("div", { class: "empty" }, "No AI picks logged yet. The first forecast for each game is logged automatically."),
+        h("p", { class: "tiny muted" }, "Each game's first AI forecast is logged and can't be changed, so the record can't be cherry-picked. Results are graded from ESPN final scores. Until there are dozens of graded picks, these numbers are mostly noise."));
+    };
+    paint();
+    const btn = h("button", { class: "btn ghost sm", type: "button" }, "Check results");
+    btn.onclick = async () => { btn.disabled = true; btn.textContent = "Checking scores…"; try { const r = await MD.betAI.gradePicks(app); U.toast("Results checked", r.graded + " of " + r.checked + " finished picks graded"); } catch (e) { U.toast("Couldn't check results", U.errorText(e), true); } btn.disabled = false; btn.textContent = "Check results"; paint(); };
+    return U.section("AI track record", box, [btn]);
   }
 
   /* ---------- value & arbitrage across the league ---------- */
@@ -189,34 +262,156 @@
     const box = h("div", { class: "stack" });
     root.append(box);
     U.async(box, () => B.load(ctx.sport), (r) => {
+      checkAlerts(app, r);
       const g = r.games.find(x => x.id === ctx.gameId) || r.games.find(x => title(x) === ctx.label);
       if (!g) { box.append(h("div", { class: "empty" }, "This game is no longer on the odds pages read. It may have started or been taken down."), h("button", { class: "btn ghost", type: "button", onclick: () => app.back() }, "Back to the list")); return; }
       renderGame(box, app, g, r);
-    }, { loading: "Loading the game's odds…" });
+    }, { loading: "Loading the game's odds, injuries and records…" });
   }
+  const GTABS = [["overview", "Overview"], ["odds", "Odds"], ["stats", "Stats & model"], ["ai", "AI analysis"]];
   function renderGame(box, app, g, r) {
     const sp = r.sport;
-    const aiBox = h("div", {});
-    const chances = h("div", {});
+    let tab = app.ls.get("bet.gtab", "overview"); if (!GTABS.some(t => t[0] === tab)) tab = "overview";
+    const tabsBox = h("div", {}), body = h("div", { class: "stack" });
+    const e = g.espn;
     box.append(
       h("div", { class: "hero bethero" }, h("div", { class: "stack", style: "gap:4px" },
         h("span", { class: "label" }, sportLabel(sp) + " · " + (STATUS[g.status] || g.status)),
         h("h1", { class: "page" }, title(g)),
-        h("span", { class: "small muted" }, whenTxt(g) + (g.startHasTime ? " (your time)" : "") + (g.away.rot ? " · rotation " + g.away.rot + " / " + g.home.rot : ""))),
+        h("span", { class: "small muted" }, [whenTxt(g) + (g.startHasTime ? " (your time)" : ""), e && e.venue ? e.venue : null, e && e.tempF != null ? e.tempF + "°F at game time" : null, e && e.status === "final" ? "Final " + (g.soccer ? e.home.score + "–" + e.away.score : e.away.score + "–" + e.home.score) : null].filter(Boolean).join(" · "))),
         h("div", { class: "row" }, g.model && g.model.url ? h("a", { class: "btn ghost sm", href: g.model.url, target: "_blank", rel: "noopener noreferrer" }, "Statz preview ↗") : null, g.kalshi ? h("a", { class: "btn ghost sm", href: g.kalshi.url, target: "_blank", rel: "noopener noreferrer" }, "Kalshi ↗") : null)),
-      h("div", { class: "jump" }, [["sec-chance", "Win chances"], ...Object.keys(g.markets).map(k => ["sec-" + k, g.markets[k].label]), g.modelGoals ? ["sec-model", "Model markets"] : null, Object.keys(g.markets).length ? ["sec-move", "Line movement"] : null, Object.keys(g.markets).length ? ["sec-pay", "Payout"] : null, g.model && g.model.fixtureId ? ["sec-leaders", "Team leaders"] : null, ["sec-ai", "AI analysis"]].filter(Boolean).map(([id, t]) => h("a", { href: "#" + id, onclick: (e) => { e.preventDefault(); const el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); } }, t))),
       g.status === "final" || g.status === "past" ? h("div", { class: "banner warn" }, h("p", {}, "This game has started or finished. The prices below are the last ones the page showed, not live in-game odds.")) : null,
-      chances);
-    const paintChances = () => chances.replaceChildren(chancePanel(app, g, sp));
-    paintChances();
-    for (const k of ["ml", "spread", "total"]) if (g.markets[k]) box.append(oddsSection(app, g, k, sp));
-    if (!Object.keys(g.markets).length) box.append(h("div", { class: "banner info" }, h("p", {}, "No sportsbook prices are listed for this game yet; books usually post soccer lines about a week ahead. The model's probabilities and fair odds are below.")));
-    if (g.modelGoals) box.append(modelSection(app, g));
-    if (Object.keys(g.markets).length) box.append(movementSection(app, g), payoutSection(app, g));
-    if (g.model && g.model.fixtureId) box.append(leadersSection(app, g));
-    aiBox.id = "sec-ai";
-    box.append(aiBox, sourcesLine(r));
-    aiSection(aiBox, app, g, sp, () => paintChances());
+      tabsBox, body);
+    const paint = () => {
+      tabsBox.replaceChildren(U.tabs(GTABS, tab, (k) => { tab = k; app.ls.set("bet.gtab", k); paint(); }));
+      body.replaceChildren();
+      if (tab === "overview") {
+        const chances = h("div", {});
+        const paintChances = () => chances.replaceChildren(chancePanel(app, g, sp));
+        paintChances();
+        body.append(chances, forecastCard(app, g, sp, () => { paintChances(); }), h("div", { class: "grid g2" }, injuryPanel(g), matchupPanel(g, sp)), Object.keys(g.markets).length ? payoutSection(app, g) : null);
+      } else if (tab === "odds") {
+        if (!Object.keys(g.markets).length) body.append(h("div", { class: "banner info" }, h("p", {}, "No sportsbook prices are listed for this game yet; books usually post soccer lines about a week ahead. The model's probabilities and fair odds are under Stats & model.")));
+        for (const k of ["ml", "spread", "total"]) if (g.markets[k]) body.append(oddsSection(app, g, k, sp));
+        if (Object.keys(g.markets).length) body.append(movementSection(app, g), alertsSection(app, g, sp));
+      } else if (tab === "stats") {
+        if (g.modelGoals) body.append(modelSection(app, g));
+        body.append(h("div", { class: "grid g2" }, matchupPanel(g, sp), injuryPanel(g)));
+        if (g.model && g.model.fixtureId) body.append(leadersSection(app, g));
+        if (!g.modelGoals && !(g.model && g.model.fixtureId)) body.append(h("p", { class: "tiny muted" }, "Player stats and props for US leagues are coming in the next update."));
+      } else {
+        const aiBox = h("div", { id: "sec-ai" });
+        body.append(aiBox, U.section("Ask the AI assistant about this game", MD.betAI.assistant(app, () => ({ league: g.sport, game: title(g) }))));
+        forecastDetail(aiBox, app, g, sp);
+      }
+    };
+    paint();
+    box.append(sourcesLine(r));
+  }
+  function injuryPanel(g) {
+    if (!g.injuries) return U.section("Injuries", h("p", { class: "small muted" }, g.soccer ? "No injury report is read for soccer. The AI analysis searches the news for team news." : "No ESPN injury report is read for this league; the AI analysis searches the news instead."));
+    const side = (s) => { const list = g.injuries[s] || []; return h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, sideName(g, s)), list.length ? h("ul", { class: "injlist" }, list.slice(0, 10).map(p => h("li", { class: p.severe ? "sev" : "" }, h("b", {}, p.name), " " + p.pos + " · ", h("span", { class: "gstat " + (p.severe ? "lost" : "inprogress") }, p.status), p.returns ? h("span", { class: "tiny muted" }, " · back ~" + p.returns) : null, p.comment ? h("div", { class: "tiny muted" }, p.comment.slice(0, 180)) : null))) : h("p", { class: "tiny muted" }, "Nobody listed.")); };
+    return U.section("Injuries", h("div", { class: "stack" }, side("away"), side("home"), h("a", { class: "tiny", href: g.injuries.url, target: "_blank", rel: "noopener noreferrer" }, "ESPN injury report ↗")));
+  }
+  function matchupPanel(g, sp) {
+    const e = g.espn;
+    if (!e) return U.section("Matchup", h("p", { class: "small muted" }, "ESPN's scoreboard didn't list this game, so records and venue aren't shown."));
+    const row = (s) => [sideName(g, s), e[s].record + (e[s].split ? " · " + e[s].split + " " + (e[s].splitKind || "").toLowerCase() : "")];
+    return U.section("Matchup", h("div", { class: "stack" }, U.kv([row("away"), row("home"), ["Venue", e.venue || "—"], ["Temperature", e.tempF != null ? e.tempF + "°F" : "—"], ["ESPN line", [e.spread, e.total != null ? "total " + e.total : null].filter(Boolean).join(" · ") || "—"]]),
+      h("p", { class: "tiny muted" }, "Records are " + (g.soccer ? "wins–draws–losses" : "wins–losses") + "; the second figure is the record at home or on the road. From ESPN's scoreboard.")));
+  }
+  /* ---------- AI forecast on the game page ---------- */
+  function forecastCard(app, g, sp, onDone) {
+    const box = h("div", {});
+    const paint = () => {
+      const f = MD.betAI.cache(app).get(g.id);
+      const run = h("button", { class: f ? "btn ghost sm" : "btn sm", type: "button" }, f && f.mode === "deep" ? "Update with fresh news" : "Forecast this game with AI");
+      run.onclick = async () => { run.disabled = true; run.textContent = "Reading injuries and news…"; try { await MD.betAI.forecastGame(app, g, sp); onDone && onDone(); paint(); } catch (e) { U.toast("Forecast didn't finish", MD.betAI.errText(e), true); run.disabled = false; run.textContent = "Try again"; } };
+      box.replaceChildren(U.section("Most likely result", f ? h("div", { class: "stack" },
+        h("div", { class: "fc-head" }, h("div", { class: "stack", style: "gap:2px" }, h("span", { class: "label" }, "AI pick" + (f.mode === "quick" ? " (quick pass)" : "")), h("span", { class: "fc-pick" }, sideName(g, f.winner) + " " + pct(f.probs[f.winner], 0)), f.predicted ? h("span", { class: "small muted" }, "Predicted score " + (g.soccer ? g.home.name + " " + f.predicted.home + "–" + f.predicted.away + " " + g.away.name : g.away.name + " " + f.predicted.away + "–" + f.predicted.home + " " + g.home.name)) : null),
+          h("div", { class: "stack", style: "gap:4px;min-width:180px" }, h("span", { class: "label" }, "Confidence"), confMeter(f), h("span", { class: "tiny muted" }, "AI " + f.parts.ai + " · data " + f.parts.coverage + " · agrees with market " + f.parts.agreement))),
+        f.summary ? h("p", { class: "small" }, f.summary) : null,
+        f.mode === "deep" ? h("p", { class: "tiny muted" }, "Full reasoning, factors and sources are on the AI analysis tab.") : h("p", { class: "tiny muted" }, "Quick pass from the page's data only. Run the full forecast for live injury and lineup news."),
+        h("div", { class: "row" }, run)) : h("div", { class: "stack" }, h("p", { class: "small" }, "Claude reads the odds, the injury report, records and splits" + (sp.soccer ? ", the Statz model" : "") + ", then searches for lineup news, recent form and weather, and gives the most likely result with a confidence score."), h("div", { class: "row" }, run))));
+    };
+    paint();
+    return box;
+  }
+  function forecastDetail(box, app, g, sp) {
+    const log = h("div", { class: "log" }), out = h("div", { class: "stack" });
+    const paint = () => {
+      const f = MD.betAI.cache(app).get(g.id);
+      const run = h("button", { class: "btn", type: "button" }, f && f.mode === "deep" ? "Run again with fresh news" : "Run the full AI forecast");
+      let ctl = null; const stop = h("button", { class: "btn ghost", type: "button", hidden: true, onclick: () => ctl && ctl.abort() }, "Stop");
+      run.onclick = async () => { ctl = new AbortController(); run.disabled = true; stop.hidden = false; log.replaceChildren(); out.replaceChildren(h("div", { class: "skeleton" }, "Checking injuries, lineups, form and weather…")); try { await MD.betAI.forecastGame(app, g, sp, { signal: ctl.signal, onLog: (e) => { log.append(h("div", { class: e.kind }, e.text)); } }); paint(); } catch (e) { out.replaceChildren(e && e.code === "cancelled" ? h("p", { class: "muted" }, "Stopped.") : U.errorBox({ message: MD.betAI.errText(e) })); run.disabled = false; stop.hidden = true; } };
+      box.replaceChildren(U.section("AI forecast", h("div", { class: "stack" }, h("p", { class: "small" }, "Starts from the market's fair line and moves away only as far as the evidence supports. The first forecast for each game is logged to the AI track record."), h("div", { class: "row" }, run, stop), out, h("details", {}, h("summary", { class: "label" }, "Research steps"), log))));
+      if (f) out.replaceChildren(forecastBody(app, g, f));
+    };
+    paint();
+  }
+  function forecastBody(app, g, f) {
+    const P = prefs(app), ml = g.markets.ml, rows = [];
+    for (const [s, p] of Object.entries(f.probs)) { const b = ml && ml.best && ml.best[s]; rows.push({ bet: (ml ? ml.label : "Result") + ": " + sideName(g, s), p, fair: f.fair ? f.fair[s] : null, b, k: "ml", s }); }
+    const sp = g.markets.spread, tt = g.markets.total;
+    if (f.spreadAway != null && sp && sp.best && sp.best.away && sp.best.home) rows.push({ bet: sp.label + ": " + g.away.name + " " + lineTxt("spread", "away", sp.mainLine), p: f.spreadAway, fair: sp.fair ? sp.fair.away : null, b: sp.best.away, k: "spread", s: "away" }, { bet: sp.label + ": " + g.home.name + " " + lineTxt("spread", "home", -sp.mainLine), p: 1 - f.spreadAway, fair: sp.fair ? sp.fair.home : null, b: sp.best.home, k: "spread", s: "home" });
+    if (f.over != null && tt && tt.best && tt.best.over && tt.best.under) rows.push({ bet: tt.label + ": over " + tt.mainLine, p: f.over, fair: tt.fair ? tt.fair.over : null, b: tt.best.over, k: "total", s: "over" }, { bet: tt.label + ": under " + tt.mainLine, p: 1 - f.over, fair: tt.fair ? tt.fair.under : null, b: tt.best.under, k: "total", s: "under" });
+    const unver = f.factors.filter(x => x.source_url && !x.verified).length;
+    const bb = f.bestBet;
+    return h("div", { class: "stack" },
+      h("div", { class: "row between" }, h("span", { class: "verdict " + (bb ? "positive" : "neutral") }, bb ? "Best bet: " + (bb.market === "ml" ? sideName(g, bb.side) : bb.market + " " + bb.side) : "No bet"), h("span", { class: "tiny muted" }, (f.mode === "deep" ? "Full forecast" : "Quick pass") + " · " + U.fmtTs(f.at))),
+      h("div", { class: "fc-head" }, h("div", { class: "stack", style: "gap:2px" }, h("span", { class: "fc-pick" }, sideName(g, f.winner) + " " + pct(f.probs[f.winner], 0)), f.predicted ? h("span", { class: "small muted" }, "Predicted " + (g.soccer ? f.predicted.home + "–" + f.predicted.away : f.predicted.away + "–" + f.predicted.home)) : null), h("div", { class: "stack", style: "gap:4px;min-width:200px" }, confMeter(f), h("span", { class: "tiny muted" }, "AI " + f.parts.ai + " · data coverage " + f.parts.coverage + " (" + f.parts.coverageWhy.join(", ") + ") · agreement with market " + f.parts.agreement), f.why ? h("span", { class: "tiny" }, f.why) : null)),
+      unver ? h("div", { class: "banner warn" }, h("p", { class: "small" }, unver + " cited source(s) weren't retrieved in this analysis; treat those claims as unconfirmed.")) : null,
+      f.summary ? h("div", { class: "prose" }, h("p", {}, f.summary), bb && bb.reason ? h("p", { class: "muted" }, bb.reason) : null) : null,
+      rows.length ? U.table([{ t: "Bet", v: "bet" }, { t: "AI chance", v: (x) => pct(x.p, 1), n: true }, { t: "Market fair", v: (x) => pct(x.fair, 1), n: true }, { t: "Best price", v: (x) => x.b ? odds(app, x.b.dec) + " · " + bookTxt(x.b) : "—", n: true }, { t: "AI edge", v: (x) => x.b ? h("span", { class: "num " + U.signCls(x.p * x.b.dec - 1) }, edgeTxt(x.p * x.b.dec - 1)) : "—", n: true }, { t: "Kelly stake", v: (x) => { const k = x.b ? O.kelly(x.p, x.b.dec) * P.kelly : 0; return k > 0 ? U.money(Math.min(k, 0.02) * P.bankroll, "USD") : "—"; }, n: true }, { t: "", v: (x) => x.b ? h("button", { class: "btn ghost sm", type: "button", onclick: () => { const l = legOf(g, x.k, x.s, x.b.book); l.aiP = x.p; addLeg(app, l); } }, "+ Slip") : "" }], rows) : null,
+      h("div", { class: "grid g2" },
+        h("div", { class: "stack" }, h("h3", {}, "Key factors"), f.factors.length ? h("ul", { class: "small" }, f.factors.map(x => h("li", {}, h("span", { class: "imp " + (x.impact || "") }, x.impact || ""), " ", x.factor, x.favors && x.favors !== "none" ? h("span", { class: "tiny muted" }, " (favours " + (["home", "away"].includes(x.favors) ? sideName(g, x.favors) : x.favors) + ")") : null, x.source_url ? h("span", {}, " · ", h("a", { href: x.source_url, target: "_blank", rel: "noopener noreferrer" }, String(x.source_url).replace(/^https?:\/\//, "").split("/")[0]), x.verified ? null : h("span", { class: "warn-t tiny" }, " unverified")) : null))) : h("p", { class: "muted small" }, "None given.")),
+        h("div", { class: "stack" }, h("h3", {}, "Injuries, form and risk"), U.kv([["Injury impact", f.injuryImpact || "—"], ["Form", f.form || "—"], ["Upset risk", f.upsetRisk || "—"], ["Versus the market", f.market || "—"]]))),
+      f.risks.length || f.gaps.length ? h("div", { class: "small" }, h("span", { class: "label" }, "Risks and gaps"), h("ul", {}, [...f.risks, ...f.gaps.map(x => "Not found: " + x)].map(x => h("li", {}, String(x))))) : null,
+      h("p", { class: "tiny muted" }, "An AI estimate, not a guarantee. Sources retrieved: " + f.sources.length + ". Kelly stakes use your bankroll at " + Math.round(P.kelly * 100) + "% Kelly, capped at 2% of bankroll."));
+  }
+  /* ---------- price alerts (checked whenever odds are read while the page is open) ---------- */
+  const alertsOf = (app) => app.ls.get("bet.alerts", []);
+  function alertsSection(app, g, sp) {
+    const box = h("div", { class: "stack" });
+    const opts = [];
+    for (const [k, mk] of Object.entries(g.markets)) for (const s of mk.sides) if (mk.best && mk.best[s]) opts.push({ k, s, label: mk.label + ": " + sideName(g, s) });
+    const sel = h("select", { "aria-label": "Bet to watch" }, opts.map((o, i) => h("option", { value: i }, o.label)));
+    const kind = h("select", { "aria-label": "Condition" }, h("option", { value: "price" }, "best price reaches (odds)"), h("option", { value: "line" }, "line reaches (number)"));
+    const target = h("input", { type: "text", placeholder: "+150 or -2.5", "aria-label": "Target" });
+    const msg = h("span", { class: "tiny warn-t" });
+    const paint = () => {
+      const mine = alertsOf(app).filter(a => a.gameId === g.id);
+      box.replaceChildren(h("div", { class: "form" }, U.field("Bet", sel), U.field("Alert when the", kind), U.field("Target", target), h("div", { class: "field" }, h("span", { class: "label" }, " "), h("button", { class: "btn ghost sm", type: "button", onclick: add }, "Add alert"))), msg,
+        mine.length ? U.table([{ t: "Alert", v: (a) => a.label + " · " + (a.kind === "price" ? "price ≥ " + O.fmtAm(a.target) : "line ≥ " + a.target) }, { t: "Status", v: (a) => a.hitAt ? h("span", { class: "gstat won" }, "Hit " + U.fmtTs(a.hitAt)) : "Watching" }, { t: "", v: (a) => h("button", { class: "linkbtn", type: "button", onclick: () => { app.ls.set("bet.alerts", alertsOf(app).filter(x => x.id !== a.id)); paint(); } }, "Remove") }], mine) : h("p", { class: "tiny muted" }, "No alerts on this game."),
+        h("p", { class: "tiny muted" }, "Checked each time the odds are read while Market Desk is open (it refreshes every 5 minutes on this tab). Alerts appear as a notification and in your Alerts inbox; nothing runs when the page is closed."));
+    };
+    function add() {
+      const o = opts[Number(sel.value)]; if (!o) return;
+      let t;
+      if (kind.value === "price") { t = O.parseOdds(target.value); if (!t) { msg.textContent = "Enter odds like +150, 2.50 or 6/4."; return; } }
+      else { t = parseFloat(target.value); if (!isFinite(t)) { msg.textContent = "Enter a line like -2.5 or 44.5."; return; } }
+      msg.textContent = "";
+      app.ls.set("bet.alerts", alertsOf(app).concat({ id: MD.store.newId(), sport: sp.id, gameId: g.id, game: title(g), market: o.k, side: o.s, label: o.label, kind: kind.value, target: t, at: Date.now() }));
+      U.toast("Alert added", o.label); paint();
+    }
+    paint();
+    const sec = U.section("Price alerts", box); sec.id = "sec-alerts"; return sec;
+  }
+  function checkAlerts(app, r) {
+    const list = alertsOf(app); if (!list.length) return;
+    let changed = false;
+    for (const a of list) {
+      if (a.hitAt || a.sport !== r.sport.id) continue;
+      const g = r.games.find(x => x.id === a.gameId); if (!g || !g.markets[a.market]) continue;
+      const b = g.markets[a.market].best && g.markets[a.market].best[a.side]; if (!b) continue;
+      const hit = a.kind === "price" ? b.dec >= a.target - 1e-9 : b.line != null && b.line >= a.target;
+      if (!hit) continue;
+      a.hitAt = Date.now(); changed = true;
+      const text = a.label + " is now " + (a.market === "ml" ? "" : lineTxt(a.market, a.side, b.line) + " ") + O.fmtAm(b.dec) + " at " + b.book;
+      U.toast("Betting alert: " + a.game, text);
+      if (!app.demo && app.store) app.store.create("inbox", { kind: "alert", title: "Betting alert: " + a.game, body: text + ". Source: " + (r.sources[0] ? r.sources[0].name : "odds page") + ".", materiality: 2, read: false, at: Date.now() }).catch(() => {});
+    }
+    if (changed) app.ls.set("bet.alerts", list);
   }
   function chancePanel(app, g, sp) {
     const ml = g.markets.ml;
@@ -343,116 +538,96 @@
     return sec;
   }
 
-  /* ---------- AI analysis ---------- */
-  const SAMPLE_ERR = { not_granted: "Claude access was declined for this page.", rate_limited: "You've hit a usage limit. Try again in a few minutes.", tools_unavailable: "This view can't run research tools. Open the page on claude.ai.", no_sample: "Claude isn't available in this view. Open the page on claude.ai." };
-  function aiSection(box, app, g, sp, onDone) {
-    const cache = app._betAI || (app._betAI = new Map());
-    const log = h("div", { class: "log" }), out = h("div", { class: "stack" });
-    const run = h("button", { class: "btn", type: "button" }, cache.has(g.id) ? "Run again with fresh news" : "Analyze this game with AI");
-    let ctl = null;
-    const stop = h("button", { class: "btn ghost", type: "button", hidden: true, onclick: () => ctl && ctl.abort() }, "Stop");
-    run.onclick = async () => {
-      const s = app.caps.sample;
-      if (!s) { out.replaceChildren(U.errorBox({ message: SAMPLE_ERR.no_sample })); return; }
-      ctl = new AbortController(); run.disabled = true; stop.hidden = false; log.replaceChildren(); out.replaceChildren(h("div", { class: "skeleton" }, "Checking injuries, lineups and news…"));
-      try { const res = await analyzeGame(app, g, sp, ctl.signal, (e) => { log.append(h("div", { class: e.kind }, e.text)); log.scrollTop = log.scrollHeight; }); cache.set(g.id, res); paint(res); onDone && onDone(); }
-      catch (e) { out.replaceChildren(e && e.code === "cancelled" ? h("p", { class: "muted" }, "Stopped.") : U.errorBox({ message: SAMPLE_ERR[e && e.code] || (e && e.message) || "The analysis didn't finish." })); }
-      run.disabled = false; stop.hidden = true; ctl = null; run.textContent = "Run again with fresh news";
-    };
-    const paint = (res) => out.replaceChildren(aiResult(app, g, res));
-    box.replaceChildren(U.section("AI matchup analysis", h("div", { class: "stack" },
-      h("p", { class: "small" }, "Claude reads current injury reports, lineup news and form with your Exa and Bigdata.com connectors, then estimates each result's chance. It starts from the market's fair line and only moves away from it when the evidence supports it, so “no bet” is a common answer."),
-      h("div", { class: "row" }, run, stop), out, h("details", {}, h("summary", { class: "label" }, "Research steps"), log))));
-    if (cache.has(g.id)) paint(cache.get(g.id));
+  /* ================= bet slip: singles, parlay, round robin ================= */
+  // Round robin: every k-leg parlay from the slip. Outcome odds are exact over all win/lose combinations
+  // (legs treated as independent), so the chance of finishing ahead is computed, not guessed.
+  function roundRobin(legs, k, stake) {
+    const n = legs.length, combos = [];
+    const rec = (start, pick) => { if (pick.length === k) { combos.push(pick.slice()); return; } for (let i = start; i < n; i++) { pick.push(i); rec(i + 1, pick); pick.pop(); } };
+    if (k >= 2 && k <= n) rec(0, []);
+    const total = combos.length * stake, decOf = (c) => c.reduce((a, i) => a * legs[i].dec, 1);
+    const maxReturn = combos.reduce((a, c) => a + stake * decOf(c), 0);
+    const ps = legs.map(l => l.aiP ?? l.p ?? l.modelP);
+    let pProfit = null, ev = null;
+    if (ps.every(p => p != null) && n <= 10) {
+      pProfit = 0; ev = 0;
+      for (let m = 0; m < (1 << n); m++) {
+        let pr = 1; for (let i = 0; i < n; i++) pr *= (m >> i) & 1 ? ps[i] : 1 - ps[i];
+        let ret = 0; for (const c of combos) if (c.every(i => (m >> i) & 1)) ret += stake * decOf(c);
+        if (ret > total + 1e-9) pProfit += pr; ev += pr * (ret - total);
+      }
+    }
+    return { combos: combos.length, total, maxReturn, pProfit, ev };
   }
-  async function analyzeGame(app, g, sp, signal, onLog) {
-    const s = app.caps.sample;
-    const lim = await s.limits().catch(() => null);
-    if (!lim || !lim.tools) throw Object.assign(new Error(SAMPLE_ERR.tools_unavailable), { code: "tools_unavailable" });
-    const ctx = { app, asset: null, question: title(g) + " " + sp.name + " betting preview", log: [], sources: [], stats: {}, onLog };
-    const tools = MD.research.makeTools(ctx).filter(t => ["search_web", "read_page", "search_news"].includes(t.name));
-    const snap = B.snapshot(g);
-    const today = new Date().toISOString().slice(0, 10);
-    const r = await s.json(`Today is ${today}. You are a careful, sceptical sports betting analyst helping one bettor.
-Game (${sportLabel(sp)}): ${title(g)}${g.start ? ", starting " + new Date(g.start).toISOString() : ""}.
-Market data read by the app (authoritative; "fairProbability" has the bookmaker margin removed): ${JSON.stringify(snap).slice(0, 14000)}
-Research with the tools (2 to 5 searches): injuries and suspensions, expected lineups or starting pitchers/goalies/quarterbacks, rest and travel, weather for outdoor games, recent form, motivation and schedule spot. Use search_news for news and search_web or read_page for injury reports.
-Rules: never invent facts, injuries or sources; cite only URLs your tools returned; if you can't confirm something, say so. Betting markets are efficient: start from the fair probabilities and only move away from them as far as the evidence justifies. Account for the margin: a bet needs the probability to beat 1/decimal odds. "No bet" is often the right recommendation. Never suggest chasing losses or staking more than a small share of a bankroll.
-Reply with ONLY JSON: {"summary": "3-5 sentences", "keyFactors": [{"factor": "...", "favors": "home|away|draw|over|under|none", "source_url": "https://..."}], "injuries": [{"team": "...", "player": "...", "status": "...", "source_url": "https://..."}], "probabilities": {"home": 0-100, "away": 0-100, "draw": ${g.soccer ? "0-100" : "null"}, "awayCoversMainSpread": 0-100 or null, "overMainTotal": 0-100 or null}, "recommendation": {"bet": "short description, or No bet", "market": "ml|spread|total|none", "side": "home|away|draw|over|under|none", "confidencePct": 0-100, "reasoning": "2-4 sentences", "maxStakePctOfBankroll": 0-5}, "risks": ["..."], "dataGaps": ["..."]}`, { modelTier: "complex", tools, signal });
-    const retrieved = new Set(ctx.sources.map(x => String(x.url).replace(/[#?].*$/, "").replace(/\/$/, "")));
-    const ver = (u) => !!u && retrieved.has(String(u).replace(/[#?].*$/, "").replace(/\/$/, ""));
-    const pr = r.probabilities || {};
-    const raw = { home: num(pr.home), away: num(pr.away), draw: g.soccer ? num(pr.draw) : null };
-    const keys = g.soccer ? ["home", "draw", "away"] : ["home", "away"];
-    const sum = keys.reduce((a, k) => a + (raw[k] || 0), 0);
-    const probs = sum > 0 ? Object.fromEntries(keys.map(k => [k, (raw[k] || 0) / sum])) : null;
-    return { at: Date.now(), summary: r.summary || "", keyFactors: (r.keyFactors || []).map(f => Object.assign({}, f, { verified: ver(f.source_url) })), injuries: (r.injuries || []).map(f => Object.assign({}, f, { verified: ver(f.source_url) })), probs, spreadAway: num(pr.awayCoversMainSpread) != null ? num(pr.awayCoversMainSpread) / 100 : null, over: num(pr.overMainTotal) != null ? num(pr.overMainTotal) / 100 : null, rec: r.recommendation || null, risks: r.risks || [], gaps: r.dataGaps || [], sources: ctx.sources, steps: ctx.log };
+  function todaysLoss(app) {
+    const t = B.etYmd();
+    return -app.store.cached("bets").filter(b => settled(b) && b.settledAt && B.etYmd(b.settledAt) === t).reduce((a, b) => a + profit(b), 0);
   }
-  const num = (x) => { const n = Number(x); return x == null || x === "" || !isFinite(n) ? null : n; };
-  function aiResult(app, g, res) {
-    const P = prefs(app);
-    const rows = [];
-    const ml = g.markets.ml;
-    if (res.probs) for (const [s, p] of Object.entries(res.probs)) { const b = ml && ml.best && ml.best[s]; rows.push({ bet: (ml ? ml.label : "Result") + ": " + (s === "draw" ? "Draw" : sideName(g, s)), p, fair: ml && ml.fair ? ml.fair[s] : null, b, k: "ml", s }); }
-    const sp = g.markets.spread, tt = g.markets.total;
-    if (res.spreadAway != null && sp && sp.best && sp.best.away) rows.push({ bet: sp.label + ": " + g.away.name + " " + lineTxt("spread", "away", sp.mainLine), p: res.spreadAway, fair: sp.fair ? sp.fair.away : null, b: sp.best.away, k: "spread", s: "away" }, { bet: sp.label + ": " + g.home.name + " " + lineTxt("spread", "home", -sp.mainLine), p: 1 - res.spreadAway, fair: sp.fair ? sp.fair.home : null, b: sp.best.home, k: "spread", s: "home" });
-    if (res.over != null && tt && tt.best && tt.best.over) rows.push({ bet: tt.label + ": over " + tt.mainLine, p: res.over, fair: tt.fair ? tt.fair.over : null, b: tt.best.over, k: "total", s: "over" }, { bet: tt.label + ": under " + tt.mainLine, p: 1 - res.over, fair: tt.fair ? tt.fair.under : null, b: tt.best.under, k: "total", s: "under" });
-    const unver = [...res.keyFactors, ...res.injuries].filter(f => f.source_url && !f.verified).length;
-    const rec = res.rec || {};
-    return h("div", { class: "stack" },
-      h("div", { class: "row between" }, h("span", { class: "verdict " + (/no bet/i.test(rec.bet || "") || rec.market === "none" ? "neutral" : "positive") }, rec.bet || "No recommendation"), h("span", { class: "tiny muted" }, "Analysed " + U.fmtTs(res.at) + (rec.confidencePct != null ? " · confidence " + rec.confidencePct + "/100" : ""))),
-      unver ? h("div", { class: "banner warn" }, h("p", { class: "small" }, unver + " cited source(s) weren't retrieved in this analysis; treat those claims as unconfirmed.")) : null,
-      h("div", { class: "prose" }, h("p", {}, res.summary), rec.reasoning ? h("p", { class: "muted" }, rec.reasoning) : null),
-      rows.length ? U.table([{ t: "Bet", v: "bet" }, { t: "AI chance", v: (x) => pct(x.p), n: true }, { t: "Market fair", v: (x) => pct(x.fair), n: true }, { t: "Best price", v: (x) => x.b ? odds(app, x.b.dec) + " · " + bookTxt(x.b) : "—", n: true }, { t: "AI edge", v: (x) => x.b ? h("span", { class: "num " + U.signCls(x.p * x.b.dec - 1) }, edgeTxt(x.p * x.b.dec - 1)) : "—", n: true }, { t: "Kelly stake", v: (x) => { const f = x.b ? O.kelly(x.p, x.b.dec) * P.kelly : 0; const cap = (Number(rec.maxStakePctOfBankroll) || 2) / 100; return f > 0 ? U.money(Math.min(f, cap) * P.bankroll, "USD") : "—"; }, n: true }, { t: "", v: (x) => x.b ? h("button", { class: "btn ghost sm", type: "button", onclick: () => { const leg = legOf(g, x.k, x.s, x.b.book); leg.aiP = x.p; addLeg(app, leg); } }, "+ Slip") : "" }], rows) : null,
-      h("div", { class: "grid g2" },
-        h("div", { class: "stack" }, h("h3", {}, "Key factors"), res.keyFactors.length ? h("ul", { class: "small" }, res.keyFactors.map(f => h("li", {}, f.factor, f.favors && f.favors !== "none" ? h("span", { class: "tiny muted" }, " (favours " + (["home", "away"].includes(f.favors) ? sideName(g, f.favors) : f.favors) + ")") : null, f.source_url ? h("span", {}, " · ", h("a", { href: f.source_url, target: "_blank", rel: "noopener noreferrer" }, String(f.source_url).replace(/^https?:\/\//, "").split("/")[0]), f.verified ? null : h("span", { class: "warn-t tiny" }, " unverified")) : null))) : h("p", { class: "muted small" }, "None given.")),
-        h("div", { class: "stack" }, h("h3", {}, "Injuries & availability"), res.injuries.length ? h("ul", { class: "small" }, res.injuries.map(f => h("li", {}, h("b", {}, f.player || "?"), " (" + (f.team || "") + "): " + (f.status || ""), f.source_url ? h("span", {}, " · ", h("a", { href: f.source_url, target: "_blank", rel: "noopener noreferrer" }, "source"), f.verified ? null : h("span", { class: "warn-t tiny" }, " unverified")) : null))) : h("p", { class: "muted small" }, "No confirmed injury news found."))),
-      res.risks.length || res.gaps.length ? h("div", { class: "small" }, h("span", { class: "label" }, "Risks and gaps"), h("ul", {}, [...res.risks, ...res.gaps.map(x => "Not found: " + x)].map(x => h("li", {}, String(x))))) : null,
-      h("p", { class: "tiny muted" }, "An AI estimate from public news, not a guarantee. Sources retrieved: " + res.sources.length + ". Kelly stakes are capped at the share of bankroll the analysis suggests."));
+  function slipBar(app) {
+    const n = slip(app).length;
+    return h("button", { class: "slipbar", type: "button", hidden: !n, onclick: () => { const m = U.modal("Bet slip", slipPanel(app, () => m.close())); } }, h("b", {}, "Bet slip"), h("span", {}, n + " leg" + (n === 1 ? "" : "s")), h("span", { class: "tiny" }, "Open ▴"));
   }
-
-  /* ================= bet slip & parlay ================= */
-  function slipView(body, app) {
-    const P = prefs(app);
-    const legs = slip(app);
-    let mode = app.ls.get("bet.slipMode", "singles");
-    const stakeIn = h("input", { type: "number", min: "0", step: "1", value: String(app.ls.get("bet.slipStake", P.unit)), "aria-label": "Stake", style: "max-width:140px" });
-    const out = h("div", { class: "stack" });
-    if (!legs.length) { body.append(h("div", { class: "empty" }, "Your bet slip is empty. Click any price on a game's page to add it.")); return; }
+  function slipPanel(app, onDone) {
+    const P = prefs(app), legs = slip(app);
+    const panel = h("div", { class: "slippanel stack" });
+    if (!legs.length) { panel.append(h("div", { class: "sp-head" }, h("strong", {}, "Bet slip")), h("p", { class: "tiny muted" }, "Empty. Click any price, or load a ready-made slip from AI picks.")); return panel; }
+    let mode = app.ls.get("bet.slipMode", "singles"); if (mode === "parlay" && legs.length < 2) mode = "singles"; if (mode === "rr" && legs.length < 3) mode = "singles";
+    let rrK = Math.min(app.ls.get("bet.rrK", 2), legs.length - 1);
+    const stakeIn = h("input", { type: "number", min: "0", step: "1", value: String(app.ls.get("bet.slipStake", P.unit)), "aria-label": "Stake", style: "max-width:110px" });
+    const out = h("div", { class: "stack" }), warn = h("div", { class: "stack" });
+    const pOf = (l) => l.aiP ?? l.p ?? l.modelP;
+    const refresh = () => panel.replaceWith(slipPanel(app, onDone));
     const paint = () => {
+      const P = prefs(app); // read fresh: limits can change while the slip is open
       const stake = Math.max(0, Number(stakeIn.value) || 0); app.ls.set("bet.slipStake", stake);
-      const pOf = (l) => l.aiP ?? l.p ?? l.modelP;
-      const games = new Set(legs.map(l => l.gameId));
-      const sameGame = games.size < legs.length;
-      const books = new Set(legs.map(l => l.book));
+      const sameGame = new Set(legs.map(l => l.gameId)).size < legs.length, books = new Set(legs.map(l => l.book));
       if (mode === "parlay") {
         const pr = O.parlay(legs.map(l => ({ dec: l.dec, p: pOf(l) })));
-        out.replaceChildren(U.kv([["Legs", String(legs.length)], ["Parlay odds", odds(app, pr.dec) + " (" + pr.dec.toFixed(2) + "×)"], ["Pays if all win", U.money(stake * (pr.dec - 1), "USD") + " profit · " + U.money(stake * pr.dec, "USD") + " back"], ["Implied chance", pct(pr.impliedP, 2)], ["Estimated chance", pr.p != null ? pct(pr.p, 2) : "needs a probability for every leg"], ["Expected profit", pr.edge != null ? U.money(stake * pr.edge, "USD") + " (" + edgeTxt(pr.edge) + ")" : "—"]]),
-          sameGame ? h("div", { class: "banner warn" }, h("p", { class: "small" }, "Two legs are from the same game. Their outcomes are linked, so multiplying their chances is wrong, and most books only allow it as a priced same-game parlay.")) : null,
-          books.size > 1 ? h("div", { class: "banner info" }, h("p", { class: "small" }, "These prices come from " + books.size + " books (" + [...books].join(", ") + "). A parlay is placed at one book, so its price there will differ.")) : null,
-          h("p", { class: "tiny muted" }, "Each leg's estimated chance uses the AI estimate if you added it from the analysis, else the market's fair chance, else the model. Parlays compound the bookmaker's margin on every leg."));
+        out.replaceChildren(U.kv([["Parlay odds", odds(app, pr.dec)], ["Pays", U.money(stake * (pr.dec - 1), "USD")], ["Chance", pr.p != null ? pct(pr.p, 1) : "—"], ["Expected", pr.edge != null ? U.money(stake * pr.edge, "USD") : "—"]]));
+      } else if (mode === "rr") {
+        const rr = roundRobin(legs, rrK, stake);
+        out.replaceChildren(U.kv([["Parlays", rr.combos + " × " + U.money(stake, "USD")], ["Total staked", U.money(rr.total, "USD")], ["If all win", U.money(rr.maxReturn - rr.total, "USD") + " profit"], ["Chance to finish ahead", rr.pProfit != null ? pct(rr.pProfit, 1) : "—"], ["Expected", rr.ev != null ? U.money(rr.ev, "USD") : "—"]]));
       } else {
-        const tot = legs.reduce((a, l) => a + stake * (l.dec - 1), 0), ev = legs.reduce((a, l) => { const p = pOf(l); return a + (p != null ? stake * O.edge(p, l.dec, l.push || 0) : 0); }, 0);
-        out.replaceChildren(U.kv([["Bets", String(legs.length)], ["Total staked", U.money(stake * legs.length, "USD")], ["Profit if all win", U.money(tot, "USD")], ["Expected profit", U.money(ev, "USD")]]));
+        const ev = legs.reduce((a, l) => a + (pOf(l) != null ? stake * O.edge(pOf(l), l.dec, l.push || 0) : 0), 0);
+        out.replaceChildren(U.kv([["Bets", String(legs.length)], ["Total staked", U.money(stake * legs.length, "USD")], ["If all win", U.money(legs.reduce((a, l) => a + stake * (l.dec - 1), 0), "USD")], ["Expected", U.money(ev, "USD")]]));
       }
+      const w = [];
+      if (mode !== "singles" && sameGame) w.push("Two legs are from the same game: their results are linked, so the chance shown is wrong and most books only allow it as a priced same-game parlay.");
+      if (mode !== "singles" && books.size > 1) w.push("Prices come from " + books.size + " books; a parlay is placed at one book, so its price there will differ.");
+      const capPct = Number(P.maxStakePct) || 0, perBet = mode === "rr" ? stake : stake;
+      if (capPct > 0 && perBet > P.bankroll * capPct / 100) w.push("This stake is above your cap of " + capPct + "% of bankroll (" + U.money(P.bankroll * capPct / 100, "USD") + ").");
+      const lim = Number(P.dailyLossLimit) || 0, lost = todaysLoss(app);
+      if (lim > 0 && lost >= lim) w.push("You've reached today's loss limit (" + U.money(lim, "USD") + "). Taking a break is the limit doing its job.");
+      warn.replaceChildren(...w.map(t => h("p", { class: "tiny warn-t" }, t)));
     };
-    const legTable = U.table([{ t: "Pick", v: (l) => h("span", {}, h("b", {}, l.pick), h("br"), h("span", { class: "tiny muted" }, l.game + " · " + l.marketLabel)) }, { t: "Book", v: "book" }, { t: "Odds", v: (l) => h("b", { class: "num" }, odds(app, l.dec)), n: true }, { t: "Chance", v: (l) => pct(l.aiP ?? l.p ?? l.modelP) + (l.aiP != null ? " (AI)" : l.p == null && l.modelP != null ? " (model)" : ""), n: true }, { t: "Kelly", v: (l) => { const p = l.aiP ?? l.p ?? l.modelP; const f = p != null ? O.kelly(p, l.dec, l.push || 0) * P.kelly : 0; return f > 0 ? U.money(f * P.bankroll, "USD") : "no edge"; }, n: true }, { t: "", v: (l) => h("button", { class: "linkbtn", type: "button", "aria-label": "Remove " + l.pick, onclick: () => { setSlip(app, slip(app).filter(x => x.id !== l.id)); body.replaceChildren(); slipView(body, app); } }, "Remove") }], legs);
     stakeIn.oninput = paint;
-    const logBtn = h("button", { class: "btn", type: "button", onclick: async () => {
+    const logBtn = h("button", { class: "btn sm", type: "button", onclick: async () => {
       const stake = Math.max(0, Number(stakeIn.value) || 0);
       if (!stake) { U.toast("Enter a stake first", null, true); return; }
       if (app.demo) { U.toast("Demo mode", "Bets aren't saved in demo mode.", true); return; }
+      const P = prefs(app), lim = Number(P.dailyLossLimit) || 0, capPct = Number(P.maxStakePct) || 0;
+      if (lim > 0 && todaysLoss(app) >= lim && !(await U.confirmBox("Daily loss limit reached", "You set a daily loss limit of " + U.money(lim, "USD") + " and today's settled bets have reached it. Log this anyway?", "Log anyway"))) return;
+      if (capPct > 0 && stake > P.bankroll * capPct / 100 && !(await U.confirmBox("Above your stake cap", "This stake is above your cap of " + capPct + "% of bankroll. Log it anyway?", "Log anyway"))) return;
       const base = { createdAt: Date.now(), placedAt: Date.now(), stake, currency: "USD", status: "open", note: "" };
-      if (mode === "parlay") { const pr = O.parlay(legs.map(l => ({ dec: l.dec, p: l.aiP ?? l.p ?? l.modelP }))); await app.store.put("bets", MD.store.newId(), Object.assign(base, { type: "parlay", legs, dec: pr.dec, book: [...new Set(legs.map(l => l.book))].join(" / "), pick: legs.length + "-leg parlay", game: legs.map(l => l.game).join(" + "), sport: legs[0].sport, fairP: pr.p, start: Math.min(...legs.map(l => l.start || Infinity)) || null })); }
-      else for (const l of legs) await app.store.put("bets", MD.store.newId(), Object.assign({}, base, { type: "single", legs: [l], dec: l.dec, book: l.book, pick: l.pick, game: l.game, sport: l.sport, market: l.market, fairP: l.aiP ?? l.p ?? l.modelP, start: l.start, gameId: l.gameId }));
-      setSlip(app, []); U.toast("Logged in My bets", "Settle them there after the games."); app.ls.set("bet.tab", "bets"); app.rerender();
+      if (mode === "single" || mode === "singles") { for (const l of legs) await app.store.put("bets", MD.store.newId(), Object.assign({}, base, { type: "single", legs: [l], dec: l.dec, book: l.book, pick: l.pick, game: l.game, sport: l.sport, market: l.market, fairP: pOf(l), start: l.start, gameId: l.gameId })); }
+      else {
+        const groups = mode === "rr" ? (() => { const out = []; const rec = (s, p) => { if (p.length === rrK) { out.push(p.map(i => legs[i])); return; } for (let i = s; i < legs.length; i++) { p.push(i); rec(i + 1, p); p.pop(); } }; rec(0, []); return out; })() : [legs];
+        for (const ls of groups) { const pr = O.parlay(ls.map(l => ({ dec: l.dec, p: pOf(l) }))); await app.store.put("bets", MD.store.newId(), Object.assign({}, base, { type: "parlay", rr: mode === "rr" ? rrK : null, legs: ls, dec: pr.dec, book: [...new Set(ls.map(l => l.book))].join(" / "), pick: ls.length + "-leg parlay" + (mode === "rr" ? " (round robin)" : ""), game: ls.map(l => l.game).join(" + "), sport: ls[0].sport, fairP: pr.p, start: Math.min(...ls.map(l => l.start || Infinity)) || null })); }
+      }
+      setSlip(app, []); U.toast("Logged in My bets", "Settle them there after the games, or let Check results suggest outcomes."); onDone && onDone();
+      if (app.route === "betting" && !(app.ctx.betting && app.ctx.betting.gameId)) { app.ls.set("bet.tab", "bets"); app.rerender(); }
     } }, "Log as placed");
-    body.append(U.section("Bet slip", h("div", { class: "stack" }, legTable,
-      h("div", { class: "row" }, U.field("Stake per bet (USD)", stakeIn), h("div", { class: "field" }, h("span", { class: "label" }, "Type"), U.seg(["Singles", "Parlay"], mode === "parlay" ? "Parlay" : "Singles", (v) => { mode = v.toLowerCase(); app.ls.set("bet.slipMode", mode); body.replaceChildren(); slipView(body, app); }, (v) => v === "Parlay" && legs.length < 2))),
-      out,
-      h("div", { class: "row" }, logBtn, h("button", { class: "btn ghost", type: "button", onclick: () => { setSlip(app, []); body.replaceChildren(); slipView(body, app); } }, "Clear slip")),
-      h("p", { class: "tiny muted" }, "The slip is a worksheet. Place the bet yourself in the sportsbook, then “Log as placed” to track it. Prices on the slip are from when you added them."))));
+    const modes = [["singles", "Singles"], ["parlay", "Parlay"], ["rr", "Round robin"]];
+    panel.append(
+      h("div", { class: "sp-head" }, h("strong", {}, "Bet slip (" + legs.length + ")"), h("button", { class: "linkbtn tiny", type: "button", onclick: () => { setSlip(app, []); } }, "Clear")),
+      h("div", { class: "sp-legs" }, legs.map(l => h("div", { class: "sp-leg" }, h("div", { class: "stack", style: "gap:0;min-width:0" }, h("b", { class: "small" }, l.pick), h("span", { class: "tiny muted" }, l.game), h("span", { class: "tiny" }, l.book + " · chance " + pct(pOf(l), 0) + (l.aiP != null ? " (AI)" : ""))), h("span", { class: "num" }, odds(app, l.dec)), h("button", { class: "linkbtn tiny", type: "button", "aria-label": "Remove " + l.pick, onclick: () => setSlip(app, slip(app).filter(x => x.id !== l.id)) }, "✕")))),
+      U.seg(modes.map(m => m[1]), modes.find(m => m[0] === mode)[1], (v) => { app.ls.set("bet.slipMode", modes.find(m => m[1] === v)[0]); refresh(); }, (v) => (v === "Parlay" && legs.length < 2) || (v === "Round robin" && legs.length < 3)),
+      mode === "rr" ? U.field("Parlays of", (() => { const s = h("select", { "aria-label": "Round robin size" }, Array.from({ length: legs.length - 2 }, (_, i) => i + 2).map(k => h("option", { value: k, selected: k === rrK }, k + " legs"))); s.onchange = () => { app.ls.set("bet.rrK", Number(s.value)); refresh(); }; return s; })()) : null,
+      U.field(mode === "singles" ? "Stake per bet (USD)" : mode === "rr" ? "Stake per parlay (USD)" : "Stake (USD)", stakeIn), out, warn,
+      h("div", { class: "row" }, logBtn),
+      h("p", { class: "tiny muted" }, "A worksheet: place the bet in your sportsbook, then log it here to track it."));
     paint();
+    return panel;
   }
 
   /* ================= my bets ================= */
@@ -470,13 +645,26 @@ Reply with ONLY JSON: {"summary": "3-5 sentences", "keyFactors": [{"factor": "..
     const bInput = h("input", { type: "number", min: "0", step: "10", value: String(P.bankroll), "aria-label": "Starting bankroll" });
     const uInput = h("input", { type: "number", min: "0", step: "1", value: String(P.unit), "aria-label": "Unit size" });
     const kSel = h("select", { "aria-label": "Kelly fraction" }, [[1, "Full Kelly (aggressive)"], [0.5, "Half Kelly"], [0.25, "Quarter Kelly (common)"], [0.1, "Tenth Kelly (cautious)"]].map(([v, t]) => h("option", { value: v, selected: v === P.kelly }, t)));
-    const saveP = () => setPrefs(app, { bankroll: Math.max(0, Number(bInput.value) || 0), unit: Math.max(0, Number(uInput.value) || 0), kelly: Number(kSel.value) });
-    bInput.onchange = saveP; uInput.onchange = saveP; kSel.onchange = saveP;
+    const lInput = h("input", { type: "number", min: "0", step: "5", value: String(P.dailyLossLimit || 0), "aria-label": "Daily loss limit" });
+    const cInput = h("input", { type: "number", min: "0", max: "100", step: "0.5", value: String(P.maxStakePct || 0), "aria-label": "Stake cap percent" });
+    const saveP = () => setPrefs(app, { bankroll: Math.max(0, Number(bInput.value) || 0), unit: Math.max(0, Number(uInput.value) || 0), kelly: Number(kSel.value), dailyLossLimit: Math.max(0, Number(lInput.value) || 0), maxStakePct: Math.max(0, Math.min(100, Number(cInput.value) || 0)) });
+    bInput.onchange = saveP; uInput.onchange = saveP; kSel.onchange = saveP; lInput.onchange = saveP; cInput.onchange = saveP;
+    const suggestBox = h("div", { class: "stack" });
+    const checkBtn = h("button", { class: "btn ghost sm", type: "button", disabled: !open.length }, "Check results");
+    checkBtn.onclick = async () => {
+      checkBtn.disabled = true; checkBtn.textContent = "Reading final scores…";
+      try {
+        const sug = await suggestSettlements(app);
+        suggestBox.replaceChildren(sug.length ? h("div", { class: "banner info stack" }, h("p", { class: "small" }, h("strong", {}, sug.length + " bet(s) can be settled from ESPN final scores. "), "Check each, then apply."),
+          U.table([{ t: "Bet", v: (x) => x.bet.pick + " · " + x.bet.game }, { t: "Suggested", v: (x) => h("span", { class: "gstat " + (x.status === "won" ? "won" : x.status === "lost" ? "lost" : "") }, x.status === "cashout" ? "Part win · returns " + U.money(x.cashout, "USD") : x.status) }, { t: "Detail", v: (x) => h("span", { class: "tiny" }, x.text) }, { t: "", v: (x) => h("button", { class: "btn sm", type: "button", onclick: async () => { await app.store.put("bets", x.bet.id, Object.assign({}, x.bet, { status: x.status, cashout: x.cashout, settledAt: Date.now(), settleNote: "From ESPN final score: " + x.text })); app.rerender(); } }, "Apply") }], sug)) : h("p", { class: "tiny muted" }, "No open bet has a final score yet (only bets added from the odds pages can be checked)."));
+      } catch (e) { suggestBox.replaceChildren(U.errorBox(e)); }
+      checkBtn.disabled = false; checkBtn.textContent = "Check results";
+    };
     body.append(
       h("div", { class: "grid g4" }, [["Bankroll now", U.money(bankroll, "USD"), U.signCls(pl)], ["Profit / loss", (pl >= 0 ? "+" : "") + U.money(pl, "USD"), U.signCls(pl)], ["Return on stakes", staked ? edgeTxt(pl / staked) : "—", U.signCls(pl)], ["Win rate", graded.length ? pct(wins / graded.length, 0) + " of " + graded.length : "—", ""], ["Open bets", String(open.length) + " · " + U.money(open.reduce((a, b) => a + b.stake, 0), "USD") + " at risk", ""], ["Average odds", all.length ? odds(app, all.reduce((a, b) => a + b.dec, 0) / all.length) : "—", ""], ["Closing-line value", clvs.length ? edgeTxt(clvs.reduce((a, b) => a + b, 0) / clvs.length) + " avg (" + clvs.length + ")" : "add closing odds", clvs.length ? U.signCls(clvs.reduce((a, b) => a + b, 0)) : ""], ["Luck vs expectation", done.some(b => b.fairP != null) ? (pl - expected >= 0 ? "+" : "") + U.money(pl - expected, "USD") : "—", ""]].map(([k, v, cls]) => h("div", { class: "tile" }, h("span", { class: "label" }, k), h("span", { class: "v " + cls }, v)))),
       done.length >= 2 ? curve(done, P.bankroll) : null,
-      U.section("Bets", h("div", { class: "stack" },
-        h("div", { class: "row between" }, U.seg(["All", "Open", "Settled"], filter[0].toUpperCase() + filter.slice(1), (v) => { app.ls.set("bet.filter", v.toLowerCase()); body.replaceChildren(); betsView(body, app); }), h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => manualBet(app) }, "Add a bet manually"), all.length ? h("button", { class: "btn ghost sm", type: "button", onclick: () => U.download("bets-" + new Date().toISOString().slice(0, 10) + ".csv", C.toCSV([["placed", "sport", "game", "pick", "type", "book", "decimal_odds", "american_odds", "stake", "status", "profit", "closing_decimal", "clv_pct", "fair_probability"], ...all.map(b => [new Date(b.placedAt || b.createdAt).toISOString(), b.sport, b.game, b.pick, b.type, b.book, b.dec.toFixed(4), O.fmtAm(b.dec), b.stake, b.status, settled(b) ? profit(b).toFixed(2) : "", b.closingDec || "", b.closingDec ? (O.clv(b.dec, b.closingDec) * 100).toFixed(2) : "", b.fairP != null ? b.fairP.toFixed(4) : ""])])) }, "Export CSV") : null)),
+      U.section("Bets", h("div", { class: "stack" }, suggestBox,
+        h("div", { class: "row between" }, U.seg(["All", "Open", "Settled"], filter[0].toUpperCase() + filter.slice(1), (v) => { app.ls.set("bet.filter", v.toLowerCase()); body.replaceChildren(); betsView(body, app); }), h("div", { class: "row" }, checkBtn, h("button", { class: "btn ghost sm", type: "button", onclick: () => manualBet(app) }, "Add a bet manually"), all.length ? h("button", { class: "btn ghost sm", type: "button", onclick: () => U.download("bets-" + new Date().toISOString().slice(0, 10) + ".csv", C.toCSV([["placed", "sport", "game", "pick", "type", "book", "decimal_odds", "american_odds", "stake", "status", "profit", "closing_decimal", "clv_pct", "fair_probability"], ...all.map(b => [new Date(b.placedAt || b.createdAt).toISOString(), b.sport, b.game, b.pick, b.type, b.book, b.dec.toFixed(4), O.fmtAm(b.dec), b.stake, b.status, settled(b) ? profit(b).toFixed(2) : "", b.closingDec || "", b.closingDec ? (O.clv(b.dec, b.closingDec) * 100).toFixed(2) : "", b.fairP != null ? b.fairP.toFixed(4) : ""])])) }, "Export CSV") : null)),
         U.dataTable([
           { t: "Placed", v: (b) => U.fmtDate(b.placedAt || b.createdAt), sort: (b) => b.placedAt || b.createdAt },
           { t: "Bet", v: (b) => h("span", {}, h("b", {}, b.pick), h("br"), h("span", { class: "tiny muted" }, b.game + (b.type === "parlay" ? " · " + b.legs.map(l => l.pick).join(", ") : ""))), sort: (b) => b.pick },
@@ -490,7 +678,7 @@ Reply with ONLY JSON: {"summary": "3-5 sentences", "keyFactors": [{"factor": "..
         ], filter === "open" ? open : filter === "settled" ? done : all, { key: "bets", sort: [0, -1], noun: "bets", empty: "No bets logged yet. Add prices to the bet slip, place the bet in your sportsbook, then log it.", text: (b) => b.pick + " " + b.game + " " + b.book })),
         [h("span", { class: "tiny muted" }, "Saved to your account; only you can see it.")]),
       breakdown(done),
-      U.section("Bankroll & staking", h("div", { class: "stack" }, h("div", { class: "form" }, U.field("Starting bankroll (USD)", bInput), U.field("Unit size (USD)", uInput, "Your standard stake; the slip starts here."), U.field("Kelly fraction", kSel, "Full Kelly maximizes growth only if your probabilities are exact; fractions cut the swings.")),
+      U.section("Bankroll & staking", h("div", { class: "stack" }, h("div", { class: "form" }, U.field("Starting bankroll (USD)", bInput), U.field("Unit size (USD)", uInput, "Your standard stake; the slip starts here."), U.field("Kelly fraction", kSel, "Full Kelly maximizes growth only if your probabilities are exact; fractions cut the swings."), U.field("Daily loss limit (USD, 0 = off)", lInput, "Logging a bet after today's settled losses reach this asks you to confirm."), U.field("Stake cap (% of bankroll, 0 = off)", cInput, "Warns when one stake is bigger than this.")),
         h("p", { class: "tiny muted" }, "Closing-line value (CLV) compares your price with the last price before the game: beating the close regularly is the best evidence of skill, long before win rate means anything. “Luck vs expectation” compares your result with what the fair chances predicted."))));
   }
   function settleBtns(app, b) {
@@ -582,5 +770,44 @@ Reply with ONLY JSON: {"summary": "3-5 sentences", "keyFactors": [{"factor": "..
     [p1, p2, p3, p4, p5, p6, p7, p8].forEach(f => f());
   }
 
-  MD.betting = { legOf, addLeg, slip, profit, analyzeGame };
+  function sportSelect(app, cur, onPick) {
+    const sel = h("select", { "aria-label": "Sport or league", class: "sportsel" });
+    const groups = [...new Set(B.SPORTS.map(s => s.group))];
+    for (const g of groups) sel.append(h("optgroup", { label: g }, B.SPORTS.filter(s => s.group === g).map(s => h("option", { value: s.id, selected: s.id === cur }, sportLabel(s)))));
+    sel.onchange = () => onPick(sel.value);
+    return sel;
+  }
+  // Suggested results for open bets from ESPN final scores (only bets added from the odds pages carry
+  // the teams, market and line needed). A parlay with any losing leg is lost even if others are pending.
+  async function suggestSettlements(app) {
+    const open = app.store.cached("bets").filter(b => !settled(b) && Array.isArray(b.legs) && b.legs.length && b.legs.every(l => l.home && l.away && l.market && l.side && l.sport));
+    const boards = new Map(), out = [];
+    for (const b of open) {
+      const res = [];
+      for (const l of b.legs) {
+        const date = l.startDate || (l.start ? B.etYmd(l.start) : null), key = l.sport + "|" + (date || "");
+        if (!boards.has(key)) boards.set(key, B.scoreboard(l.sport, date).then(r => r.games).catch(() => []));
+        const e = B.findEspn({ home: { name: l.home }, away: { name: l.away } }, await boards.get(key));
+        res.push(e ? B.gradeLeg(l, e) : null);
+      }
+      const text = res.map((x, i) => x ? b.legs[i].pick + ": " + x.result + " (" + b.legs[i].away + " " + x.score.away + "–" + x.score.home + " " + b.legs[i].home + ")" : b.legs[i].pick + ": pending").join("; ");
+      if (res.some(x => x && x.mult === 0)) { out.push({ bet: b, status: "lost", cashout: null, text }); continue; }
+      if (res.some(x => !x)) continue;
+      const mult = res.reduce((a, x) => a * x.mult, 1);
+      const status = Math.abs(mult - b.dec) < 1e-6 ? "won" : Math.abs(mult - 1) < 1e-9 ? "push" : "cashout";
+      out.push({ bet: b, status, cashout: status === "cashout" ? +(b.stake * mult).toFixed(2) : null, text });
+    }
+    return out;
+  }
+  // Dashboard card: open bets, today's result, and today's AI picks.
+  function dashboardCard(box, app) {
+    const bets = app.store.cached("bets"), open = bets.filter(b => !settled(b)), t = B.etYmd();
+    const todayPL = bets.filter(b => settled(b) && b.settledAt && B.etYmd(b.settledAt) === t).reduce((a, b) => a + profit(b), 0);
+    const picks = app.store.cached("betpicks").filter(p => p.startDate === t || (p.start && B.etYmd(p.start) === t)).sort((a, b) => (b.confidence || 0) - (a.confidence || 0)).slice(0, 4);
+    const rec = MD.betAI.record(app);
+    box.append(h("div", { class: "grid g3" }, [["Open bets", open.length + " · " + U.money(open.reduce((a, b) => a + b.stake, 0), "USD") + " at risk"], ["Today", (todayPL >= 0 ? "+" : "") + U.money(todayPL, "USD")], ["AI record", rec.graded ? pct(rec.hitRate, 0) + " of " + rec.graded : "no graded picks"]].map(([k, v]) => h("div", { class: "tile" }, h("span", { class: "label" }, k), h("span", { class: "v small" }, v)))),
+      picks.length ? h("div", { class: "stack", style: "gap:4px;margin-top:8px" }, h("span", { class: "label" }, "Today's AI picks"), picks.map(p => h("div", { class: "row between small" }, h("span", {}, h("b", {}, p.pickName), " · " + p.game), h("span", { class: "num" }, pct(p.p, 0) + " · conf " + (p.confidence ?? "—"))))) : h("p", { class: "tiny muted", style: "margin-top:8px" }, "No AI picks for today yet. Run a slate forecast on the Sports Betting tab."),
+      h("div", { class: "row", style: "margin-top:8px" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("betting", null, { fromNav: true }) }, "Open Sports Betting")));
+  }
+  MD.betting = { legOf, addLeg, slip, setSlip, profit, settled, roundRobin, dashboardCard, suggestSettlements };
 })(typeof window !== "undefined" ? window : globalThis);

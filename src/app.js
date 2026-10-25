@@ -15,7 +15,7 @@
     quiet: { enabled: false, start: "22:00", end: "07:00" }, notify: { toasts: true, minMateriality: 1 },
     assumptions: { stockExitPct: 0.05, cryptoExitPct: 0.5, metalSpreadPct: 3, cardFeePct: 13, cardShipping: 5, fxSpreadMajorPct: 0.1, fxSpreadOtherPct: 1, riskFreePct: 4, inflationPct: 2.5 },
     betting: { oddsFormat: "american", bankroll: 1000, unit: 10, kelly: 0.25, minEdge: 1 },
-    customCurrencies: [], dashboard: ["changes", "portfolio", "fx", "watch", "alerts", "catalysts", "data"], universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
+    customCurrencies: [], dashboard: ["changes", "portfolio", "fx", "watch", "alerts", "catalysts", "betting", "data"], universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
   };
   const ls = { get(k, d) { try { const v = localStorage.getItem("mdp." + k); return v ? JSON.parse(v) : d; } catch { return d; } }, set(k, v) { try { localStorage.setItem("mdp." + k, JSON.stringify(v)); } catch {} } };
 
@@ -32,6 +32,8 @@
     try { s = await app.store.get("settings", "main"); } catch {}
     app.settings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), s || {});
     for (const k of ["quiet", "notify", "assumptions", "betting"]) app.settings[k] = Object.assign({}, DEFAULT_SETTINGS[k], (s || {})[k] || {});
+    // Dashboards saved before the betting card existed get it once, before Data health.
+    if (!app.settings.dashSeen || !app.settings.dashSeen.includes("betting")) { if (!app.settings.dashboard.includes("betting")) { const i = app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, "betting"); } app.settings.dashSeen = (app.settings.dashSeen || []).concat("betting"); }
     applySettings();
   }
   let saveTimer = null;
