@@ -4,7 +4,7 @@
    then weigh a chosen rebalance with the research tools and the review pass. */
 (function (G) {
   const MD = (G.MD = G.MD || {});
-  const C = MD.core, U = MD.ui, h = U.h;
+  const C = MD.core, U = MD.ui, D = MD.data, h = U.h;
   const bare = (x, dp = 1) => x == null || !isFinite(x) ? "—" : x.toFixed(dp) + "%";
 
   // Target weights (fractions summing to 1) for a strategy. items: [{weight, volPct?, fixed?}].
@@ -108,5 +108,50 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
     r.gentlerPath ? h("p", { class: "small" }, h("strong", {}, "Gentler path: "), r.gentlerPath) : null, r.biggestRisk ? h("p", { class: "small" }, h("strong", {}, "Biggest risk: "), r.biggestRisk) : null,
     MD.ai.reviewBadge(r.review), MD.ai.sources(r.sources), h("p", { class: "tiny muted" }, "Claude's assessment, checked by a second review. Market Desk never places trades. Not advice."));
 
-  MD.rebalance = { targets, volOf, plan, stress, section };
+  /* "If you buy": what a purchase would have done to the portfolio over the past year (today's holdings and exchange
+     rates held throughout), against the single-position cap for the investor's risk setting and the AI decision's size
+     ceiling when there is one. Nothing is bought: the desk is read-only. */
+  function buyCard(app, asset) {
+    const R = app.settings.reportingCurrency, out = h("div", { class: "stack" }), prof = app.settings.profile || {}, cap = ({ low: 5, mid: 10, high: 20 })[prof.risk] || 10;
+    const amt = h("input", { type: "number", min: 0, step: "100", placeholder: "e.g. 1000" }), cashChk = h("input", { type: "checkbox", checked: true });
+    const btn = h("button", { class: "btn ghost", type: "button" }, "Preview");
+    const sec = U.section("If you buy: what it does to your portfolio", h("div", { class: "stack" },
+      h("div", { class: "row", style: "gap:10px;flex-wrap:wrap;align-items:flex-end" }, U.field("Amount (" + R + ")", amt), h("label", { class: "chk" }, cashChk, "Pay from cash in the portfolio"), btn),
+      h("p", { class: "tiny muted" }, "Leave the amount empty to use the AI decision's size ceiling, or 5% of the portfolio."), out)); sec.id = "sec-buy";
+    btn.onclick = async () => {
+      btn.disabled = true; out.replaceChildren(h("p", { class: "small muted" }, "Measuring your holdings and " + asset.symbol + " over the past year…"));
+      try {
+        const pv = await app.valuePortfolio(R), m = await MD.portfolioAnalysis.measure(app, pv, R);
+        if (!(m.total > 0)) throw new Error("Add holdings in Portfolio first: the preview compares a purchase with what you hold.");
+        const dec = app.store.cached("decisions").find(x => x.assetId === asset.id || x.id === String(asset.id || asset.symbol).replace(/[^\w-]/g, "_"));
+        const ceil = dec && dec.math ? dec.math.ceilingPct : null;
+        let A = Number(amt.value); if (!(A > 0)) { A = Math.round(m.total * (ceil > 0 ? ceil : 5) / 100); amt.value = A; }
+        const hs = await D.historyFor(asset, "1Y"), byDay = new Map(hs.points.map(p => [Math.floor(p.time / 86400), p.close ?? p.value]));
+        let cur = null; const prices = m.series.map(p => { const d = Math.floor(p.time / 86400); if (byDay.has(d)) cur = byDay.get(d); else if (cur == null) for (let k = d; k >= d - 6; k--) if (byDay.has(k)) { cur = byDay.get(k); break; } return cur; });
+        const first = prices.findIndex(x => x > 0); if (first < 0) throw new Error("No price history for " + asset.symbol + " over the past year.");
+        const cash = m.items.filter(it => it.cls === "cash").reduce((s, it) => s + it.value, 0), held = m.items.filter(it => it.symbol === asset.symbol).reduce((s, it) => s + it.value, 0);
+        const fromCash = cashChk.checked && cash >= A;
+        const t = MD.quant.tradePreview({ values: m.series.slice(first).map(p => p.value), prices: prices.slice(first), amount: A, fromCash, existing: held });
+        if (!t) throw new Error("Not enough overlapping history to measure this purchase.");
+        const arrow = (a, b, dp = 1) => a.toFixed(dp) + "% → " + b.toFixed(dp) + "%", dv = t.volAfter - t.volBefore;
+        const notes = [];
+        notes.push(Math.abs(dv) < 0.2 ? "Barely changes how much the portfolio swings." : dv < 0 ? "Lowers the portfolio's swings by " + (-dv).toFixed(1) + " points a year: " + asset.symbol + " has tended to move differently from what you hold." : "Raises the portfolio's swings by " + dv.toFixed(1) + " points a year" + (t.assetVol > t.volBefore ? " (" + asset.symbol + " swings " + t.assetVol.toFixed(0) + "% a year on its own, against the portfolio's " + t.volBefore.toFixed(0) + "%)." : "."));
+        if (t.corr != null) notes.push(t.corr > 0.7 ? "It has moved closely with your portfolio (correlation " + t.corr.toFixed(2) + "), so it adds more of the same risk." : t.corr < 0.3 ? "Its moves have been largely independent of your portfolio (correlation " + t.corr.toFixed(2) + "), which helps diversify." : "Moderate correlation with your portfolio (" + t.corr.toFixed(2) + ").");
+        if (t.weightAfter > cap) notes.push("It would be " + t.weightAfter.toFixed(1) + "% of the portfolio, above the " + cap + "% single-position cap for your " + (prof.risk || "mid") + " risk setting.");
+        if (ceil != null) notes.push("The AI decision of " + U.fmtDate(dec.at) + " (" + ((MD.decide && MD.decide.DECISIONS[dec.decision] || [dec.decision])[0]) + ") put the size ceiling at " + ceil + "% of the portfolio; this makes it " + t.weightAfter.toFixed(1) + "%" + (t.weightAfter > ceil + 0.5 ? ", above what the odds and payoff support." : "."));
+        if (cashChk.checked && !fromCash) notes.push("Not enough cash in the portfolio (" + U.money(cash, R) + "), so this is treated as new money.");
+        const kpi = (l, v, s, cls) => h("div", { class: "kpi" }, h("span", { class: "label" }, l), h("b", { class: "v " + (cls || "") }, v), h("span", { class: "s" }, s));
+        out.replaceChildren(
+          h("div", { class: "kpis k4" }, kpi("Weight after", t.weightAfter.toFixed(1) + "%", "now " + t.weightBefore.toFixed(1) + "% · " + U.money(A, R), t.weightAfter > cap ? "down" : ""),
+            kpi("Portfolio volatility", arrow(t.volBefore, t.volAfter), "yearly, before → after", dv < -0.2 ? "up" : dv > 0.2 ? "down" : ""),
+            kpi("Worst drop, past year", arrow(t.ddBefore, t.ddAfter), "peak to trough", t.ddAfter < t.ddBefore - 0.5 ? "down" : t.ddAfter > t.ddBefore + 0.5 ? "up" : ""),
+            kpi("Correlation", t.corr == null ? "—" : t.corr.toFixed(2), "with your portfolio's daily moves")),
+          h("ul", { class: "small", style: "margin:0;padding-left:1.1em;display:grid;gap:4px" }, notes.map(x => h("li", {}, x))),
+          h("p", { class: "tiny muted" }, "Over " + t.days + " trading days with today's holdings and exchange rates held constant (" + asset.symbol + " prices: " + (hs.source || "price history") + "). Past behaviour, not a forecast. Nothing is bought: the desk is read-only."));
+      } catch (e) { out.replaceChildren(U.errorBox ? U.errorBox({ message: U.errorText(e) }) : h("p", { class: "small neg" }, U.errorText(e))); }
+      btn.disabled = false;
+    };
+    return sec;
+  }
+  MD.rebalance = { buyCard, targets, volOf, plan, stress, section };
 })(typeof window !== "undefined" ? window : globalThis);

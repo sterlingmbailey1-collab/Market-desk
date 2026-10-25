@@ -302,6 +302,16 @@
     const late = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 1, minutesLeft: 10 }); ok(late.pNeither > 0.9, "ten quiet minutes rarely reach either level");
     eq(Q.barrierOdds({ entry: 100, stop: 101, target: 102, dailyVolPct: 2, minutesLeft: 60 }), null);
   });
+  test("trade preview: a diversifier lowers volatility, a copy of the portfolio doesn't, weights and cash handled", () => {
+    const Q = MD.quant, n = 120;
+    const V = [], P = [], S = []; let v = 1000, p = 50, s = 50;
+    for (let k = 0; k < n; k++) { const shock = (k % 2 ? 1 : -1) * 0.02; v *= 1 + shock; p *= 1 - shock; s *= 1 + shock; V.push(v); P.push(p); S.push(s); }
+    const hedge = Q.tradePreview({ values: V, prices: P, amount: 500 }), same = Q.tradePreview({ values: V, prices: S, amount: 500 });
+    ok(hedge.volAfter < hedge.volBefore * 0.6 && hedge.corr < -0.99, JSON.stringify(hedge)); near(same.volAfter, same.volBefore, 0.05); ok(same.corr > 0.99);
+    near(hedge.weightAfter, 500 / (V[n - 1] + 500) * 100, 1e-9); eq(hedge.weightBefore, 0);
+    const cash = Q.tradePreview({ values: V.map(x => x + 2000), prices: P, amount: 500, fromCash: true, existing: 100 }); near(cash.weightAfter, 600 / (V[n - 1] + 2000) * 100, 1e-9);
+    eq(Q.tradePreview({ values: V, prices: P, amount: 5000, fromCash: true }), null); eq(Q.tradePreview({ values: V.slice(0, 10), prices: P.slice(0, 10), amount: 1 }), null);
+  });
   test("day-trade risk guard: loss left, trades left, losing streak and the stop rule", () => {
     const Q = MD.quant, d = "2026-10-26", T = (time, entry, exit) => ({ date: d, time, symbol: "X", side: "long", shares: 100, entry, exit });
     const g = Q.riskGuard({ trades: [T("09:40", 10, 11), T("10:05", 10, 9.5), T("10:30", 10, 9.7), { date: "2026-10-23", time: "10:00", symbol: "X", side: "long", shares: 100, entry: 10, exit: 5 }], date: d, account: 10000, maxLossPct: 2, maxTrades: 4, maxLosingStreak: 3 });

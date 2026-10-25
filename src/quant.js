@@ -294,6 +294,25 @@
     else { const s = v * Math.sqrt(barsLeft); p = dir > 0 ? 1 - C.normCdf((need - x) / s) : C.normCdf((need - x) / s); }
     return { movePct: (b / a - 1) * 100, zFor, oddsNowPct: p * 100 };
   }
+  /* What buying would have done to the portfolio over the same days: `values` is the portfolio's value path (today's
+     holdings held throughout) and `prices` the asset's closes on those days. Bought today for `amount` (paid from cash
+     already in the portfolio, or new money), the position's path is its prices scaled to `amount` today. `existing` is
+     the value already held in the asset. Measured history, not a forecast. */
+  function tradePreview({ values, prices, amount, fromCash = false, existing = 0, ppy = 252 }) {
+    const n = Math.min((values || []).length, (prices || []).length), A = Number(amount);
+    if (n < 30 || !(A > 0)) return null;
+    const V = values.slice(-n), P = prices.slice(-n), pT = P[n - 1], VT = V[n - 1];
+    if (!(pT > 0) || !(VT > 0) || (fromCash && V.some(v => v - A <= 0))) return null;
+    const V2 = V.map((v, k) => v - (fromCash ? A : 0) + A * P[k] / pT);
+    const lr = (a) => a.slice(1).map((v, k) => Math.log(v / a[k])), rv = lr(V), rp = lr(P), r2 = lr(V2);
+    const vol = (r) => C.stdev(r) * Math.sqrt(ppy) * 100;
+    const dd = (a) => { let peak = a[0], m = 0; for (const v of a) { peak = Math.max(peak, v); m = Math.min(m, v / peak - 1); } return m * 100; };
+    const mv = rv.reduce((s, x) => s + x, 0) / rv.length, mp = rp.reduce((s, x) => s + x, 0) / rp.length;
+    let cvp = 0, vv = 0, vp = 0; for (let i = 0; i < rv.length; i++) { cvp += (rv[i] - mv) * (rp[i] - mp); vv += (rv[i] - mv) ** 2; vp += (rp[i] - mp) ** 2; }
+    const total2 = VT + (fromCash ? 0 : A);
+    return { volBefore: vol(rv), volAfter: vol(r2), assetVol: vol(rp), ddBefore: dd(V), ddAfter: dd(V2), corr: vv > 0 && vp > 0 ? cvp / Math.sqrt(vv * vp) : null,
+      weightBefore: Number(existing) / VT * 100, weightAfter: (Number(existing) + A) / total2 * 100, ret1yBefore: (VT / V[0] - 1) * 100, ret1yAfter: (V2[n - 1] / V2[0] - 1) * 100, days: n };
+  }
   /* Today's risk limits from the trade journal: P&L, trades and losing streak so far today, what is left before the
      daily loss limit and the trade cap (gains don't raise the limit), and whether the rules say to stop for the day. */
   function riskGuard({ trades, date, account, maxLossPct, maxTrades, maxLosingStreak }) {
@@ -389,6 +408,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

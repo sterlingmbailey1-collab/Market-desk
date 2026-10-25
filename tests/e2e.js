@@ -637,6 +637,12 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("open-call monitor: a call far against it notifies the inbox once, with the odds now", mon.sent1.some(x => x.symbol === "AAPL" && x.kind === "against") && mon.sent2 === 0 && /AAPL \(Recommendations\) is going against the call/.test(mon.title || "") && /chance to finish higher/.test(mon.body || ""), JSON.stringify(mon));
   check("dashboard: what the AI is tracking (open calls by source, next due, scorecard link)", /What the AI is tracking/i.test(aiStat) && /Open calls/i.test(aiStat) && /Next due/i.test(aiStat) && await page.locator("button:has-text('Open the AI scorecard')").count() === 1, aiStat.slice(0, 400));
 
+  await page.evaluate(() => MD.app.openAsset({ id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" })); await page.waitForTimeout(2500);
+  await page.click("#sec-buy button:has-text('Preview')"); await page.waitForTimeout(4000);
+  const buyTxt = await page.locator("#sec-buy").innerText();
+  check("if you buy: weight, portfolio volatility and drawdown before and after, correlation, and the AI decision's ceiling", /Weight after/i.test(buyTxt) && /Portfolio volatility/i.test(buyTxt) && /\d+\.\d% → \d+\.\d%/.test(buyTxt) && /Correlation/i.test(buyTxt) && /AI decision of .* size ceiling at/.test(buyTxt) && /read-only/.test(buyTxt) && Number(await page.locator("#sec-buy input[type=number]").inputValue()) > 0, buyTxt.slice(0, 900));
+  await page.locator("#sec-buy").screenshot({ path: path.join(shots, "e2e-buy.png") });
+
   // ---- Opportunities AI: scan review, comparison scorecard, idea finder
   await page.evaluate(() => { MD.app.ls.set("oppTab", "scan"); MD.app.go("opportunities", null, { fromNav: true }); }); await page.waitForTimeout(800);
   await page.click("button:has-text('Run scan')"); await page.waitForTimeout(3500);

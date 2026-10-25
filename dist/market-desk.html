@@ -1770,6 +1770,25 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     else { const s = v * Math.sqrt(barsLeft); p = dir > 0 ? 1 - C.normCdf((need - x) / s) : C.normCdf((need - x) / s); }
     return { movePct: (b / a - 1) * 100, zFor, oddsNowPct: p * 100 };
   }
+  /* What buying would have done to the portfolio over the same days: `values` is the portfolio's value path (today's
+     holdings held throughout) and `prices` the asset's closes on those days. Bought today for `amount` (paid from cash
+     already in the portfolio, or new money), the position's path is its prices scaled to `amount` today. `existing` is
+     the value already held in the asset. Measured history, not a forecast. */
+  function tradePreview({ values, prices, amount, fromCash = false, existing = 0, ppy = 252 }) {
+    const n = Math.min((values || []).length, (prices || []).length), A = Number(amount);
+    if (n < 30 || !(A > 0)) return null;
+    const V = values.slice(-n), P = prices.slice(-n), pT = P[n - 1], VT = V[n - 1];
+    if (!(pT > 0) || !(VT > 0) || (fromCash && V.some(v => v - A <= 0))) return null;
+    const V2 = V.map((v, k) => v - (fromCash ? A : 0) + A * P[k] / pT);
+    const lr = (a) => a.slice(1).map((v, k) => Math.log(v / a[k])), rv = lr(V), rp = lr(P), r2 = lr(V2);
+    const vol = (r) => C.stdev(r) * Math.sqrt(ppy) * 100;
+    const dd = (a) => { let peak = a[0], m = 0; for (const v of a) { peak = Math.max(peak, v); m = Math.min(m, v / peak - 1); } return m * 100; };
+    const mv = rv.reduce((s, x) => s + x, 0) / rv.length, mp = rp.reduce((s, x) => s + x, 0) / rp.length;
+    let cvp = 0, vv = 0, vp = 0; for (let i = 0; i < rv.length; i++) { cvp += (rv[i] - mv) * (rp[i] - mp); vv += (rv[i] - mv) ** 2; vp += (rp[i] - mp) ** 2; }
+    const total2 = VT + (fromCash ? 0 : A);
+    return { volBefore: vol(rv), volAfter: vol(r2), assetVol: vol(rp), ddBefore: dd(V), ddAfter: dd(V2), corr: vv > 0 && vp > 0 ? cvp / Math.sqrt(vv * vp) : null,
+      weightBefore: Number(existing) / VT * 100, weightAfter: (Number(existing) + A) / total2 * 100, ret1yBefore: (VT / V[0] - 1) * 100, ret1yAfter: (V2[n - 1] / V2[0] - 1) * 100, days: n };
+  }
   /* Today's risk limits from the trade journal: P&L, trades and losing streak so far today, what is left before the
      daily loss limit and the trade cap (gains don't raise the limit), and whether the rules say to stop for the day. */
   function riskGuard({ trades, date, account, maxLossPct, maxTrades, maxLosingStreak }) {
@@ -1865,7 +1884,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);
 
@@ -2175,6 +2194,16 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     const short = Q.barrierOdds({ entry: 100, stop: 101, target: 98, side: "short", dailyVolPct: 6, minutesLeft: 1440, paths: 4000 }); near(short.pTarget, Math.log(101 / 100) / Math.log(101 / 98), 0.03);
     const late = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 1, minutesLeft: 10 }); ok(late.pNeither > 0.9, "ten quiet minutes rarely reach either level");
     eq(Q.barrierOdds({ entry: 100, stop: 101, target: 102, dailyVolPct: 2, minutesLeft: 60 }), null);
+  });
+  test("trade preview: a diversifier lowers volatility, a copy of the portfolio doesn't, weights and cash handled", () => {
+    const Q = MD.quant, n = 120;
+    const V = [], P = [], S = []; let v = 1000, p = 50, s = 50;
+    for (let k = 0; k < n; k++) { const shock = (k % 2 ? 1 : -1) * 0.02; v *= 1 + shock; p *= 1 - shock; s *= 1 + shock; V.push(v); P.push(p); S.push(s); }
+    const hedge = Q.tradePreview({ values: V, prices: P, amount: 500 }), same = Q.tradePreview({ values: V, prices: S, amount: 500 });
+    ok(hedge.volAfter < hedge.volBefore * 0.6 && hedge.corr < -0.99, JSON.stringify(hedge)); near(same.volAfter, same.volBefore, 0.05); ok(same.corr > 0.99);
+    near(hedge.weightAfter, 500 / (V[n - 1] + 500) * 100, 1e-9); eq(hedge.weightBefore, 0);
+    const cash = Q.tradePreview({ values: V.map(x => x + 2000), prices: P, amount: 500, fromCash: true, existing: 100 }); near(cash.weightAfter, 600 / (V[n - 1] + 2000) * 100, 1e-9);
+    eq(Q.tradePreview({ values: V, prices: P, amount: 5000, fromCash: true }), null); eq(Q.tradePreview({ values: V.slice(0, 10), prices: P.slice(0, 10), amount: 1 }), null);
   });
   test("day-trade risk guard: loss left, trades left, losing streak and the stop rule", () => {
     const Q = MD.quant, d = "2026-10-26", T = (time, entry, exit) => ({ date: d, time, symbol: "X", side: "long", shares: 100, entry, exit });
@@ -6384,7 +6413,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       actions.replaceChildren(X.actionBar(asset, () => quote, () => panel && panel.series));
     });
     const priceSec = U.section("Price", panel.el); priceSec.id = "sec-price";
-    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-decide", "AI decision"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, a), MD.decide.card(app, a), MD.brain.whyCard(app, a), MD.ai.memoryCard(app, a), MD.insights.panel(a, { currency: "USD", analysts: true }));
+    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-decide", "AI decision"], ["sec-buy", "If you buy"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, a), MD.decide.card(app, a), MD.rebalance.buyCard(app, a), MD.brain.whyCard(app, a), MD.ai.memoryCard(app, a), MD.insights.panel(a, { currency: "USD", analysts: true }));
     const tab = app.ls.get("stockTab", "summary");
     const renderTab = (k) => {
       app.ls.set("stockTab", k);
@@ -6433,7 +6462,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       });
       const news = h("div", {});
       const priceSec = U.section("Price (USD)", panel.el), newsSec = U.section("Latest news · CoinMarketCap", news); priceSec.id = "sec-price"; newsSec.id = "sec-news";
-      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-decide", "AI decision"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, Object.assign({}, a, { cls: "crypto" })), MD.decide.card(app, Object.assign({}, a, { cls: "crypto" })), MD.brain.whyCard(app, Object.assign({}, a, { cls: "crypto" })), MD.ai.memoryCard(app, Object.assign({}, a, { cls: "crypto" })), U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
+      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-decide", "AI decision"], ["sec-buy", "If you buy"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, Object.assign({}, a, { cls: "crypto" })), MD.decide.card(app, Object.assign({}, a, { cls: "crypto" })), MD.rebalance.buyCard(app, Object.assign({}, a, { cls: "crypto" })), MD.brain.whyCard(app, Object.assign({}, a, { cls: "crypto" })), MD.ai.memoryCard(app, Object.assign({}, a, { cls: "crypto" })), U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
       U.async(news, () => D.cmc.news(a.symbol, 8), (r) => {
         news.append(X.newsList(r.items, { empty: "CoinMarketCap returned no recent news for " + a.symbol + "." }),
           r.upcoming.length ? h("details", {}, h("summary", { class: "small" }, r.upcoming.length + " event or prediction page" + (r.upcoming.length > 1 ? "s" : "") + " with future dates"), X.newsList(r.upcoming, { clip: 200 })) : null,
@@ -9748,7 +9777,7 @@ Reply with ONLY JSON: {"setup": "2-3 sentences", "watch": ["3-5 metrics or topic
    then weigh a chosen rebalance with the research tools and the review pass. */
 (function (G) {
   const MD = (G.MD = G.MD || {});
-  const C = MD.core, U = MD.ui, h = U.h;
+  const C = MD.core, U = MD.ui, D = MD.data, h = U.h;
   const bare = (x, dp = 1) => x == null || !isFinite(x) ? "—" : x.toFixed(dp) + "%";
 
   // Target weights (fractions summing to 1) for a strategy. items: [{weight, volPct?, fixed?}].
@@ -9852,7 +9881,52 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
     r.gentlerPath ? h("p", { class: "small" }, h("strong", {}, "Gentler path: "), r.gentlerPath) : null, r.biggestRisk ? h("p", { class: "small" }, h("strong", {}, "Biggest risk: "), r.biggestRisk) : null,
     MD.ai.reviewBadge(r.review), MD.ai.sources(r.sources), h("p", { class: "tiny muted" }, "Claude's assessment, checked by a second review. Market Desk never places trades. Not advice."));
 
-  MD.rebalance = { targets, volOf, plan, stress, section };
+  /* "If you buy": what a purchase would have done to the portfolio over the past year (today's holdings and exchange
+     rates held throughout), against the single-position cap for the investor's risk setting and the AI decision's size
+     ceiling when there is one. Nothing is bought: the desk is read-only. */
+  function buyCard(app, asset) {
+    const R = app.settings.reportingCurrency, out = h("div", { class: "stack" }), prof = app.settings.profile || {}, cap = ({ low: 5, mid: 10, high: 20 })[prof.risk] || 10;
+    const amt = h("input", { type: "number", min: 0, step: "100", placeholder: "e.g. 1000" }), cashChk = h("input", { type: "checkbox", checked: true });
+    const btn = h("button", { class: "btn ghost", type: "button" }, "Preview");
+    const sec = U.section("If you buy: what it does to your portfolio", h("div", { class: "stack" },
+      h("div", { class: "row", style: "gap:10px;flex-wrap:wrap;align-items:flex-end" }, U.field("Amount (" + R + ")", amt), h("label", { class: "chk" }, cashChk, "Pay from cash in the portfolio"), btn),
+      h("p", { class: "tiny muted" }, "Leave the amount empty to use the AI decision's size ceiling, or 5% of the portfolio."), out)); sec.id = "sec-buy";
+    btn.onclick = async () => {
+      btn.disabled = true; out.replaceChildren(h("p", { class: "small muted" }, "Measuring your holdings and " + asset.symbol + " over the past year…"));
+      try {
+        const pv = await app.valuePortfolio(R), m = await MD.portfolioAnalysis.measure(app, pv, R);
+        if (!(m.total > 0)) throw new Error("Add holdings in Portfolio first: the preview compares a purchase with what you hold.");
+        const dec = app.store.cached("decisions").find(x => x.assetId === asset.id || x.id === String(asset.id || asset.symbol).replace(/[^\w-]/g, "_"));
+        const ceil = dec && dec.math ? dec.math.ceilingPct : null;
+        let A = Number(amt.value); if (!(A > 0)) { A = Math.round(m.total * (ceil > 0 ? ceil : 5) / 100); amt.value = A; }
+        const hs = await D.historyFor(asset, "1Y"), byDay = new Map(hs.points.map(p => [Math.floor(p.time / 86400), p.close ?? p.value]));
+        let cur = null; const prices = m.series.map(p => { const d = Math.floor(p.time / 86400); if (byDay.has(d)) cur = byDay.get(d); else if (cur == null) for (let k = d; k >= d - 6; k--) if (byDay.has(k)) { cur = byDay.get(k); break; } return cur; });
+        const first = prices.findIndex(x => x > 0); if (first < 0) throw new Error("No price history for " + asset.symbol + " over the past year.");
+        const cash = m.items.filter(it => it.cls === "cash").reduce((s, it) => s + it.value, 0), held = m.items.filter(it => it.symbol === asset.symbol).reduce((s, it) => s + it.value, 0);
+        const fromCash = cashChk.checked && cash >= A;
+        const t = MD.quant.tradePreview({ values: m.series.slice(first).map(p => p.value), prices: prices.slice(first), amount: A, fromCash, existing: held });
+        if (!t) throw new Error("Not enough overlapping history to measure this purchase.");
+        const arrow = (a, b, dp = 1) => a.toFixed(dp) + "% → " + b.toFixed(dp) + "%", dv = t.volAfter - t.volBefore;
+        const notes = [];
+        notes.push(Math.abs(dv) < 0.2 ? "Barely changes how much the portfolio swings." : dv < 0 ? "Lowers the portfolio's swings by " + (-dv).toFixed(1) + " points a year: " + asset.symbol + " has tended to move differently from what you hold." : "Raises the portfolio's swings by " + dv.toFixed(1) + " points a year" + (t.assetVol > t.volBefore ? " (" + asset.symbol + " swings " + t.assetVol.toFixed(0) + "% a year on its own, against the portfolio's " + t.volBefore.toFixed(0) + "%)." : "."));
+        if (t.corr != null) notes.push(t.corr > 0.7 ? "It has moved closely with your portfolio (correlation " + t.corr.toFixed(2) + "), so it adds more of the same risk." : t.corr < 0.3 ? "Its moves have been largely independent of your portfolio (correlation " + t.corr.toFixed(2) + "), which helps diversify." : "Moderate correlation with your portfolio (" + t.corr.toFixed(2) + ").");
+        if (t.weightAfter > cap) notes.push("It would be " + t.weightAfter.toFixed(1) + "% of the portfolio, above the " + cap + "% single-position cap for your " + (prof.risk || "mid") + " risk setting.");
+        if (ceil != null) notes.push("The AI decision of " + U.fmtDate(dec.at) + " (" + ((MD.decide && MD.decide.DECISIONS[dec.decision] || [dec.decision])[0]) + ") put the size ceiling at " + ceil + "% of the portfolio; this makes it " + t.weightAfter.toFixed(1) + "%" + (t.weightAfter > ceil + 0.5 ? ", above what the odds and payoff support." : "."));
+        if (cashChk.checked && !fromCash) notes.push("Not enough cash in the portfolio (" + U.money(cash, R) + "), so this is treated as new money.");
+        const kpi = (l, v, s, cls) => h("div", { class: "kpi" }, h("span", { class: "label" }, l), h("b", { class: "v " + (cls || "") }, v), h("span", { class: "s" }, s));
+        out.replaceChildren(
+          h("div", { class: "kpis k4" }, kpi("Weight after", t.weightAfter.toFixed(1) + "%", "now " + t.weightBefore.toFixed(1) + "% · " + U.money(A, R), t.weightAfter > cap ? "down" : ""),
+            kpi("Portfolio volatility", arrow(t.volBefore, t.volAfter), "yearly, before → after", dv < -0.2 ? "up" : dv > 0.2 ? "down" : ""),
+            kpi("Worst drop, past year", arrow(t.ddBefore, t.ddAfter), "peak to trough", t.ddAfter < t.ddBefore - 0.5 ? "down" : t.ddAfter > t.ddBefore + 0.5 ? "up" : ""),
+            kpi("Correlation", t.corr == null ? "—" : t.corr.toFixed(2), "with your portfolio's daily moves")),
+          h("ul", { class: "small", style: "margin:0;padding-left:1.1em;display:grid;gap:4px" }, notes.map(x => h("li", {}, x))),
+          h("p", { class: "tiny muted" }, "Over " + t.days + " trading days with today's holdings and exchange rates held constant (" + asset.symbol + " prices: " + (hs.source || "price history") + "). Past behaviour, not a forecast. Nothing is bought: the desk is read-only."));
+      } catch (e) { out.replaceChildren(U.errorBox ? U.errorBox({ message: U.errorText(e) }) : h("p", { class: "small neg" }, U.errorText(e))); }
+      btn.disabled = false;
+    };
+    return sec;
+  }
+  MD.rebalance = { buyCard, targets, volOf, plan, stress, section };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
