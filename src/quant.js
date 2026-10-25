@@ -158,6 +158,17 @@
     return { p: (w * obs + k * p) / (w + k), applied: true, n: Math.round(w * 10) / 10, observed: obs };
   }
 
+  /* Learned blend weights: how much to trust Claude's probability vs the measured history, from each one's Brier score
+     on graded calls (inverse-Brier weighting), shrunk toward the prior weight by k pseudo-calls and kept within 20–90%.
+     items: [{claude, model (0–100), up (did it finish higher)}]. */
+  function blendWeights(items, prior = 0.65, k = 20) {
+    const xs = items.filter(x => x.claude != null && x.model != null);
+    if (!xs.length) return { wClaude: prior, n: 0 };
+    const brier = (key) => xs.reduce((s, x) => s + Math.pow(x[key] / 100 - (x.up ? 1 : 0), 2), 0) / xs.length;
+    const bC = brier("claude"), bM = brier("model"), data = (1 / Math.max(bC, 1e-4)) / (1 / Math.max(bC, 1e-4) + 1 / Math.max(bM, 1e-4)), n = xs.length;
+    return { wClaude: Math.max(0.2, Math.min(0.9, (n * data + k * prior) / (n + k))), n, brierClaude: bC, brierModel: bM };
+  }
+
   /* ---------- testable cause → effect rules ---------- */
   /* A rule over daily % moves: {cause: {symbol, op: "<"|">", pct}, effect: {symbol, vs?, op, pct}, lagDays: 0|1}.
      "When TLT falls more than 1%, XLK trails SPY the same day" =
@@ -352,6 +363,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

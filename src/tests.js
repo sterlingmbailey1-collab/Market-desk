@@ -288,6 +288,13 @@
     const st = Q.tradeStats([{ side: "long", entry: 10, exit: 11, shares: 100, stop: 9.5 }, { side: "short", entry: 20, exit: 21, shares: 50, stop: 21 }, { side: "long", entry: 5, exit: 5.5, shares: 100 }]);
     eq(st.n, 3); near(st.net, 100, 1e-9); near(st.winRatePct, 200 / 3, 1e-9); near(st.profitFactor, 3, 1e-9); near(st.avgR, 0.5, 1e-9);
   });
+  test("learned blend weights move toward whichever source has been more accurate", () => {
+    const Q = MD.quant, mk = (n, claude, model) => Array.from({ length: n }, (_, i) => ({ claude, model, up: i % 2 === 0 }));
+    near(Q.blendWeights([]).wClaude, 0.65, 1e-12);
+    const modelBetter = Q.blendWeights(mk(40, 75, 52)); ok(modelBetter.wClaude < 0.6 && modelBetter.brierModel < modelBetter.brierClaude, JSON.stringify(modelBetter));
+    const claudeBetter = Q.blendWeights(Array.from({ length: 40 }, (_, i) => ({ claude: i % 2 === 0 ? 70 : 30, model: 50, up: i % 2 === 0 }))); ok(claudeBetter.wClaude > 0.7, JSON.stringify(claudeBetter));
+    ok(Q.blendWeights(mk(5, 75, 52)).wClaude > modelBetter.wClaude, "a short record moves the weight less");
+  });
   test("barrier odds: target before stop matches the driftless result, and shorts mirror longs", () => {
     const Q = MD.quant, long = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 6, minutesLeft: 1440, paths: 4000 });
     near(long.pTarget, Math.log(100 / 99) / Math.log(102 / 99), 0.03); ok(long.pNeither < 0.05, "plenty of time: " + long.pNeither); near(long.rr, 2, 1e-9);

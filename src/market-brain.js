@@ -317,7 +317,8 @@ Measured: ${JSON.stringify(measured)}
 Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "drivers": ["what matters most, with evidence"], "keyEvents": ["time ET: event"], "expectedRangePct": number (typical size of the day's move), "flipIf": "what would flip the call", "sectorTilt": {"leaders": ["sector funds likely to lead"], "laggards": ["..."]}, "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "complex", signal: opts.signal }, tools ? { tools } : { cache: false }));
     S.done(e, "ok");
     const claudeUp = Math.max(25, Math.min(75, Number(r.upProbabilityPct) || 50)), modelUp = br ? br.model.upPct : null;
-    let up = modelUp != null ? 0.65 * claudeUp + 0.35 * modelUp : claudeUp, conf = Math.max(0, Math.min(100, Number(r.confidence) || 0));
+    const bw = MD.ai.blendFor(app, "ai-market");
+    let up = modelUp != null ? bw.wClaude * claudeUp + (1 - bw.wClaude) * modelUp : claudeUp, conf = Math.max(0, Math.min(100, Number(r.confidence) || 0));
     const rv = await MD.ai.review(app, { task: "Will SPY close the " + target + " session above " + refLabel + "?", S, signal: opts.signal, facts: measured, items: [{ id: "call", upProbabilityPct: Math.round(up), drivers: r.drivers, confidence: conf }] }).catch(() => null);
     const review = rv && rv.reviews[0] || null;
     const reviewerUp = review && review.probabilityPct != null ? Math.round(review.probabilityPct) : null;
@@ -326,12 +327,12 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     if (review && review.adjustedConfidence != null && review.adjustedConfidence < conf) conf = review.adjustedConfidence;
     const cal = MD.ai.calibrateUp(app, "ai-market", up); if (cal.applied) up = cal.upPct;
     up = Math.round(up);
-    const call = { target, at: Date.now(), phase: sess.phase, live, refPrice: ref, refLabel, upPct: up, downPct: 100 - up, probs: { claude: Math.round(claudeUp), model: modelUp, reviewer: reviewerUp, final: up }, calibration: cal.applied ? cal : null, summary: String(r.summary || ""), drivers: (r.drivers || []).slice(0, 5).map(String), keyEvents: (r.keyEvents || []).slice(0, 6).map(String), expectedRangePct: Number(r.expectedRangePct) || null, flipIf: String(r.flipIf || ""), sectorTilt: r.sectorTilt || null, confidence: conf, review, sources: S.verify(r.sources), toolCalls: S.calls, steps: S.log.map(x => ({ kind: x.kind, text: x.text })) };
+    const call = { target, at: Date.now(), phase: sess.phase, live, refPrice: ref, refLabel, upPct: up, downPct: 100 - up, probs: { claude: Math.round(claudeUp), model: modelUp, reviewer: reviewerUp, final: up, weightClaude: Math.round(bw.wClaude * 100), learnedWeights: bw.learned }, calibration: cal.applied ? cal : null, summary: String(r.summary || ""), drivers: (r.drivers || []).slice(0, 5).map(String), keyEvents: (r.keyEvents || []).slice(0, 6).map(String), expectedRangePct: Number(r.expectedRangePct) || null, flipIf: String(r.flipIf || ""), sectorTilt: r.sectorTilt || null, confidence: conf, review, sources: S.verify(r.sources), toolCalls: S.calls, steps: S.log.map(x => ({ kind: x.kind, text: x.text })) };
     if (app.demo) return Object.assign({ id: "unsaved" }, call);
     // Only the first call per session counts for the record; later ones are shown but not logged.
     const first = !app.store.cached("marketcalls").some(c => c.target === target && c.forecastId);
     if (first && ref > 0 && up !== 50) {
-      const f = await app.store.create("forecasts", { assetId: SPY.id, asset: SPY, symbol: "SPY", source: "ai-market", horizonDays: 1, dueAt: Q.closeTimeUTC(target), priceAtCreation: ref, currency: "USD", priceSource: refLabel, direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: call.summary, flatBandPct: 0, sessionDate: target }).catch(() => null);
+      const f = await app.store.create("forecasts", { assetId: SPY.id, asset: SPY, symbol: "SPY", source: "ai-market", horizonDays: 1, dueAt: Q.closeTimeUTC(target), priceAtCreation: ref, currency: "USD", priceSource: refLabel, direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: call.summary, flatBandPct: 0, sessionDate: target, claudeUpPct: call.probs.claude, modelUpPct: call.probs.model }).catch(() => null);
       call.forecastId = f && f.id; call.dueAt = Q.closeTimeUTC(target);
     }
     return app.store.create("marketcalls", call);
@@ -399,6 +400,9 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     try {
       const r = await studySession(app, {}); app.emit("data:marketdays");
       await app.store.create("inbox", { kind: "brain", title: "Market Brain studied " + target, body: r.headline + " Source: Claude's study of measured moves and retrieved news.", materiality: 1, read: false, at: Date.now() }).catch(() => {});
+      // Re-study the record once 10+ more calls have been graded since the last lessons.
+      const LL = MD.ai.latestLessons(app), scored = MD.ai.scoredCalls(app).length;
+      if (scored >= 10 && (!LL || scored - (LL.basedOn || 0) >= 10)) { const les = await MD.ai.learn(app).catch(() => null); if (les) await app.store.create("inbox", { kind: "brain", title: "The AI studied its graded calls and updated its lessons", body: (les.summary || "") + " Every forecasting AI is told the new lessons.", materiality: 1, read: false, at: Date.now() }).catch(() => {}); }
       if (!latestCall(app)) { const c = await marketCall(app, {}); await app.store.create("inbox", { kind: "brain", title: "Market call for " + c.target + ": SPY " + (c.upPct >= 50 ? "up " + c.upPct : "down " + (100 - c.upPct)) + "%", body: c.summary + " Graded from the close.", materiality: 1, read: false, at: Date.now() }).catch(() => {}); }
     }
     catch (e) { /* tried again at the next check */ }
