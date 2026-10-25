@@ -139,5 +139,28 @@
   }
   async function loadTD(force) { return parseVITD(await D.fetchRaw(force ? D.bust(TD_URL) : TD_URL, 60000, 5 * 60e3)); }
 
-  MD.props = { PROPS_URL, TD_URL, DFS, parseVIProps, loadProps, parseVITD, loadTD, parseGameLog, espnId, playerLogs, model, edge, context, slug };
+  /* AI prop picks are logged and graded from the player's next game in the ESPN log, so the props AI has a
+     track record to calibrate against. */
+  function gradePick(pick, games) {
+    const g = games.filter(x => x.date >= pick.date).sort((a, b) => a.date.localeCompare(b.date))[0];
+    if (!g) return null;
+    if (!(g.min > 0)) return { result: "void", pts: g.pts, date: g.date, note: "did not play" };
+    const over = g.pts > pick.line, push = g.pts === pick.line;
+    return { result: push ? "push" : (pick.side === "over" ? over : !over) ? "hit" : "miss", pts: g.pts, date: g.date };
+  }
+  function propRecord(list) {
+    const g = list.filter(x => x.grade && (x.grade.result === "hit" || x.grade.result === "miss"));
+    const hits = g.filter(x => x.grade.result === "hit").length;
+    const priced = g.filter(x => x.price > 1);
+    return { logged: list.length, graded: g.length, hitPct: g.length ? hits / g.length * 100 : null, avgStatedPct: g.length ? g.reduce((s, x) => s + x.probabilityPct, 0) / g.length : null,
+      roiPct: priced.length ? priced.reduce((s, x) => s + (x.grade.result === "hit" ? x.price - 1 : -1), 0) / priced.length * 100 : null, pending: list.filter(x => !x.grade).length };
+  }
+  async function gradeAll(app) {
+    const due = app.store.cached("proppicks").filter(x => !x.grade && x.kind === "nba-points" && x.date < new Date().toISOString().slice(0, 10)).slice(0, 10);
+    let n = 0;
+    for (const pk of due) { try { const logs = await playerLogs(pk.player); const gr = gradePick(pk, logs.games); if (gr) { await app.store.put("proppicks", pk.id, Object.assign({}, pk, { grade: gr })); n++; } } catch {} }
+    return n;
+  }
+
+  MD.props = { PROPS_URL, TD_URL, DFS, gradePick, propRecord, gradeAll, parseVIProps, loadProps, parseVITD, loadTD, parseGameLog, espnId, playerLogs, model, edge, context, slug };
 })(typeof window !== "undefined" ? window : globalThis);

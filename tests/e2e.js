@@ -558,6 +558,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("props detail: model over %, best price EV, hit rates, every book's line", /Model: over/i.test(prDet) && /Went over/i.test(prDet) && /Breakeven/i.test(prDet) && /pick'em/i.test(prDet), prDet.slice(-900));
   await page.click("button:has-text('Pick props with AI')"); await page.waitForTimeout(3000);
   const pkProps = await page.locator("#content").innerText();
+  check("AI prop picks logged for grading", await page.evaluate(() => MD.app.store.cached("proppicks").filter(x => x.kind === "nba-points").length >= 1) && /AI prop record/i.test(await page.locator("#content").innerText()));
   check("AI prop picks: picks with model vs Claude probability, passes and the review", /Claude 58% · model/i.test(pkProps) && /Passed on/i.test(pkProps) && /Review:/i.test(pkProps), pkProps.slice(-700));
   await page.screenshot({ path: path.join(shots, "e2e-props.png"), fullPage: false });
   await page.evaluate(() => { MD.app.ls.set("bet.sport", "nfl"); MD.app.go("betting", null, { fromNav: true }); }); await page.waitForTimeout(2000);

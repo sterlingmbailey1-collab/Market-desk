@@ -73,7 +73,8 @@
         topBtn.textContent = "Analyzed"; if (!sel && top[0]) show(top[0]);
       } }, "Analyze the 12 most-listed players");
       box.append(h("div", { class: "row between", style: "flex-wrap:wrap;gap:8px" }, h("span", { class: "small muted" }, r.props.length + " players · " + r.books.length + " books · VegasInsider" + (r.updated ? ", updated " + U.fmtDate(r.updated) : "")), topBtn), table, detailBox,
-        U.section("AI prop picks", h("div", { class: "stack" }, h("p", { class: "small muted" }, "Claude reads the model numbers for the players you've analyzed, checks injury, minutes and role news, and picks the few with the best evidence (or none). A second review checks each pick against the numbers."), MD.oppAI.runner(app, "Pick props with AI", (Sx, signal) => aiPicks(app, r, Sx, signal), picksView(app)))));
+        U.section("AI prop picks", h("div", { class: "stack" }, h("p", { class: "small muted" }, "Claude reads the model numbers for the players you've analyzed, checks injury, minutes and role news, and picks the few with the best evidence (or none). A second review checks each pick against the numbers, and every kept pick is logged and graded after the game."), MD.oppAI.runner(app, "Pick props with AI", (Sx, signal) => aiPicks(app, r, Sx, signal), picksView(app)))),
+        U.section("AI prop record", recordBox(app)));
     }, { loading: "Reading NBA player props from VegasInsider…" });
   }
 
@@ -83,7 +84,10 @@
     const facts = rows.map(x => { const a = S.an.get(x.player), m = a.model; return A().rnd({ player: x.player, team: a.logs.team, line: x.consensusLine, lineRange: [x.lowLine, x.highLine], bestOver: x.bestOver ? { book: x.bestOver.book, american: O.fmtAm(x.bestOver.dec), breakevenPct: 100 / x.bestOver.dec } : null, modelOverPct: m.pOver * 100, modelUnderPct: m.pUnder * 100, evAtBestPct: a.edge != null ? a.edge * 100 : null, mean: m.mean, sd: m.sd, gamesUsed: m.n, thisSeasonGames: a.logs.current, last5Avg: m.avg5, minutesLast5: m.min5, minutesLast20: m.min20, overRateLast10Pct: m.hit10 != null ? m.hit10 * 100 : null, next: a.ctx && a.ctx.game ? (a.ctx.game.home ? "vs " : "@ ") + a.ctx.game.opponent : null, injury: a.ctx && a.ctx.injury || null }); });
     const lim = await app.caps.sample.limits().catch(() => null);
     const tools = lim && lim.tools ? A().tools(app, Sx, ["search_news", "search_web"]) : undefined;
-    const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are a disciplined NBA player-props analyst. The app measured these points props: sportsbook lines (VegasInsider) and a model fitted to each player's ESPN game logs.
+    const rec = P().propRecord(app.store.cached("proppicks").filter(x => x.kind === "nba-points"));
+    const calib = rec.graded >= 5 ? "Your logged prop picks so far: " + rec.graded + " graded, " + rec.hitPct.toFixed(0) + "% hit at an average stated " + rec.avgStatedPct.toFixed(0) + "%" + (rec.roiPct != null ? ", ROI " + rec.roiPct.toFixed(1) + "%" : "") + ". If hits fell short of stated, state lower probabilities." : "Fewer than 5 of your prop picks have been graded; keep stated probabilities close to the model.";
+    const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are a disciplined NBA player-props analyst.
+${calib} The app measured these points props: sportsbook lines (VegasInsider) and a model fitted to each player's ESPN game logs.
 ${tools ? "Use 2 to 6 tool calls (search_news or search_web) on the players you're leaning toward: injuries, minutes restrictions, role or lineup changes, and the opponent's defence. Cite only URLs the tools returned." : ""}
 Rules: the model ignores matchup and lineup news, early-season samples are small, and prop margins are large, so an edge under ~3% is noise. "No bet" is often right. Only the over is priced on this page; for an under, say there is no under price here. Never invent numbers. Suggest at most 1% of bankroll per pick.
 Props: ${JSON.stringify(facts)}
@@ -93,7 +97,21 @@ Reply with ONLY JSON: {"summary": "2 sentences", "picks": [{"player": "...", "si
     const picks = (res.picks || []).filter(p => known.has(p.player)).slice(0, 5).map(p => { const x = known.get(p.player), a = S.an.get(p.player); return { player: p.player, side: p.side === "under" ? "under" : "over", line: Number(p.line) || x.consensusLine, book: String(p.book || (x.bestOver && x.bestOver.book) || ""), probabilityPct: Math.max(40, Math.min(80, Number(p.probabilityPct) || 50)), modelPct: (p.side === "under" ? a.model.pUnder : a.model.pOver) * 100, why: String(p.why || ""), risk: String(p.risk || ""), confidence: Math.max(0, Math.min(100, Number(p.confidence) || 0)), sources: Sx.verify(p.sources), price: x.bestOver && p.side !== "under" ? x.bestOver.dec : null }; });
     const rv = await A().review(app, { task: "NBA points prop picks", S: Sx, signal, facts, items: picks.map(p => ({ id: p.player, side: p.side, line: p.line, probabilityPct: p.probabilityPct, modelPct: p.modelPct, why: p.why, confidence: p.confidence })) });
     for (const p of picks) { const rr = rv && rv.reviews.find(x => x.id === p.player); if (rr) p.review = rr; p.ev = p.price ? (p.probabilityPct / 100) * p.price - 1 : null; }
-    return { summary: String(res.summary || ""), picks: picks.filter(p => !(p.review && p.review.verdict === "drop")), dropped: picks.filter(p => p.review && p.review.verdict === "drop"), passes: (res.passes || []).slice(0, 8), overall: rv && rv.overall };
+    const kept = picks.filter(p => !(p.review && p.review.verdict === "drop"));
+    // Log the kept picks for grading after the game (first pick per player per day counts).
+    if (!app.demo) { const day = MD.bet ? MD.bet.etYmd() : new Date().toISOString().slice(0, 10), have = app.store.cached("proppicks"); for (const p of kept) { const id = "nba_" + day + "_" + P().slug(p.player); if (!have.some(x => x.id === id)) await app.store.put("proppicks", id, { kind: "nba-points", date: day, player: p.player, side: p.side, line: p.line, book: p.book, price: p.price || null, probabilityPct: p.probabilityPct, modelPct: p.modelPct, at: Date.now() }).catch(() => {}); } }
+    return { summary: String(res.summary || ""), picks: kept, dropped: picks.filter(p => p.review && p.review.verdict === "drop"), passes: (res.passes || []).slice(0, 8), overall: rv && rv.overall };
+  }
+  function recordBox(app) {
+    const box = h("div", { class: "stack" });
+    const paint = () => {
+      const list = app.store.cached("proppicks").filter(x => x.kind === "nba-points"), r = P().propRecord(list);
+      box.replaceChildren(h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, h("span", { class: "pill" }, r.logged + " logged"), h("span", { class: "pill" }, r.graded + " graded"), h("span", { class: "pill " + (r.hitPct != null && r.hitPct >= (r.avgStatedPct || 0) ? "ok" : "") }, r.hitPct != null ? r.hitPct.toFixed(0) + "% hit vs " + r.avgStatedPct.toFixed(0) + "% stated" : "hit rate —"), h("span", { class: "pill" }, r.roiPct != null ? "ROI " + r.roiPct.toFixed(1) + "%" : "ROI —"), h("span", { class: "pill" }, r.pending + " pending")),
+        list.length ? U.table([{ t: "Date", v: (x) => U.fmtDate(x.date) }, { t: "Pick", v: (x) => x.player + " " + x.side + " " + x.line }, { t: "Stated", v: (x) => x.probabilityPct.toFixed(0) + "%", n: true }, { t: "Price", v: (x) => x.price ? O.fmtAm(x.price) + " " + x.book : "—", n: true }, { t: "Result", v: (x) => x.grade ? h("span", { class: "verdict sm " + (x.grade.result === "hit" ? "positive" : x.grade.result === "miss" ? "negative" : "neutral") }, x.grade.result + (x.grade.pts != null ? " · " + x.grade.pts + " pts" : "")) : h("span", { class: "faint small" }, "pending") }], list.slice().sort((a, b) => b.date.localeCompare(a.date) || b.at - a.at).slice(0, 20)) : h("p", { class: "small muted" }, "AI prop picks are logged here and graded from each player's next game on ESPN."));
+    };
+    paint();
+    if (!app.demo) P().gradeAll(app).then(n => { if (n) paint(); }).catch(() => {});
+    return box;
   }
   const picksView = (app) => (res) => h("div", { class: "stack" }, h("p", {}, res.summary), res.overall ? h("p", { class: "small muted" }, h("strong", {}, "Review: "), res.overall) : null,
     res.picks.length ? res.picks.map(p => h("div", { class: "card aicard", style: "padding:10px 12px" },

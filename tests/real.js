@@ -58,4 +58,9 @@ ok(gib.books.HardRock.outlier && gib.outliers.includes("HardRock") && gib.best.b
 ok(Math.abs(gib.fair - gib.medianImplied * 0.95) < 1e-12 && gib.best.am === -350 && gib.best.book === "BetMGM", "fair chance from the median price; best price among the rest");
 const jac = td.props.find(x => x.player === "Ja'Marr Chase");
 ok(jac && jac.best.am === 120 && jac.edge > -0.05, "plus-money prices and EV against the consensus");
+const gp = (side, line, date) => PR.gradePick({ side, line, date }, g1.games.concat(g0.games));
+ok(gp("over", 35.5, "2026-10-22").result === "hit" && gp("over", 35.5, "2026-10-22").pts === 36 && gp("over", 35.5, "2026-10-22").date === "2026-10-23", "prop graded from the player's next game");
+ok(gp("under", 35.5, "2026-10-21").result === "hit" && gp("over", 35, "2026-10-21").result === "push" && gp("over", 30, "2026-10-24") === null, "under, push, and not yet played");
+const prc = PR.propRecord([{ probabilityPct: 60, price: 1.9, grade: { result: "hit" } }, { probabilityPct: 55, price: 2.0, grade: { result: "miss" } }, { probabilityPct: 58, grade: null }]);
+ok(prc.graded === 2 && prc.hitPct === 50 && prc.avgStatedPct === 57.5 && Math.abs(prc.roiPct - (0.9 - 1) / 2 * 100) < 1e-9 && prc.pending === 1, "prop record: hit rate vs stated, ROI at logged prices");
 console.log(fail ? fail + " failed" : "all passed"); process.exit(fail ? 1 : 0);
