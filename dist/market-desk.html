@@ -4213,7 +4213,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
 (function (G) {
   const MD = (G.MD = G.MD || {});
   const APPEND_ONLY = new Set(["tx", "forecasts", "evals", "reports", "picks", "betpicks", "betgrades"]);
-  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas", "aitakes", "briefs", "proppicks", "ailessons", "marketdays", "brain", "dayplans", "daytrades", "pickhide", "marketcalls"];
+  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas", "aitakes", "briefs", "proppicks", "ailessons", "marketdays", "brain", "dayplans", "daytrades", "pickhide", "marketcalls", "pickchecks"];
   const newId = () => Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
   const clone = (o) => JSON.parse(JSON.stringify(o));
 
@@ -5482,7 +5482,9 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
       h("p", { class: "small muted" }, "Alerts are checked every two minutes while Market Desk is open, then once each time you return. An alert fires once and re-arms only after the price moves back past the threshold."),
       err, h("div", { class: "row end" }, h("button", { class: "btn", type: "button", onclick: async () => {
         const v = Number(th.value.replace(/,/g, "")); if (!isFinite(v) || v <= 0) { err.textContent = "Enter a positive threshold."; return; }
-        await app.store.create("alerts", Object.assign(slim(asset), { assetId: asset.id, kind: kind.value, threshold: v, note: note.value, state: { armed: true } }));
+        // The asset's own id must not become the alert's id, or a second alert on the same asset would replace the first.
+        const doc = Object.assign(slim(asset), { assetId: asset.id, kind: kind.value, threshold: v, note: note.value, state: { armed: true } }); delete doc.id;
+        await app.store.create("alerts", doc);
         U.toast("Alert created"); m.close();
       } }, "Create alert"))));
   }
@@ -7268,7 +7270,7 @@ Facts: ${facts.join(" | ") || "no material moves"} | Alerts: ${d.alerts.map(a =>
     if (!s) { out.replaceChildren(U.errorBox({ message: "Claude isn't available in this view." })); return; }
     btn.disabled = true; out.replaceChildren(h("div", { class: "skeleton" }, "Claude is reviewing your portfolio…"));
     const facts = { reportingCurrency: m.R, totalValue: Math.round(m.total), holdings: m.items.map(it => ({ symbol: it.symbol, name: it.name, class: it.cls, weightPct: +(it.weight * 100).toFixed(1), return1yPct: it.ret1y != null ? +it.ret1y.toFixed(1) : null, volatilityPct: it.volPct != null ? +it.volPct.toFixed(1) : null, shareOfRiskPct: it.riskShare != null ? +(it.riskShare * 100).toFixed(1) : null, hasPriceHistory: !!it.path })),
-      portfolio: { return1yOfCurrentMixPct: m.ret1y != null ? +m.ret1y.toFixed(1) : null, volatilityPct: +m.volPct.toFixed(1), maxDrawdown1yPct: m.stats.maxDrawdownPct != null ? +m.stats.maxDrawdownPct.toFixed(1) : null, sharpe: isFinite(m.sharpe) ? +m.sharpe.toFixed(2) : null, betaVsSPY: m.beta ? +m.beta.beta.toFixed(2) : null, effectiveNumberOfHoldings: +m.effective.toFixed(1), largestPositionPct: +(m.top.weight * 100).toFixed(1), top3Pct: +(m.top3 * 100).toFixed(1), assetClasses: m.classes } };
+      portfolio: { return1yOfCurrentMixPct: m.ret1y != null ? +m.ret1y.toFixed(1) : null, volatilityPct: +m.volPct.toFixed(1), maxDrawdown1yPct: m.stats.maxDrawdownPct != null ? +m.stats.maxDrawdownPct.toFixed(1) : null, sharpe: isFinite(m.sharpe) ? +m.sharpe.toFixed(2) : null, betaVsSPY: m.beta ? +m.beta.beta.toFixed(2) : null, effectiveNumberOfHoldings: +m.effective.toFixed(1), largestPositionPct: +(m.top.weight * 100).toFixed(1), top3Pct: +(m.top3 * 100).toFixed(1), assetClasses: m.classes }, macroExposure: m.exposure || null };
     try {
       const log = MD.ai.logBox(); out.replaceChildren(log);
       const S = MD.ai.session((e) => log.add(e));
@@ -7320,6 +7322,7 @@ Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "
             h("p", { class: "tiny muted" }, "Correlation of daily moves over the past year: 1 means they move in lockstep, 0 unrelated, negative opposite. High numbers across the board mean less real diversification than the holding count suggests."))),
         h("div", { class: "stack" }, h("span", { class: "label" }, "Projected value"), projection(app, m)),
         h("div", { class: "stack" }, h("span", { class: "label" }, "Stress test"), MD.rebalance.stress(app, m)),
+        h("div", { class: "stack" }, h("span", { class: "label" }, "Macro sensitivity: what moves your portfolio"), MD.brain.exposureSection(app, m)),
         h("div", { class: "stack" }, h("span", { class: "label" }, "Rebalancing helper"), MD.rebalance.section(app, m)),
         h("div", { class: "stack" }, h("div", { class: "row between" }, h("span", { class: "label" }, "Claude's review"), reviewBtn), reviewOut));
       const spy = m.beta && m.beta.spy, compare = [];
@@ -7932,7 +7935,8 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
 
   /* Why an asset moved: a factor model on a year of daily returns splits today's and the last week's move into the
      market, its sector, rates, the dollar and oil (bitcoin and tech for coins), and the unexplained remainder. */
-  async function explainMove(app, asset) {
+  // The factor model alone (no quotes): which factors, the fitted betas, and the asset's own history.
+  async function fitFactors(app, asset) {
     const cls = asset.cls || String(asset.id).split(":")[0];
     let factors, market, relative = [], sector = null;
     if (cls === "crypto") { market = asset.symbol === "BTC" ? "QQQ" : "BTC"; factors = asset.symbol === "BTC" ? ["QQQ", "UUP", "GLD"] : ["BTC", "QQQ", "UUP"]; }
@@ -7946,6 +7950,10 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
     const fmap = {}; factors.forEach((f, i) => { if (hf[i]) fmap[f] = hf[i].points; });
     const model = Q.factorModel(ha.points, fmap, { market, relative, ppy: ha.ppy || 252 });
     if (!model) throw new Error("Not enough overlapping history to model " + (asset.symbol || asset.name) + ".");
+    return { cls, model, ha, fmap, sector };
+  }
+  async function explainMove(app, asset) {
+    const { cls, model, ha, fmap, sector } = await fitFactors(app, asset);
     const qs = await Promise.all([app.quote(asset, 30000).catch(() => null), ...model.names.map(f => app.quote(assetOf(f), 30000).catch(() => null))]);
     const todayF = {}; model.names.forEach((f, i) => { const q = qs[i + 1]; if (q && q.changePct != null) todayF[f] = Number(q.changePct); });
     const today = qs[0] && qs[0].changePct != null ? Q.attribute(model, todayF, Number(qs[0].changePct)) : null;
@@ -8414,6 +8422,46 @@ Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": ".
     return box;
   }
 
+  /* ---------- portfolio macro sensitivity ---------- */
+  const SHOCK_FACTORS = [["SPY", "S&P 500"], ["TLT", "Long Treasuries"], ["UUP", "US dollar"], ["USO", "Oil"], ["BTC", "Bitcoin"], ["QQQ", "Nasdaq-100"], ["GLD", "Gold"]];
+  const SCENARIOS = [["Stocks fall 10%", { SPY: -10, QQQ: -12 }], ["Long yields jump (long Treasuries −5%)", { TLT: -5 }], ["Dollar rises 3%", { UUP: 3 }], ["Oil jumps 20%", { USO: 20 }], ["Bitcoin falls 30%", { BTC: -30 }],
+    ["Risk-off day: stocks −4%, Treasuries +2%, dollar +1%, oil −5%, bitcoin −10%", { SPY: -4, QQQ: -5, TLT: 2, UUP: 1, USO: -5, BTC: -10 }], ["Inflation scare: Treasuries −4%, stocks −3%, oil +8%", { TLT: -4, SPY: -3, QQQ: -4, USO: 8 }]];
+  /* Each holding's betas, weighted by its share of the portfolio. Sector funds are entered relative to the market, so a
+     shock to the market alone moves a holding by its market beta (its sector is assumed to move with the market). */
+  async function exposures(app, m) {
+    const items = m.live.filter(it => ["stock", "etf", "crypto"].includes(it.cls) && it.r && it.r.asset);
+    const fits = await pool(items, 3, async (it) => ({ it, fit: await fitFactors(app, it.r.asset) }));
+    // A holding that is itself one of the shock factors (SPY, TLT, bitcoin…) moves one-for-one with it.
+    const selfOf = (sym) => SHOCK_FACTORS.some(([f]) => f === sym) ? sym : null;
+    const rows = fits.filter(x => x && !x.error && x.fit).map(({ it, fit }) => ({ symbol: it.symbol, weight: it.weight, betas: fit.model.betas, relative: fit.model.relative, r2: fit.model.r2, residVolPct: fit.model.residVolPct, self: selfOf(it.symbol) }));
+    const total = {}; for (const r of rows) { for (const [f, b] of Object.entries(r.betas)) if (!r.relative.includes(f)) total[f] = (total[f] || 0) + r.weight * b; if (r.self) total[r.self] = (total[r.self] || 0) + r.weight; }
+    const modelledWeight = rows.reduce((s, r) => s + r.weight, 0);
+    // Asset-specific risk left after the factors, assuming holdings' own news is unrelated.
+    const idio = Math.sqrt(rows.reduce((s, r) => s + Math.pow(r.weight * r.residVolPct, 2), 0));
+    return { rows, total, modelledWeight, idioVolPct: idio, unmodelled: m.items.filter(it => !rows.some(r => r.symbol === it.symbol)).map(it => it.symbol) };
+  }
+  function scenarioMove(E, shock) { let pct = 0; const parts = []; for (const r of E.rows) { let x = r.self && shock[r.self] != null ? shock[r.self] : 0; for (const [f, b] of Object.entries(r.betas)) if (!r.relative.includes(f) && shock[f] != null) x += b * shock[f]; pct += r.weight * x; parts.push({ symbol: r.symbol, pct: r.weight * x }); } return { pct, parts: parts.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct)) }; }
+  function exposureSection(app, m) {
+    const box = h("div", { class: "stack" });
+    U.async(box, () => exposures(app, m), (E) => {
+      m.exposure = { factorBetas: Object.fromEntries(Object.entries(E.total).map(([f, b]) => [f, Math.round(b * 100) / 100])), modelledWeightPct: Math.round(E.modelledWeight * 100), assetSpecificVolPct: r1(E.idioVolPct), scenarios: SCENARIOS.map(([n, s]) => ({ scenario: n, estimatedPortfolioMovePct: r1(scenarioMove(E, s).pct) })) };
+      if (!E.rows.length) { box.append(h("p", { class: "small muted" }, "No stocks, ETFs or coins with enough history to model.")); return; }
+      const money = (pct) => U.money(m.total * pct / 100, m.R, { sign: true });
+      const custom = Object.fromEntries(SHOCK_FACTORS.map(([f]) => [f, h("input", { type: "number", step: "0.5", value: 0, "aria-label": "Shock to " + f, style: "max-width:90px" })]));
+      const out = h("div", { class: "small" });
+      const calc = () => { const s = Object.fromEntries(Object.entries(custom).map(([f, el]) => [f, Number(el.value) || 0])), r = scenarioMove(E, s); out.replaceChildren(h("strong", { class: U.signCls(r.pct) }, "Estimated move: " + pct1(r.pct) + " (" + money(r.pct) + ")"), r.parts[0] && Math.abs(r.parts[0].pct) >= 0.05 ? h("span", { class: "muted" }, " · biggest contributors: " + r.parts.slice(0, 3).filter(p => Math.abs(p.pct) >= 0.05).map(p => p.symbol + " " + pct1(p.pct)).join(", ")) : null); };
+      for (const el of Object.values(custom)) el.addEventListener("input", calc);
+      box.append(
+        h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" }, SHOCK_FACTORS.filter(([f]) => E.total[f] != null).map(([f, n]) => h("span", { class: "pill", style: "text-transform:none", title: "Portfolio-weighted beta: the portfolio's % move for a 1% move in " + n }, n + " β " + E.total[f].toFixed(2)))),
+        U.table([{ t: "Scenario", v: (x) => x[0] }, { t: "Estimated move", v: (x) => { const r = scenarioMove(E, x[1]); return h("span", { class: U.signCls(r.pct) }, pct1(r.pct)); }, n: true }, { t: "In " + m.R, v: (x) => money(scenarioMove(E, x[1]).pct), n: true }, { t: "Biggest contributors", v: (x) => scenarioMove(E, x[1]).parts.slice(0, 3).filter(p => Math.abs(p.pct) >= 0.05).map(p => p.symbol + " " + pct1(p.pct)).join(", ") || "—" }], SCENARIOS),
+        h("details", {}, h("summary", { class: "label", style: "cursor:pointer" }, "Your own scenario"), h("div", { class: "stack" }, h("div", { class: "form" }, SHOCK_FACTORS.map(([f, n]) => U.field(n + " (%)", custom[f]))), out)),
+        h("p", { class: "tiny muted" }, "From each holding's factor model on a year of daily returns (" + Math.round(E.modelledWeight * 100) + "% of the portfolio modelled" + (E.unmodelled.length ? "; counted as unchanged: " + E.unmodelled.join(", ") : "") + "). Asset-specific risk left after these factors: about " + E.idioVolPct.toFixed(1) + "% a year. These are straight-line estimates; in real sell-offs correlations rise and moves are rarely linear."));
+      calc();
+    }, { loading: "Fitting each holding's sensitivity to the market, rates, the dollar and oil…" });
+    return box;
+  }
+  const pct1 = (x) => x == null ? "—" : Math.abs(x) < 0.05 ? "0.0%" : (x > 0 ? "+" : "") + x.toFixed(1) + "%";
+
   function dashboardCard(box, app) {
     const days = latestPerDay(app), last = days[0], pb = playbook(app);
     if (!last) { box.append(h("p", { class: "small muted" }, "The Market Brain studies each session and learns what moves what. Study a session to start."), h("button", { class: "btn sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")); return; }
@@ -8425,7 +8473,7 @@ Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": ".
       h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")));
   }
 
-  MD.brain = { marketCall, latestCall, callsFor, testIdea, backtest, RULE_HELP, labView, whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
+  MD.brain = { fitFactors, exposures, scenarioMove, exposureSection, SCENARIOS, marketCall, latestCall, callsFor, testIdea, backtest, RULE_HELP, labView, whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -9825,6 +9873,39 @@ Reply with ONLY JSON:
     }
   }
 
+  /* ---------- re-checking a pick (shown on the card; the logged call is never changed) ---------- */
+  async function recheck(app, set, p) {
+    const s = app.caps.sample; if (!s) throw Object.assign(new Error("Claude isn't available in this view."), { code: "no_sample" });
+    const S = MD.ai.session(), due = set.createdAt + p.timeframeDays * 864e5, daysLeft = Math.max(1, Math.round((due - Date.now()) / 864e5));
+    const [q, br] = await Promise.all([app.quote(p.asset, 30000).catch(() => null), MD.ai.baseRatesFor(p.asset, daysLeft).catch(() => null)]);
+    const since = q && p.priceAtPick ? (q.price / p.priceAtPick - 1) * 100 : null;
+    const lim = await s.limits().catch(() => null);
+    const tools = lim && lim.tools ? MD.ai.tools(app, S, p.asset.cls === "crypto" ? ["crypto_news", "search_news", "explain_move", "search_web"] : ["search_news", "explain_move", "earnings_info", "search_web"]) : undefined;
+    const r = await s.json(`You made this call on ${new Date(set.createdAt).toISOString().slice(0, 10)}: ${p.symbol} has a ${p.upPct}% chance of being higher by ${new Date(due).toISOString().slice(0, 10)} (${p.timeframeLabel}). Reasons then: ${p.why.join(" ")} Catalyst: ${p.catalyst ? p.catalyst.event + " " + (p.catalyst.date || "") : "none"}. What would change the view: ${p.changeMyMind || "—"}.
+Since then the price moved ${since == null ? "an unknown amount" : since.toFixed(1) + "%"} (${p.priceAtPick} → ${q ? q.price : "?"}). ${daysLeft} days are left. Measured base rate for the remaining window: ${br ? br.model.upPct + "% up" : "n/a"}.
+${tools ? "Check what happened since with 1 to 4 tool calls; cite only URLs the tools returned." : ""} Then give the updated chance that the price is higher at the window's end than it was when the call was made (${p.priceAtPick}), and whether the thesis still holds.
+${MD.ai.contextNote(app)}
+Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"broken"|"played out", "whatChanged": "2-3 sentences", "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "complex" }, tools ? { tools } : { cache: false }));
+    const claude = Math.max(5, Math.min(95, Number(r.upProbabilityPct) || 50)), model = br ? br.model.upPct : null;
+    const up = Math.round(model != null ? 0.65 * claude + 0.35 * model : claude);
+    const doc = { setId: set.id, symbol: p.symbol, at: Date.now(), upPct: up, was: p.upPct, claude, model, status: ["holds", "weakened", "broken", "played out"].includes(r.status) ? r.status : "holds", whatChanged: String(r.whatChanged || ""), priceNow: q ? q.price : null, sinceLoggedPct: since, sources: S.verify(r.sources) };
+    return app.demo ? doc : app.store.create("pickchecks", doc);
+  }
+  function recheckNote(c) {
+    if (!c) return null;
+    return h("div", { class: "aireview " + (c.status === "holds" || c.status === "played out" ? "positive" : c.status === "broken" ? "negative" : "neutral") }, h("span", { class: "verdict sm " + (c.status === "holds" || c.status === "played out" ? "positive" : c.status === "broken" ? "negative" : "neutral") }, "Re-checked " + new Date(c.at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) + ": " + c.status),
+      h("span", { class: "small" }, "Now " + (c.upPct >= 50 ? c.upPct + "% chance up" : (100 - c.upPct) + "% chance down") + (c.was != null ? " (was " + c.was + "% up)" : "") + (c.sinceLoggedPct != null ? " · price " + U.pct(c.sinceLoggedPct) + " since the call" : "") + ". " + c.whatChanged), MD.ai.sources(c.sources));
+  }
+  // Two price alerts in one click: the upside target and the downside level from the pick's expected moves.
+  async function bracketAlerts(app, p) {
+    if (!(p.priceAtPick > 0)) { U.toast("No price at the time of the pick", null, true); return; }
+    const up = +(p.priceAtPick * (1 + (p.ifUpPct || p.moveLow) / 100)).toPrecision(6), dn = +(p.priceAtPick * (1 - (p.ifDownPct || p.moveLow) / 100)).toPrecision(6);
+    const base = Object.assign(X.slim(p.asset), { assetId: p.asset.id, state: { armed: true } }); delete base.id;
+    await app.store.create("alerts", Object.assign({}, base, { kind: "above", threshold: up, note: "Recommendation " + p.symbol + ": reached its upside (+" + C.fmtNum(p.ifUpPct || p.moveLow, 0) + "%)" }));
+    await app.store.create("alerts", Object.assign({}, base, { kind: "below", threshold: dn, note: "Recommendation " + p.symbol + ": reached its downside (−" + C.fmtNum(p.ifDownPct || p.moveLow, 0) + "%)" }));
+    U.toast("Alerts set for " + p.symbol, "Above " + up + " and below " + dn + ". Checked every two minutes while the desk is open.");
+  }
+
   /* ---------- clearing picks from view (the forecast journal keeps every call for scoring) ---------- */
   function hiddenTest(app) {
     const hs = app.store.cached("pickhide");
@@ -9986,6 +10067,7 @@ Reply with ONLY JSON:
           p.bullCase || p.bearCase ? h("div", { class: "bullbear" }, h("div", { class: "bb up" }, h("span", { class: "label" }, "Bull case"), h("p", { class: "small" }, p.bullCase || "—")), h("div", { class: "bb down" }, h("span", { class: "label" }, "Bear case"), h("p", { class: "small" }, p.bearCase || "—"))) : null,
           p.changeMyMind ? h("p", { class: "small" }, h("strong", {}, "What would change the view: "), p.changeMyMind) : null,
           MD.ai.reviewBadge(p.review),
+          (() => { const box = h("div", { class: "recheck" }); const c = app.store.cached("pickchecks").filter(x => x.setId === set.id && x.symbol === p.symbol).sort((a, b) => b.at - a.at)[0]; if (c) box.append(recheckNote(c)); return box; })(),
           p.probs ? h("details", { class: "small" }, h("summary", { class: "label", style: "cursor:pointer" }, "How the " + p.upPct + "% chance up was built"),
             h("p", { class: "small" }, "Claude: " + p.probs.claude + "%" + (p.probs.model != null ? " · the asset's own history: " + p.probs.model + "%" : " · no measured history") + " · blended " + p.probs.blended + "%" + (p.probs.reviewer != null ? " · the reviewer's own estimate: " + p.probs.reviewer + "%" : "") + ((p.probs.afterReview ?? p.probs.final) !== p.probs.blended ? " · after the review: " + (p.probs.afterReview ?? p.probs.final) + "%" : "") + (p.calibration ? " · calibrated from " + p.calibration.scored + " graded picks (calls like this came true " + p.calibration.observedPct + "% of the time): " + p.probs.final + "%" : "") + "."),
             p.baseRates ? h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:2px" }, h("li", {}, "Over every " + p.timeframeDays + "-day window since " + new Date(p.baseRates.historyFrom * 1000).getUTCFullYear() + ", it finished higher " + p.baseRates.overallUpPct + "% of the time (" + p.baseRates.windows + " windows, about " + p.baseRates.independent + " independent)."), p.baseRates.conditions.map(x => h("li", {}, "When " + x.condition + ": higher " + x.upPct + "% of the time (" + x.windows + " windows, ≈" + x.independent + " independent)."))) : null,
@@ -9998,6 +10080,12 @@ Reply with ONLY JSON:
           h("button", { class: "btn sm", type: "button", onclick: () => app.openAsset(p.asset) }, "Open live page"),
           h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("research", { asset: p.asset, prefill: "Could " + p.asset.name + " make a large move (" + p.moveLow + "–" + p.moveHigh + "%) " + p.timeframeLabel + "? Test this thesis: " + p.why.join(" ") }) }, "Deep research"),
           h("button", { class: "btn ghost sm", type: "button", onclick: () => X.alertModal(p.asset, { price: p.priceAtPick, currency: p.currency }) }, "Create alert"),
+          p.upPct != null ? h("button", { class: "btn ghost sm", type: "button", onclick: () => bracketAlerts(app, p) }, "Alerts at target & downside") : null,
+          p.upPct != null && set.id !== "unsaved" ? h("button", { class: "btn ghost sm", type: "button", onclick: async (ev) => {
+            const btn = ev.currentTarget, box = btn.closest(".card").querySelector(".recheck"); btn.disabled = true; btn.textContent = "Re-checking…";
+            try { const c = await recheck(app, set, p); box.replaceChildren(recheckNote(c)); } catch (e) { box.replaceChildren(U.errorBox({ message: MD.ai.errText(e) })); }
+            btn.disabled = false; btn.textContent = "Re-check";
+          } }, "Re-check") : null,
           p.catalyst && /^\d{4}-\d{2}-\d{2}$/.test(p.catalyst.date || "") ? h("button", { class: "btn ghost sm", type: "button", onclick: async () => { await app.store.create("catalysts", { assetId: p.asset.id, symbol: p.symbol, title: p.catalyst.event, date: p.catalyst.date, impact: "High", note: "From recommendations " + U.fmtDate(set.createdAt) }); U.toast("Catalyst tracked"); } }, "Track catalyst") : null,
           h("button", { class: "btn ghost sm", type: "button", onclick: () => { app.ctx.daytrade = { asset: p.asset }; app.go("daytrade", app.ctx.daytrade); } }, "Day-trade view"),
           set.id !== "unsaved" ? h("button", { class: "btn ghost sm pickrm", type: "button", "aria-label": "Remove " + p.symbol + " from recommendations", onclick: () => clearPicks(app, "pick", { setId: set.id, symbol: p.symbol }) }, "Remove") : null)));

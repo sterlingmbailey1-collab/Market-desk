@@ -212,6 +212,39 @@ Reply with ONLY JSON:
     }
   }
 
+  /* ---------- re-checking a pick (shown on the card; the logged call is never changed) ---------- */
+  async function recheck(app, set, p) {
+    const s = app.caps.sample; if (!s) throw Object.assign(new Error("Claude isn't available in this view."), { code: "no_sample" });
+    const S = MD.ai.session(), due = set.createdAt + p.timeframeDays * 864e5, daysLeft = Math.max(1, Math.round((due - Date.now()) / 864e5));
+    const [q, br] = await Promise.all([app.quote(p.asset, 30000).catch(() => null), MD.ai.baseRatesFor(p.asset, daysLeft).catch(() => null)]);
+    const since = q && p.priceAtPick ? (q.price / p.priceAtPick - 1) * 100 : null;
+    const lim = await s.limits().catch(() => null);
+    const tools = lim && lim.tools ? MD.ai.tools(app, S, p.asset.cls === "crypto" ? ["crypto_news", "search_news", "explain_move", "search_web"] : ["search_news", "explain_move", "earnings_info", "search_web"]) : undefined;
+    const r = await s.json(`You made this call on ${new Date(set.createdAt).toISOString().slice(0, 10)}: ${p.symbol} has a ${p.upPct}% chance of being higher by ${new Date(due).toISOString().slice(0, 10)} (${p.timeframeLabel}). Reasons then: ${p.why.join(" ")} Catalyst: ${p.catalyst ? p.catalyst.event + " " + (p.catalyst.date || "") : "none"}. What would change the view: ${p.changeMyMind || "—"}.
+Since then the price moved ${since == null ? "an unknown amount" : since.toFixed(1) + "%"} (${p.priceAtPick} → ${q ? q.price : "?"}). ${daysLeft} days are left. Measured base rate for the remaining window: ${br ? br.model.upPct + "% up" : "n/a"}.
+${tools ? "Check what happened since with 1 to 4 tool calls; cite only URLs the tools returned." : ""} Then give the updated chance that the price is higher at the window's end than it was when the call was made (${p.priceAtPick}), and whether the thesis still holds.
+${MD.ai.contextNote(app)}
+Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"broken"|"played out", "whatChanged": "2-3 sentences", "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "complex" }, tools ? { tools } : { cache: false }));
+    const claude = Math.max(5, Math.min(95, Number(r.upProbabilityPct) || 50)), model = br ? br.model.upPct : null;
+    const up = Math.round(model != null ? 0.65 * claude + 0.35 * model : claude);
+    const doc = { setId: set.id, symbol: p.symbol, at: Date.now(), upPct: up, was: p.upPct, claude, model, status: ["holds", "weakened", "broken", "played out"].includes(r.status) ? r.status : "holds", whatChanged: String(r.whatChanged || ""), priceNow: q ? q.price : null, sinceLoggedPct: since, sources: S.verify(r.sources) };
+    return app.demo ? doc : app.store.create("pickchecks", doc);
+  }
+  function recheckNote(c) {
+    if (!c) return null;
+    return h("div", { class: "aireview " + (c.status === "holds" || c.status === "played out" ? "positive" : c.status === "broken" ? "negative" : "neutral") }, h("span", { class: "verdict sm " + (c.status === "holds" || c.status === "played out" ? "positive" : c.status === "broken" ? "negative" : "neutral") }, "Re-checked " + new Date(c.at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) + ": " + c.status),
+      h("span", { class: "small" }, "Now " + (c.upPct >= 50 ? c.upPct + "% chance up" : (100 - c.upPct) + "% chance down") + (c.was != null ? " (was " + c.was + "% up)" : "") + (c.sinceLoggedPct != null ? " · price " + U.pct(c.sinceLoggedPct) + " since the call" : "") + ". " + c.whatChanged), MD.ai.sources(c.sources));
+  }
+  // Two price alerts in one click: the upside target and the downside level from the pick's expected moves.
+  async function bracketAlerts(app, p) {
+    if (!(p.priceAtPick > 0)) { U.toast("No price at the time of the pick", null, true); return; }
+    const up = +(p.priceAtPick * (1 + (p.ifUpPct || p.moveLow) / 100)).toPrecision(6), dn = +(p.priceAtPick * (1 - (p.ifDownPct || p.moveLow) / 100)).toPrecision(6);
+    const base = Object.assign(X.slim(p.asset), { assetId: p.asset.id, state: { armed: true } }); delete base.id;
+    await app.store.create("alerts", Object.assign({}, base, { kind: "above", threshold: up, note: "Recommendation " + p.symbol + ": reached its upside (+" + C.fmtNum(p.ifUpPct || p.moveLow, 0) + "%)" }));
+    await app.store.create("alerts", Object.assign({}, base, { kind: "below", threshold: dn, note: "Recommendation " + p.symbol + ": reached its downside (−" + C.fmtNum(p.ifDownPct || p.moveLow, 0) + "%)" }));
+    U.toast("Alerts set for " + p.symbol, "Above " + up + " and below " + dn + ". Checked every two minutes while the desk is open.");
+  }
+
   /* ---------- clearing picks from view (the forecast journal keeps every call for scoring) ---------- */
   function hiddenTest(app) {
     const hs = app.store.cached("pickhide");
@@ -373,6 +406,7 @@ Reply with ONLY JSON:
           p.bullCase || p.bearCase ? h("div", { class: "bullbear" }, h("div", { class: "bb up" }, h("span", { class: "label" }, "Bull case"), h("p", { class: "small" }, p.bullCase || "—")), h("div", { class: "bb down" }, h("span", { class: "label" }, "Bear case"), h("p", { class: "small" }, p.bearCase || "—"))) : null,
           p.changeMyMind ? h("p", { class: "small" }, h("strong", {}, "What would change the view: "), p.changeMyMind) : null,
           MD.ai.reviewBadge(p.review),
+          (() => { const box = h("div", { class: "recheck" }); const c = app.store.cached("pickchecks").filter(x => x.setId === set.id && x.symbol === p.symbol).sort((a, b) => b.at - a.at)[0]; if (c) box.append(recheckNote(c)); return box; })(),
           p.probs ? h("details", { class: "small" }, h("summary", { class: "label", style: "cursor:pointer" }, "How the " + p.upPct + "% chance up was built"),
             h("p", { class: "small" }, "Claude: " + p.probs.claude + "%" + (p.probs.model != null ? " · the asset's own history: " + p.probs.model + "%" : " · no measured history") + " · blended " + p.probs.blended + "%" + (p.probs.reviewer != null ? " · the reviewer's own estimate: " + p.probs.reviewer + "%" : "") + ((p.probs.afterReview ?? p.probs.final) !== p.probs.blended ? " · after the review: " + (p.probs.afterReview ?? p.probs.final) + "%" : "") + (p.calibration ? " · calibrated from " + p.calibration.scored + " graded picks (calls like this came true " + p.calibration.observedPct + "% of the time): " + p.probs.final + "%" : "") + "."),
             p.baseRates ? h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:2px" }, h("li", {}, "Over every " + p.timeframeDays + "-day window since " + new Date(p.baseRates.historyFrom * 1000).getUTCFullYear() + ", it finished higher " + p.baseRates.overallUpPct + "% of the time (" + p.baseRates.windows + " windows, about " + p.baseRates.independent + " independent)."), p.baseRates.conditions.map(x => h("li", {}, "When " + x.condition + ": higher " + x.upPct + "% of the time (" + x.windows + " windows, ≈" + x.independent + " independent)."))) : null,
@@ -385,6 +419,12 @@ Reply with ONLY JSON:
           h("button", { class: "btn sm", type: "button", onclick: () => app.openAsset(p.asset) }, "Open live page"),
           h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("research", { asset: p.asset, prefill: "Could " + p.asset.name + " make a large move (" + p.moveLow + "–" + p.moveHigh + "%) " + p.timeframeLabel + "? Test this thesis: " + p.why.join(" ") }) }, "Deep research"),
           h("button", { class: "btn ghost sm", type: "button", onclick: () => X.alertModal(p.asset, { price: p.priceAtPick, currency: p.currency }) }, "Create alert"),
+          p.upPct != null ? h("button", { class: "btn ghost sm", type: "button", onclick: () => bracketAlerts(app, p) }, "Alerts at target & downside") : null,
+          p.upPct != null && set.id !== "unsaved" ? h("button", { class: "btn ghost sm", type: "button", onclick: async (ev) => {
+            const btn = ev.currentTarget, box = btn.closest(".card").querySelector(".recheck"); btn.disabled = true; btn.textContent = "Re-checking…";
+            try { const c = await recheck(app, set, p); box.replaceChildren(recheckNote(c)); } catch (e) { box.replaceChildren(U.errorBox({ message: MD.ai.errText(e) })); }
+            btn.disabled = false; btn.textContent = "Re-check";
+          } }, "Re-check") : null,
           p.catalyst && /^\d{4}-\d{2}-\d{2}$/.test(p.catalyst.date || "") ? h("button", { class: "btn ghost sm", type: "button", onclick: async () => { await app.store.create("catalysts", { assetId: p.asset.id, symbol: p.symbol, title: p.catalyst.event, date: p.catalyst.date, impact: "High", note: "From recommendations " + U.fmtDate(set.createdAt) }); U.toast("Catalyst tracked"); } }, "Track catalyst") : null,
           h("button", { class: "btn ghost sm", type: "button", onclick: () => { app.ctx.daytrade = { asset: p.asset }; app.go("daytrade", app.ctx.daytrade); } }, "Day-trade view"),
           set.id !== "unsaved" ? h("button", { class: "btn ghost sm pickrm", type: "button", "aria-label": "Remove " + p.symbol + " from recommendations", onclick: () => clearPicks(app, "pick", { setId: set.id, symbol: p.symbol }) }, "Remove") : null)));

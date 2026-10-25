@@ -287,7 +287,9 @@
       h("p", { class: "small muted" }, "Alerts are checked every two minutes while Market Desk is open, then once each time you return. An alert fires once and re-arms only after the price moves back past the threshold."),
       err, h("div", { class: "row end" }, h("button", { class: "btn", type: "button", onclick: async () => {
         const v = Number(th.value.replace(/,/g, "")); if (!isFinite(v) || v <= 0) { err.textContent = "Enter a positive threshold."; return; }
-        await app.store.create("alerts", Object.assign(slim(asset), { assetId: asset.id, kind: kind.value, threshold: v, note: note.value, state: { armed: true } }));
+        // The asset's own id must not become the alert's id, or a second alert on the same asset would replace the first.
+        const doc = Object.assign(slim(asset), { assetId: asset.id, kind: kind.value, threshold: v, note: note.value, state: { armed: true } }); delete doc.id;
+        await app.store.create("alerts", doc);
         U.toast("Alert created"); m.close();
       } }, "Create alert"))));
   }

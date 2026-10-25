@@ -67,7 +67,8 @@
 
   /* Why an asset moved: a factor model on a year of daily returns splits today's and the last week's move into the
      market, its sector, rates, the dollar and oil (bitcoin and tech for coins), and the unexplained remainder. */
-  async function explainMove(app, asset) {
+  // The factor model alone (no quotes): which factors, the fitted betas, and the asset's own history.
+  async function fitFactors(app, asset) {
     const cls = asset.cls || String(asset.id).split(":")[0];
     let factors, market, relative = [], sector = null;
     if (cls === "crypto") { market = asset.symbol === "BTC" ? "QQQ" : "BTC"; factors = asset.symbol === "BTC" ? ["QQQ", "UUP", "GLD"] : ["BTC", "QQQ", "UUP"]; }
@@ -81,6 +82,10 @@
     const fmap = {}; factors.forEach((f, i) => { if (hf[i]) fmap[f] = hf[i].points; });
     const model = Q.factorModel(ha.points, fmap, { market, relative, ppy: ha.ppy || 252 });
     if (!model) throw new Error("Not enough overlapping history to model " + (asset.symbol || asset.name) + ".");
+    return { cls, model, ha, fmap, sector };
+  }
+  async function explainMove(app, asset) {
+    const { cls, model, ha, fmap, sector } = await fitFactors(app, asset);
     const qs = await Promise.all([app.quote(asset, 30000).catch(() => null), ...model.names.map(f => app.quote(assetOf(f), 30000).catch(() => null))]);
     const todayF = {}; model.names.forEach((f, i) => { const q = qs[i + 1]; if (q && q.changePct != null) todayF[f] = Number(q.changePct); });
     const today = qs[0] && qs[0].changePct != null ? Q.attribute(model, todayF, Number(qs[0].changePct)) : null;
@@ -549,6 +554,46 @@ Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": ".
     return box;
   }
 
+  /* ---------- portfolio macro sensitivity ---------- */
+  const SHOCK_FACTORS = [["SPY", "S&P 500"], ["TLT", "Long Treasuries"], ["UUP", "US dollar"], ["USO", "Oil"], ["BTC", "Bitcoin"], ["QQQ", "Nasdaq-100"], ["GLD", "Gold"]];
+  const SCENARIOS = [["Stocks fall 10%", { SPY: -10, QQQ: -12 }], ["Long yields jump (long Treasuries −5%)", { TLT: -5 }], ["Dollar rises 3%", { UUP: 3 }], ["Oil jumps 20%", { USO: 20 }], ["Bitcoin falls 30%", { BTC: -30 }],
+    ["Risk-off day: stocks −4%, Treasuries +2%, dollar +1%, oil −5%, bitcoin −10%", { SPY: -4, QQQ: -5, TLT: 2, UUP: 1, USO: -5, BTC: -10 }], ["Inflation scare: Treasuries −4%, stocks −3%, oil +8%", { TLT: -4, SPY: -3, QQQ: -4, USO: 8 }]];
+  /* Each holding's betas, weighted by its share of the portfolio. Sector funds are entered relative to the market, so a
+     shock to the market alone moves a holding by its market beta (its sector is assumed to move with the market). */
+  async function exposures(app, m) {
+    const items = m.live.filter(it => ["stock", "etf", "crypto"].includes(it.cls) && it.r && it.r.asset);
+    const fits = await pool(items, 3, async (it) => ({ it, fit: await fitFactors(app, it.r.asset) }));
+    // A holding that is itself one of the shock factors (SPY, TLT, bitcoin…) moves one-for-one with it.
+    const selfOf = (sym) => SHOCK_FACTORS.some(([f]) => f === sym) ? sym : null;
+    const rows = fits.filter(x => x && !x.error && x.fit).map(({ it, fit }) => ({ symbol: it.symbol, weight: it.weight, betas: fit.model.betas, relative: fit.model.relative, r2: fit.model.r2, residVolPct: fit.model.residVolPct, self: selfOf(it.symbol) }));
+    const total = {}; for (const r of rows) { for (const [f, b] of Object.entries(r.betas)) if (!r.relative.includes(f)) total[f] = (total[f] || 0) + r.weight * b; if (r.self) total[r.self] = (total[r.self] || 0) + r.weight; }
+    const modelledWeight = rows.reduce((s, r) => s + r.weight, 0);
+    // Asset-specific risk left after the factors, assuming holdings' own news is unrelated.
+    const idio = Math.sqrt(rows.reduce((s, r) => s + Math.pow(r.weight * r.residVolPct, 2), 0));
+    return { rows, total, modelledWeight, idioVolPct: idio, unmodelled: m.items.filter(it => !rows.some(r => r.symbol === it.symbol)).map(it => it.symbol) };
+  }
+  function scenarioMove(E, shock) { let pct = 0; const parts = []; for (const r of E.rows) { let x = r.self && shock[r.self] != null ? shock[r.self] : 0; for (const [f, b] of Object.entries(r.betas)) if (!r.relative.includes(f) && shock[f] != null) x += b * shock[f]; pct += r.weight * x; parts.push({ symbol: r.symbol, pct: r.weight * x }); } return { pct, parts: parts.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct)) }; }
+  function exposureSection(app, m) {
+    const box = h("div", { class: "stack" });
+    U.async(box, () => exposures(app, m), (E) => {
+      m.exposure = { factorBetas: Object.fromEntries(Object.entries(E.total).map(([f, b]) => [f, Math.round(b * 100) / 100])), modelledWeightPct: Math.round(E.modelledWeight * 100), assetSpecificVolPct: r1(E.idioVolPct), scenarios: SCENARIOS.map(([n, s]) => ({ scenario: n, estimatedPortfolioMovePct: r1(scenarioMove(E, s).pct) })) };
+      if (!E.rows.length) { box.append(h("p", { class: "small muted" }, "No stocks, ETFs or coins with enough history to model.")); return; }
+      const money = (pct) => U.money(m.total * pct / 100, m.R, { sign: true });
+      const custom = Object.fromEntries(SHOCK_FACTORS.map(([f]) => [f, h("input", { type: "number", step: "0.5", value: 0, "aria-label": "Shock to " + f, style: "max-width:90px" })]));
+      const out = h("div", { class: "small" });
+      const calc = () => { const s = Object.fromEntries(Object.entries(custom).map(([f, el]) => [f, Number(el.value) || 0])), r = scenarioMove(E, s); out.replaceChildren(h("strong", { class: U.signCls(r.pct) }, "Estimated move: " + pct1(r.pct) + " (" + money(r.pct) + ")"), r.parts[0] && Math.abs(r.parts[0].pct) >= 0.05 ? h("span", { class: "muted" }, " · biggest contributors: " + r.parts.slice(0, 3).filter(p => Math.abs(p.pct) >= 0.05).map(p => p.symbol + " " + pct1(p.pct)).join(", ")) : null); };
+      for (const el of Object.values(custom)) el.addEventListener("input", calc);
+      box.append(
+        h("div", { class: "row", style: "gap:6px;flex-wrap:wrap" }, SHOCK_FACTORS.filter(([f]) => E.total[f] != null).map(([f, n]) => h("span", { class: "pill", style: "text-transform:none", title: "Portfolio-weighted beta: the portfolio's % move for a 1% move in " + n }, n + " β " + E.total[f].toFixed(2)))),
+        U.table([{ t: "Scenario", v: (x) => x[0] }, { t: "Estimated move", v: (x) => { const r = scenarioMove(E, x[1]); return h("span", { class: U.signCls(r.pct) }, pct1(r.pct)); }, n: true }, { t: "In " + m.R, v: (x) => money(scenarioMove(E, x[1]).pct), n: true }, { t: "Biggest contributors", v: (x) => scenarioMove(E, x[1]).parts.slice(0, 3).filter(p => Math.abs(p.pct) >= 0.05).map(p => p.symbol + " " + pct1(p.pct)).join(", ") || "—" }], SCENARIOS),
+        h("details", {}, h("summary", { class: "label", style: "cursor:pointer" }, "Your own scenario"), h("div", { class: "stack" }, h("div", { class: "form" }, SHOCK_FACTORS.map(([f, n]) => U.field(n + " (%)", custom[f]))), out)),
+        h("p", { class: "tiny muted" }, "From each holding's factor model on a year of daily returns (" + Math.round(E.modelledWeight * 100) + "% of the portfolio modelled" + (E.unmodelled.length ? "; counted as unchanged: " + E.unmodelled.join(", ") : "") + "). Asset-specific risk left after these factors: about " + E.idioVolPct.toFixed(1) + "% a year. These are straight-line estimates; in real sell-offs correlations rise and moves are rarely linear."));
+      calc();
+    }, { loading: "Fitting each holding's sensitivity to the market, rates, the dollar and oil…" });
+    return box;
+  }
+  const pct1 = (x) => x == null ? "—" : Math.abs(x) < 0.05 ? "0.0%" : (x > 0 ? "+" : "") + x.toFixed(1) + "%";
+
   function dashboardCard(box, app) {
     const days = latestPerDay(app), last = days[0], pb = playbook(app);
     if (!last) { box.append(h("p", { class: "small muted" }, "The Market Brain studies each session and learns what moves what. Study a session to start."), h("button", { class: "btn sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")); return; }
@@ -560,5 +605,5 @@ Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": ".
       h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")));
   }
 
-  MD.brain = { marketCall, latestCall, callsFor, testIdea, backtest, RULE_HELP, labView, whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
+  MD.brain = { fitFactors, exposures, scenarioMove, exposureSection, SCENARIOS, marketCall, latestCall, callsFor, testIdea, backtest, RULE_HELP, labView, whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
 })(typeof window !== "undefined" ? window : globalThis);

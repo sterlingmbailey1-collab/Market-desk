@@ -91,7 +91,7 @@
     if (!s) { out.replaceChildren(U.errorBox({ message: "Claude isn't available in this view." })); return; }
     btn.disabled = true; out.replaceChildren(h("div", { class: "skeleton" }, "Claude is reviewing your portfolio…"));
     const facts = { reportingCurrency: m.R, totalValue: Math.round(m.total), holdings: m.items.map(it => ({ symbol: it.symbol, name: it.name, class: it.cls, weightPct: +(it.weight * 100).toFixed(1), return1yPct: it.ret1y != null ? +it.ret1y.toFixed(1) : null, volatilityPct: it.volPct != null ? +it.volPct.toFixed(1) : null, shareOfRiskPct: it.riskShare != null ? +(it.riskShare * 100).toFixed(1) : null, hasPriceHistory: !!it.path })),
-      portfolio: { return1yOfCurrentMixPct: m.ret1y != null ? +m.ret1y.toFixed(1) : null, volatilityPct: +m.volPct.toFixed(1), maxDrawdown1yPct: m.stats.maxDrawdownPct != null ? +m.stats.maxDrawdownPct.toFixed(1) : null, sharpe: isFinite(m.sharpe) ? +m.sharpe.toFixed(2) : null, betaVsSPY: m.beta ? +m.beta.beta.toFixed(2) : null, effectiveNumberOfHoldings: +m.effective.toFixed(1), largestPositionPct: +(m.top.weight * 100).toFixed(1), top3Pct: +(m.top3 * 100).toFixed(1), assetClasses: m.classes } };
+      portfolio: { return1yOfCurrentMixPct: m.ret1y != null ? +m.ret1y.toFixed(1) : null, volatilityPct: +m.volPct.toFixed(1), maxDrawdown1yPct: m.stats.maxDrawdownPct != null ? +m.stats.maxDrawdownPct.toFixed(1) : null, sharpe: isFinite(m.sharpe) ? +m.sharpe.toFixed(2) : null, betaVsSPY: m.beta ? +m.beta.beta.toFixed(2) : null, effectiveNumberOfHoldings: +m.effective.toFixed(1), largestPositionPct: +(m.top.weight * 100).toFixed(1), top3Pct: +(m.top3 * 100).toFixed(1), assetClasses: m.classes }, macroExposure: m.exposure || null };
     try {
       const log = MD.ai.logBox(); out.replaceChildren(log);
       const S = MD.ai.session((e) => log.add(e));
@@ -143,6 +143,7 @@ Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "
             h("p", { class: "tiny muted" }, "Correlation of daily moves over the past year: 1 means they move in lockstep, 0 unrelated, negative opposite. High numbers across the board mean less real diversification than the holding count suggests."))),
         h("div", { class: "stack" }, h("span", { class: "label" }, "Projected value"), projection(app, m)),
         h("div", { class: "stack" }, h("span", { class: "label" }, "Stress test"), MD.rebalance.stress(app, m)),
+        h("div", { class: "stack" }, h("span", { class: "label" }, "Macro sensitivity: what moves your portfolio"), MD.brain.exposureSection(app, m)),
         h("div", { class: "stack" }, h("span", { class: "label" }, "Rebalancing helper"), MD.rebalance.section(app, m)),
         h("div", { class: "stack" }, h("div", { class: "row between" }, h("span", { class: "label" }, "Claude's review"), reviewBtn), reviewOut));
       const spy = m.beta && m.beta.spy, compare = [];
