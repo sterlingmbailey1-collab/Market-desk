@@ -191,6 +191,8 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   // ---- Market Brain: measured pulse, a studied session, a scored playbook, and the note every AI gets
   await page.evaluate(() => MD.app.go("brain", null, { fromNav: true })); await page.waitForTimeout(4000);
   const brTxt = await page.locator("#content").innerText();
+  check("sector rotation: every sector placed in a quadrant vs the S&P 500, with a chart", await page.locator(".rotation svg circle").count() >= 10 && /Sector rotation/i.test(brTxt) && /(Leading|Improving|Weakening|Lagging): /.test(brTxt), brTxt.slice(brTxt.search(/Sector rotation/i), brTxt.search(/Sector rotation/i) + 400));
+  check("analysis histories are kept in the browser for six hours", await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith("md.h.1Y.")).length >= 20 && JSON.parse(localStorage.getItem("md.h.index") || "{}") && true));
   check("Market Brain measures indices, sectors, rates and the regime", await page.locator(".heat-c").count() >= 20 && /S&P 500 trend/i.test(brTxt) && /Volatility/i.test(brTxt) && /What moves what/i.test(brTxt), brTxt.slice(0, 500));
   await page.click("button:has-text('Study today')"); await page.waitForTimeout(6000);
   const brain1 = await page.evaluate(() => ({ days: MD.app.store.cached("marketdays").length, pb: MD.brain.playbook(MD.app) }));

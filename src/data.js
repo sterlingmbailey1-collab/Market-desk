@@ -960,8 +960,30 @@
     const lastDay = bars.length ? bars[bars.length - 1].dt.slice(0, 10) : null;
     return { bars: bars.filter(b => b.dt.slice(0, 10) === lastDay), prior: bars.filter(b => b.dt.slice(0, 10) !== lastDay), date: lastDay, source: "Twelve Data 5-minute bars (regular hours)", session: "regular" };
   }
+  /* Daily histories for the analysis features (base rates, factor models, backtests, the market pulse) are kept in this
+     browser for 6 hours, so studying the market again doesn't re-fetch years of prices. Charts always fetch fresh. */
+  // Capped by count and by total size, so the cache never crowds out data the page stores in the browser when signed out.
+  const HC = "md.h.", HC_INDEX = "md.h.index", HC_TTL = 6 * 3600e3, HC_MAX = 60, HC_CHARS = 1500000;
+  async function historyCached(asset, tf) {
+    const key = HC + tf + "." + (asset.id || asset.symbol);
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) { const c = JSON.parse(raw); if (Date.now() - c.at < HC_TTL && c.p && c.p.length > 1) return Object.assign({}, c.m, { points: c.p.map(x => x.length > 2 ? { time: x[0], open: x[1], high: x[2], low: x[3], close: x[4] } : { time: x[0], value: x[1] }), volume: (c.v || []).map(x => ({ time: x[0], value: x[1] })), cachedAt: c.at }); }
+    } catch {}
+    const s = await historyFor(asset, tf);
+    if (!s.intraday) try {
+      const m = { kind: s.kind, intraday: false, barSec: s.barSec, shift: s.shift, currency: s.currency, note: s.note, status: s.status, source: s.source, ppy: s.ppy };
+      const body = JSON.stringify({ at: Date.now(), m, p: s.points.map(p => p.open != null ? [p.time, p.open, p.high, p.low, p.close] : [p.time, p.value ?? p.close]), v: (s.volume || []).map(v => [v.time, v.value]) });
+      if (body.length > HC_CHARS / 8) return s; // one series never takes more than an eighth of the budget
+      const idx = JSON.parse(localStorage.getItem(HC_INDEX) || "{}"); idx[key] = { at: Date.now(), n: body.length };
+      const keys = Object.keys(idx).sort((a, b) => (idx[a].at || 0) - (idx[b].at || 0)); let total = keys.reduce((t, k) => t + (idx[k].n || 0), 0);
+      while (keys.length > HC_MAX || total > HC_CHARS) { const k = keys.shift(); total -= idx[k].n || 0; localStorage.removeItem(k); delete idx[k]; }
+      if (idx[key]) { localStorage.setItem(key, body); localStorage.setItem(HC_INDEX, JSON.stringify(idx)); }
+    } catch { /* storage full or unavailable: the data is still returned */ }
+    return s;
+  }
   // Long daily history for base rates: five years for US stocks and ETFs, two years of daily candles for crypto.
-  function dailyLong(asset) { const cls = asset.cls || clsOf(asset.id); return historyFor(asset, cls === "crypto" ? "2Y" : cls === "stock" || cls === "etf" ? "5Y" : "1Y"); }
+  function dailyLong(asset) { const cls = asset.cls || clsOf(asset.id); return historyCached(asset, cls === "crypto" ? "2Y" : cls === "stock" || cls === "etf" ? "5Y" : "1Y"); }
   async function historyFor(asset, tf) {
     try { return await primaryHistory(asset, tf); }
     catch (e) {
@@ -1006,5 +1028,5 @@
     return health;
   }
 
-  MD.data = { intradayBars, dailyLong, imageData, sales, connector, resetConnectors, twelve, cdc, av, cardchain, dealer, bigdataNews, cmc, zacks, mdTables, liveQuote, liveSupported, MINUTE_TF, tzOffsetSec, bust, init, available, onActivity, DataError, PROVIDERS, UNAVAILABLE, health, checkHealth, fetchRaw, fetchJSON, stocks, crypto, STABLECOINS, kraken, fx, METALS, metals, pokemon, ygo, events, calendar, webSearch, readPage, quoteFor, historyFor, clsOf, TF_DAYS, num, ymd, daysAgo };
+  MD.data = { historyCached, intradayBars, dailyLong, imageData, sales, connector, resetConnectors, twelve, cdc, av, cardchain, dealer, bigdataNews, cmc, zacks, mdTables, liveQuote, liveSupported, MINUTE_TF, tzOffsetSec, bust, init, available, onActivity, DataError, PROVIDERS, UNAVAILABLE, health, checkHealth, fetchRaw, fetchJSON, stocks, crypto, STABLECOINS, kraken, fx, METALS, metals, pokemon, ygo, events, calendar, webSearch, readPage, quoteFor, historyFor, clsOf, TF_DAYS, num, ymd, daysAgo };
 })(typeof window !== "undefined" ? window : globalThis);

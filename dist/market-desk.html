@@ -610,6 +610,8 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
 .probbar .pb-l, .probbar .pb-r { position: absolute; top: 30px; color: var(--muted); font-weight: 400; } .probbar .pb-l { left: 0; } .probbar .pb-r { right: 0; }
 .probbar.sm { height: 22px; font-size: 0.72rem; margin-bottom: 14px; } .probbar.sm .pb-l, .probbar.sm .pb-r { top: 24px; }
 .card.driver { box-shadow: none; }
+.rotation circle { stroke: var(--sheet); stroke-width: 1.5; }
+.rq-leading { fill: var(--up); } .rq-lagging { fill: var(--down); } .rq-improving { fill: var(--accent); } .rq-weakening { fill: var(--warn); }
 .pickrm { margin-left: auto; }
 /* Smart Money */
 .spin.sm { display: inline-block; width: 10px; height: 10px; border-width: 2px; vertical-align: -1px; }
@@ -3113,8 +3115,30 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     const lastDay = bars.length ? bars[bars.length - 1].dt.slice(0, 10) : null;
     return { bars: bars.filter(b => b.dt.slice(0, 10) === lastDay), prior: bars.filter(b => b.dt.slice(0, 10) !== lastDay), date: lastDay, source: "Twelve Data 5-minute bars (regular hours)", session: "regular" };
   }
+  /* Daily histories for the analysis features (base rates, factor models, backtests, the market pulse) are kept in this
+     browser for 6 hours, so studying the market again doesn't re-fetch years of prices. Charts always fetch fresh. */
+  // Capped by count and by total size, so the cache never crowds out data the page stores in the browser when signed out.
+  const HC = "md.h.", HC_INDEX = "md.h.index", HC_TTL = 6 * 3600e3, HC_MAX = 60, HC_CHARS = 1500000;
+  async function historyCached(asset, tf) {
+    const key = HC + tf + "." + (asset.id || asset.symbol);
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) { const c = JSON.parse(raw); if (Date.now() - c.at < HC_TTL && c.p && c.p.length > 1) return Object.assign({}, c.m, { points: c.p.map(x => x.length > 2 ? { time: x[0], open: x[1], high: x[2], low: x[3], close: x[4] } : { time: x[0], value: x[1] }), volume: (c.v || []).map(x => ({ time: x[0], value: x[1] })), cachedAt: c.at }); }
+    } catch {}
+    const s = await historyFor(asset, tf);
+    if (!s.intraday) try {
+      const m = { kind: s.kind, intraday: false, barSec: s.barSec, shift: s.shift, currency: s.currency, note: s.note, status: s.status, source: s.source, ppy: s.ppy };
+      const body = JSON.stringify({ at: Date.now(), m, p: s.points.map(p => p.open != null ? [p.time, p.open, p.high, p.low, p.close] : [p.time, p.value ?? p.close]), v: (s.volume || []).map(v => [v.time, v.value]) });
+      if (body.length > HC_CHARS / 8) return s; // one series never takes more than an eighth of the budget
+      const idx = JSON.parse(localStorage.getItem(HC_INDEX) || "{}"); idx[key] = { at: Date.now(), n: body.length };
+      const keys = Object.keys(idx).sort((a, b) => (idx[a].at || 0) - (idx[b].at || 0)); let total = keys.reduce((t, k) => t + (idx[k].n || 0), 0);
+      while (keys.length > HC_MAX || total > HC_CHARS) { const k = keys.shift(); total -= idx[k].n || 0; localStorage.removeItem(k); delete idx[k]; }
+      if (idx[key]) { localStorage.setItem(key, body); localStorage.setItem(HC_INDEX, JSON.stringify(idx)); }
+    } catch { /* storage full or unavailable: the data is still returned */ }
+    return s;
+  }
   // Long daily history for base rates: five years for US stocks and ETFs, two years of daily candles for crypto.
-  function dailyLong(asset) { const cls = asset.cls || clsOf(asset.id); return historyFor(asset, cls === "crypto" ? "2Y" : cls === "stock" || cls === "etf" ? "5Y" : "1Y"); }
+  function dailyLong(asset) { const cls = asset.cls || clsOf(asset.id); return historyCached(asset, cls === "crypto" ? "2Y" : cls === "stock" || cls === "etf" ? "5Y" : "1Y"); }
   async function historyFor(asset, tf) {
     try { return await primaryHistory(asset, tf); }
     catch (e) {
@@ -3159,7 +3183,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     return health;
   }
 
-  MD.data = { intradayBars, dailyLong, imageData, sales, connector, resetConnectors, twelve, cdc, av, cardchain, dealer, bigdataNews, cmc, zacks, mdTables, liveQuote, liveSupported, MINUTE_TF, tzOffsetSec, bust, init, available, onActivity, DataError, PROVIDERS, UNAVAILABLE, health, checkHealth, fetchRaw, fetchJSON, stocks, crypto, STABLECOINS, kraken, fx, METALS, metals, pokemon, ygo, events, calendar, webSearch, readPage, quoteFor, historyFor, clsOf, TF_DAYS, num, ymd, daysAgo };
+  MD.data = { historyCached, intradayBars, dailyLong, imageData, sales, connector, resetConnectors, twelve, cdc, av, cardchain, dealer, bigdataNews, cmc, zacks, mdTables, liveQuote, liveSupported, MINUTE_TF, tzOffsetSec, bust, init, available, onActivity, DataError, PROVIDERS, UNAVAILABLE, health, checkHealth, fetchRaw, fetchJSON, stocks, crypto, STABLECOINS, kraken, fx, METALS, metals, pokemon, ygo, events, calendar, webSearch, readPage, quoteFor, historyFor, clsOf, TF_DAYS, num, ymd, daysAgo };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -7934,7 +7958,7 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
     if (pulseCache && Date.now() - pulseCache.at < 60000 && (!opts.history || pulseCache.history)) return pulseCache;
     const rows = (await pool(FACTORS.concat([["BTC", "Bitcoin", "crypto"]]), 4, async ([sym, name, kind]) => {
       const a = assetOf(sym);
-      const [q, hs] = await Promise.all([app.quote(a, 30000).catch(() => null), opts.history ? D.historyFor(a, "1Y").catch(() => null) : null]);
+      const [q, hs] = await Promise.all([app.quote(a, 30000).catch(() => null), opts.history ? D.historyCached(a, "1Y").catch(() => null) : null]);
       return { symbol: sym, name, kind, price: q ? q.price : null, changePct: q && q.changePct != null ? Number(q.changePct) : null, marketStatus: q ? q.marketStatus || q.status : null, ret5d: hs ? Q.lastMove(hs.points, 5) : null, ret1m: hs ? Q.lastMove(hs.points, hs.ppy === 365 ? 30 : 21) : null, hist: hs };
     })).filter(r => r && !r.error);
     const by = Object.fromEntries(rows.map(r => [r.symbol, r]));
@@ -7951,11 +7975,25 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
     const sectors = rows.filter(x => x.kind === "sector" && x.ret1m != null).sort((a, b) => b.ret1m - a.ret1m);
     const spread = (a, b) => by[a] && by[b] && by[a].ret1m != null && by[b].ret1m != null ? by[a].ret1m - by[b].ret1m : null;
     const volState = v20 > vYr * 1.35 ? "stressed" : v20 < vYr * 0.75 ? "calm" : "normal";
+    // Sector rotation: strength against the S&P 500 over 3 months (x) and 1 month (y), the classic four quadrants.
+    const mv = (x, n) => x && x.hist ? Q.lastMove(x.hist.points, n) : null, spy1 = mv(by.SPY, 21), spy3 = mv(by.SPY, 63);
+    const rotation = spy1 == null || spy3 == null ? [] : rows.filter(x => x.kind === "sector" && x.hist).map(x => { const a = mv(x, 21), c = mv(x, 63); if (a == null || c == null) return null; const rs1 = a - spy1, rs3 = c - spy3; return { symbol: x.symbol, name: x.name, rs1mPts: r1(rs1), rs3mPts: r1(rs3), quadrant: rs3 >= 0 ? (rs1 >= 0 ? "Leading" : "Weakening") : (rs1 >= 0 ? "Improving" : "Lagging") }; }).filter(Boolean);
     const trend = t ? t.trend : null;
     const label = (trend === "up" ? "Uptrend" : trend === "down" ? "Downtrend" : "Choppy, no clear trend") + ", " + volState + " volatility" + (sbc == null ? "" : sbc < -0.2 ? ", stocks and long bonds moving opposite (rates-driven)" : sbc > 0.2 ? ", stocks and long bonds moving together (growth-driven)" : "");
-    return { label, trend, aboveSma200: t && t.sma200 ? t.last > t.sma200 : null, spyFromHighPct: t ? r1(t.fromHighPct) : null, spyRsi14: t ? r1(t.rsi14) : null, vol20Pct: r1(v20), volYearPct: r1(vYr), volState, stockBondCorr60d: sbc == null ? null : Math.round(sbc * 100) / 100,
+    return { rotation, label, trend, aboveSma200: t && t.sma200 ? t.last > t.sma200 : null, spyFromHighPct: t ? r1(t.fromHighPct) : null, spyRsi14: t ? r1(t.rsi14) : null, vol20Pct: r1(v20), volYearPct: r1(vYr), volState, stockBondCorr60d: sbc == null ? null : Math.round(sbc * 100) / 100,
       leaders: sectors.slice(0, 3).map(s => ({ symbol: s.symbol, name: s.name, ret1mPct: r1(s.ret1m) })), laggards: sectors.slice(-3).reverse().map(s => ({ symbol: s.symbol, name: s.name, ret1mPct: r1(s.ret1m) })),
       smallVsLarge1mPct: r1(spread("IWM", "SPY")), cyclicalVsDefensive1mPct: r1(spread("XLY", "XLP")), credit1mPct: r1(by.HYG && by.HYG.ret1m), dollar1mPct: r1(by.UUP && by.UUP.ret1m), oil1mPct: r1(by.USO && by.USO.ret1m), gold1mPct: r1(by.GLD && by.GLD.ret1m), longBonds1mPct: r1(by.TLT && by.TLT.ret1m), bitcoin1mPct: r1(by.BTC && by.BTC.ret1m) };
+  }
+  function rotationSvg(rot) {
+    if (!rot || !rot.length) return null;
+    const W = 420, H = 280, pad = 30, mx = Math.max(2, ...rot.map(r => Math.abs(r.rs3mPts))), my = Math.max(2, ...rot.map(r => Math.abs(r.rs1mPts)));
+    const x = (v) => W / 2 + v / mx * (W / 2 - pad), y = (v) => H / 2 - v / my * (H / 2 - pad);
+    const q = (t, X, Y, anchor) => '<text x="' + X + '" y="' + Y + '" font-size="10" fill="currentColor" opacity="0.55" text-anchor="' + anchor + '">' + t + '</text>';
+    const dots = rot.map(r => '<g><title>' + r.name + ': ' + (r.rs3mPts > 0 ? "+" : "") + r.rs3mPts + ' pts vs SPY over 3 months, ' + (r.rs1mPts > 0 ? "+" : "") + r.rs1mPts + ' over 1 month (' + r.quadrant + ')</title><circle cx="' + x(r.rs3mPts).toFixed(1) + '" cy="' + y(r.rs1mPts).toFixed(1) + '" r="4.5" class="rq-' + r.quadrant.toLowerCase() + '"/><text x="' + (x(r.rs3mPts) + 7).toFixed(1) + '" y="' + (y(r.rs1mPts) + 3.5).toFixed(1) + '" font-size="10.5" fill="currentColor">' + r.symbol + '</text></g>').join("");
+    return h("div", { class: "rotation", html: '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" style="max-width:520px" role="img" aria-label="Sector rotation: strength against the S&P 500 over three months and one month">' +
+      '<line x1="' + pad + '" y1="' + H / 2 + '" x2="' + (W - pad) + '" y2="' + H / 2 + '" stroke="currentColor" stroke-opacity="0.25"/><line x1="' + W / 2 + '" y1="' + pad / 2 + '" x2="' + W / 2 + '" y2="' + (H - pad / 2) + '" stroke="currentColor" stroke-opacity="0.25"/>' +
+      q("Leading", W - pad, pad, "end") + q("Weakening", W - pad, H - pad / 2 + 4, "end") + q("Lagging", pad, H - pad / 2 + 4, "start") + q("Improving", pad, pad, "start") +
+      q("← weaker over 3 months · stronger →", W / 2, H - 2, "middle") + dots + '</svg>' });
   }
   // What moves what: each sector's beta to the S&P 500 and its 60-day correlation with long bonds, the dollar and oil.
   function sensitivities(P) {
@@ -7980,7 +8018,7 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
       market = "SPY"; factors = ["SPY"].concat(sector ? [sector] : [], ["TLT", "UUP", "USO"]); relative = sector ? [sector] : [];
       if (asset.symbol === "SPY") { market = null; factors = ["TLT", "UUP", "USO"]; }
     } else throw new Error("Move explanations cover stocks, ETFs and crypto.");
-    const [ha, ...hf] = await Promise.all([D.historyFor(asset, "1Y"), ...factors.map(f => D.historyFor(assetOf(f), "1Y").catch(() => null))]);
+    const [ha, ...hf] = await Promise.all([D.historyCached(asset, "1Y"), ...factors.map(f => D.historyCached(assetOf(f), "1Y").catch(() => null))]);
     const fmap = {}; factors.forEach((f, i) => { if (hf[i]) fmap[f] = hf[i].points; });
     const model = Q.factorModel(ha.points, fmap, { market, relative, ppy: ha.ppy || 252 });
     if (!model) throw new Error("Not enough overlapping history to model " + (asset.symbol || asset.name) + ".");
@@ -8006,7 +8044,7 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
     await pool(syms, 4, async (s) => {
       if (tf === "1Y" && P && P.by[s] && P.by[s].hist) { out[s] = P.by[s].hist.points; return; }
       const a = s === "BTC" ? BTC : NAME[s] || D.stocks.ETFS.some(e => e[0] === s) ? etf(s) : { id: "stock:" + s, cls: "stock", symbol: s, name: s };
-      try { out[s] = (await D.historyFor(a, tf)).points; } catch { if (a.cls === "stock") try { out[s] = (await D.historyFor(etf(s), tf)).points; } catch {} }
+      try { out[s] = (await D.historyCached(a, tf)).points; } catch { if (a.cls === "stock") try { out[s] = (await D.historyCached(etf(s), tf)).points; } catch {} }
     });
     return out;
   }
@@ -8258,6 +8296,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     return ("Market Brain (the desk's own study of " + days.length + " session" + (days.length > 1 ? "s" : "") + "; latest " + last.sessionDate + "): " + (last.headline || "") +
       (rg ? " Regime: " + rg.label + (rg.leaders && rg.leaders.length ? "; leading sectors " + rg.leaders.map(l => l.name).join(", ") : "") + "." : "") +
       (top.length ? " Recurring drivers: " + top.join(", ") + "." : "") +
+      (rg && rg.rotation && rg.rotation.length ? " Sector rotation vs SPY: " + ["Leading", "Improving", "Weakening"].map(qd => { const xs = rg.rotation.filter(r => r.quadrant === qd); return xs.length ? qd.toLowerCase() + " " + xs.map(r => r.name).join(", ") : null; }).filter(Boolean).join("; ") + "." : "") +
       (pb.themes && pb.themes.length ? " Themes: " + pb.themes.slice(0, 3).map(t => t.theme + " (" + t.status + ")").join("; ") + "." : "") +
       (proven.length ? " Patterns with a record: " + proven.map(p => "\"" + p.pattern + "\" held " + p.st.confirmed + " of " + p.st.tested + " times").join("; ") + "." : "") +
       (backed.length ? " Backtested over a year of daily moves: " + backed.map(p => "\"" + p.pattern + "\" held " + p.backtest.held + " of " + p.backtest.occurrences + " times (" + p.backtest.heldPct + "% vs " + p.backtest.baselinePct + "% on all days)").join("; ") + "." : "") +
@@ -8367,6 +8406,8 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     U.async(pulseBox, () => pulse(app, { history: true }), (P) => {
       const groups = [["Indices", "index"], ["Rates, dollar, commodities, credit", null], ["Sectors", "sector"]];
       pulseBox.replaceChildren(regimeKpis(P.regime),
+        P.regime && P.regime.rotation && P.regime.rotation.length ? h("details", { open: true }, h("summary", { class: "label", style: "cursor:pointer" }, "Sector rotation (strength vs the S&P 500)"), h("div", { class: "row", style: "gap:16px;flex-wrap:wrap;align-items:center" }, h("div", { style: "flex:1 1 300px;min-width:0;color:var(--muted)" }, rotationSvg(P.regime.rotation)),
+          h("div", { class: "stack small", style: "flex:1 1 220px;gap:4px" }, ["Leading", "Improving", "Weakening", "Lagging"].map(qd => { const xs = P.regime.rotation.filter(r => r.quadrant === qd); return xs.length ? h("p", {}, h("strong", {}, qd + ": "), xs.map(r => r.name + " (" + (r.rs1mPts > 0 ? "+" : "") + r.rs1mPts + ")").join(", ")) : null; }), h("p", { class: "tiny muted" }, "Leading: stronger than the market over 3 months and still over 1 month. Improving: weak over 3 months but stronger lately. Weakening: the reverse. Points are percentage points vs SPY.")))) : null,
         ...groups.map(([label, kind]) => h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, label), heat(P.rows.filter(r => kind ? r.kind === kind : !["index", "sector"].includes(r.kind)).sort((a, b) => kind === "sector" ? (b.changePct ?? -99) - (a.changePct ?? -99) : 0)))),
         h("details", {}, h("summary", { class: "label", style: "cursor:pointer" }, "What moves what (measured from a year of daily returns)"),
           U.table([{ t: "Sector", v: (r) => r.name + " (" + r.symbol + ")" }, { t: "Beta to S&P 500", v: (r) => r.betaToSPY == null ? "—" : r.betaToSPY.toFixed(2), n: true }, { t: "Corr. long bonds", v: (r) => r.corrLongBonds == null ? "—" : r.corrLongBonds.toFixed(2), n: true }, { t: "Corr. dollar", v: (r) => r.corrDollar == null ? "—" : r.corrDollar.toFixed(2), n: true }, { t: "Corr. oil", v: (r) => r.corrOil == null ? "—" : r.corrOil.toFixed(2), n: true }, { t: "Corr. gold", v: (r) => r.corrGold == null ? "—" : r.corrGold.toFixed(2), n: true }], sensitivities(P)),
