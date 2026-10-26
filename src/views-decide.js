@@ -59,10 +59,20 @@
         { t: "Net liquidation", v: (r) => r.nl ? h("span", { title: r.exit.label }, U.money(r.nl.net, R)) : "—", n: true }
       ], rows, { onRow: (r) => positionModal(app, r, R) }) : h("div", { class: "empty" }, "No holdings yet. Add a transaction or import a CSV.", h("button", { class: "btn sm", type: "button", onclick: () => X.txModal(null) }, "Add transaction")),
       h("p", { class: "small muted" }, "Rates: " + (pv.ratesSource || "unavailable") + (pv.ratesAt ? ", " + U.fmtTs(pv.ratesAt) : "") + ". Collectible and metal values are reference prices; what you'd realize is the net liquidation estimate."));
-      const items = rows.filter(r => r.v.valueR).map(r => ({ value: r.v.valueR, cls: CLS_LABEL[r.p.assetClass] || r.p.assetClass, currency: r.p.currency, country: r.country, liquidity: r.liquidity, risk: RISK_CAT[r.p.assetClass] || "Other", sector: r.p.meta && r.p.meta.sector || (r.p.assetClass === "stock" ? "Unclassified" : CLS_LABEL[r.p.assetClass]) }));
-      const dims = [["cls", "Asset class"], ["currency", "Currency"], ["country", "Listing / region"], ["liquidity", "Liquidity"], ["risk", "Risk category"]];
+      const items = rows.filter(r => r.v.valueR).map(r => ({ symbol: r.p.symbol, assetClass: r.p.assetClass, value: r.v.valueR, cls: CLS_LABEL[r.p.assetClass] || r.p.assetClass, currency: r.p.currency, country: r.country, liquidity: r.liquidity, risk: RISK_CAT[r.p.assetClass] || "Other", sector: r.p.meta && r.p.meta.sector || (r.p.assetClass === "stock" ? "Unclassified" : CLS_LABEL[r.p.assetClass]) }));
+      const dims = [["cls", "Asset class"], ["sector", "Sector"], ["currency", "Currency"], ["country", "Listing / region"], ["liquidity", "Liquidity"], ["risk", "Risk category"]];
       const dim = app.ls.get("allocDim", "cls");
-      const showAlloc = (d) => { app.ls.set("allocDim", d); const a = C.allocation(items, d); alloc.replaceChildren(U.tabs(dims, d, showAlloc), items.length ? U.bars(a.map(x => ({ label: x.key, value: Number(x.pct), text: Number(x.pct).toFixed(1) + "% · " + U.money(x.value, R) }))) : h("div", { class: "empty" }, "Nothing to allocate yet.")); };
+      // Sectors for stock holdings come from Nasdaq's summary (NYSE and Nasdaq listings), cached for a week.
+      let sectorsReady = false;
+      const loadSectors = async () => {
+        const cache = app.ls.get("sectors", {}), fresh = (k) => cache[k] && Date.now() - cache[k].at < 7 * 864e5;
+        await Promise.all(items.filter(it => it.assetClass === "stock" && !fresh(it.symbol)).map(async it => { try { const p = await D.stocks.profile(it.symbol, "stock"); if (p && p.sector) cache[it.symbol] = { sector: p.sector, at: Date.now() }; } catch {} }));
+        app.ls.set("sectors", cache);
+        for (const it of items) if (it.assetClass === "stock") it.sector = (cache[it.symbol] && cache[it.symbol].sector) || "Sector unknown"; else if (it.assetClass === "etf") it.sector = "ETFs (diversified)";
+        sectorsReady = true;
+      };
+      const showAlloc = (d) => { app.ls.set("allocDim", d);
+        if (d === "sector" && !sectorsReady) { alloc.replaceChildren(U.tabs(dims, d, showAlloc), h("div", { class: "skeleton" }, "Looking up sectors…")); loadSectors().then(() => { if (app.ls.get("allocDim") === "sector") showAlloc("sector"); }); return; } const a = C.allocation(items, d); alloc.replaceChildren(U.tabs(dims, d, showAlloc), items.length ? U.bars(a.map(x => ({ label: x.key, value: Number(x.pct), text: Number(x.pct).toFixed(1) + "% · " + U.money(x.value, R) }))) : h("div", { class: "empty" }, "Nothing to allocate yet.")); };
       showAlloc(dim);
       const byCcy = C.allocation(items, "currency");
       const foreign = byCcy.filter(x => x.key !== R);

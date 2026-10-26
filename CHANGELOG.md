@@ -1,5 +1,14 @@
 # Changelog
 
+## Version 32 (2026-10-26)
+- **Mid-cap discovery in Recommendations.** Every day, two sectors rotate in and the desk adds mid-sized companies
+  ($2B–10B) from each, on the NYSE and Nasdaq, to the candidate pool. Picks reach beyond the same large names, and
+  ones that came in this way are tagged "Mid-cap discovery".
+- **Sector allocation** (Portfolio → Allocation → Sector). Stock holdings are grouped by sector from Nasdaq's
+  summary (NYSE and Nasdaq listings, cached for a week); ETFs are grouped as diversified.
+- Dividend income projection was considered and left out. Nasdaq's dividend data doesn't cover NYSE listings
+  (checked live), so the projection would be wrong for many portfolios.
+
 ## Version 31 (2026-10-26)
 - **The ML checks whether its edge still holds.**
   - The model now also scores itself on the most recent third of its out-of-sample test. If it has done worse than

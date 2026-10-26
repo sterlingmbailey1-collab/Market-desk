@@ -68,6 +68,15 @@ Reply with ONLY JSON: {"stocks": [{"symbol": "TICKER", "why": "a few words on th
       const big = new Map(lists.flat().filter(r => r.price >= 5 && r.marketCap >= 2e9).map(r => [r.symbol, r]));
       if (!big.size) throw new Error("The stock screener didn't answer. Try again in a minute.");
       log("ok", big.size + " liquid companies (" + exList.map((x, i) => lists[i].filter(r => big.has(r.symbol)).length + " " + (x === "nyse" ? "NYSE" : "Nasdaq")).join(", ") + ")");
+      // Mid-cap discovery: two sectors a day (rotating with the date), mid-sized companies ($2B–10B) from each exchange,
+      // so the pool isn't only the largest names.
+      const daySeed0 = Number(D.ymd(today).replace(/-/g, "")) + (opts.window || "").length * 7919;
+      const SECTORS = [["technology", "technology"], ["health_care", "health care"], ["finance", "finance"], ["consumer_discretionary", "consumer discretionary"], ["consumer_staples", "consumer staples"], ["industrials", "industrials"], ["energy", "energy"], ["utilities", "utilities"], ["real_estate", "real estate"], ["basic_materials", "basic materials"], ["telecommunications", "telecom"]];
+      const todaySectors = seededShuffle(SECTORS, daySeed0 + 17).slice(0, 2);
+      const mids = (await Promise.all(todaySectors.flatMap(([sec]) => exList.map(x => D.stocks.screen({ exchange: x, sector: sec, size: "mid", limit: 40 }).then(r => r.rows).catch(() => []))))).flat().filter(r => r.price >= 5 && !big.has(r.symbol));
+      for (const r of mids) big.set(r.symbol, Object.assign({}, r, { midCap: true }));
+      const midSyms = mids.map(r => r.symbol);
+      if (midSyms.length) log("ok", "Mid-cap discovery: " + midSyms.length + " mid-sized companies in " + todaySectors.map(s => s[1]).join(" and ") + " (sectors rotate daily)");
       const horizonDates = []; for (let i = 0; i < Math.min(days, 21); i++) { const d = new Date(today.getTime() + i * 864e5); if (d.getUTCDay() % 6) horizonDates.push(D.ymd(d)); }
       log("run", "Checking the earnings calendar for the next " + horizonDates.length + " trading days");
       const earn = (await Promise.all(horizonDates.map(d => D.calendar.earnings(d).catch(() => [])))).flat();
@@ -88,7 +97,7 @@ Reply with ONLY JSON: {"stocks": [{"symbol": "TICKER", "why": "a few words on th
       const mix = (syms) => { if (exList.length < 2) return syms; const a = syms.filter(s => exOf(s) === "NYSE"), b = syms.filter(s => exOf(s) !== "NYSE"), out = []; for (let i = 0; i < Math.max(a.length, b.length); i++) { if (a[i]) out.push(a[i]); if (b[i]) out.push(b[i]); } return out; };
       const lens = (syms, n) => mix(syms.filter(fresh)).slice(0, n);
       const n = focused ? 6 : 18;
-      const freshPool = [...new Set(lens([...earnBy.keys()], 6).concat(lens(moverSyms, 3), lens(byAbs, 4), mix(explore).slice(0, 8)))];
+      const freshPool = [...new Set(lens([...earnBy.keys()], 6).concat(lens(moverSyms, 3), lens(byAbs, 4), lens(seededShuffle(midSyms, daySeed + 3), 4), mix(explore.filter(s => !(big.get(s) || {}).midCap)).slice(0, 8)))];
       const repeats = [...new Set([...earnBy.keys(), ...moverSyms, ...byAbs].filter(s => !fresh(s)))].slice(0, 3);
       const short = [...new Set(mine.map(a => a.symbol).concat(foc, freshPool.slice(0, n - repeats.length), repeats))].slice(0, n + mine.length + foc.length);
       log("ok", "Shortlist: " + short.filter(fresh).length + " fresh names, " + short.filter(s => !fresh(s)).length + " recommended in the last 30 days" + (exList.length > 1 ? " · " + short.filter(s => exOf(s) === "NYSE").length + " NYSE, " + short.filter(s => exOf(s) === "Nasdaq").length + " Nasdaq" : ""));
@@ -108,7 +117,7 @@ Reply with ONLY JSON: {"stocks": [{"symbol": "TICKER", "why": "a few words on th
         const target = om && om.moves.length ? om.moves.reduce((b, m) => !b || Math.abs(m.days - days) < Math.abs(b.days - days) ? m : b, null) : null;
         const near = om && om.moves.length ? om.moves[0] : null;
         const e = earnBy.get(sym);
-        return { exchange: base.exchange || null, recent: recent.get(sym) || null, asset: a, mine: !!own, price: base.price, marketCap: base.marketCap, dayChangePct: base.changePct, volPct: st ? st.volPct : null, expectedMovePct: st ? C.expectedMoveFromVol(st.volPct, days) : null,
+        return { midCap: !!base.midCap, exchange: base.exchange || null, recent: recent.get(sym) || null, asset: a, mine: !!own, price: base.price, marketCap: base.marketCap, dayChangePct: base.changePct, volPct: st ? st.volPct : null, expectedMovePct: st ? C.expectedMoveFromVol(st.volPct, days) : null,
           impliedMovePct: target ? target.movePct : null, impliedExpiry: target ? target.expiry : null, impliedDays: target ? target.days : null, nearImplied: near && near !== target ? { expiry: near.expiry, movePct: near.movePct } : null, optionsAsOf: om ? om.asOf : null,
           earnings: e ? { date: e.date, time: e.time, epsForecast: e.epsForecast } : null, shortDaysToCover: si ? si.daysToCover : null, shortDate: si ? si.date : null,
           rsi14: closes.length > 15 ? C.rsi(closes, 14) : null, ret1m: ret(21), ret3m: ret(63), fromHighPct: st ? (closes[closes.length - 1] / st.high - 1) * 100 : null, fromLowPct: st ? (closes[closes.length - 1] / st.low - 1) * 100 : null, source: "Nasdaq" };
@@ -151,6 +160,7 @@ Reply with ONLY JSON: {"stocks": [{"symbol": "TICKER", "why": "a few words on th
       if (c.rsi14 != null && c.rsi14 < 32) L.push("Oversold (RSI " + Math.round(c.rsi14) + ")"); else if (c.rsi14 != null && c.rsi14 > 70) L.push("Overbought (RSI " + Math.round(c.rsi14) + ")");
       if (c.fromHighPct != null && c.fromHighPct > -3) L.push("Near its 52-week high"); else if (c.fromLowPct != null && c.fromLowPct < 5) L.push("Near its 52-week low");
       if (c.shortDaysToCover > 5) L.push("Heavy short interest");
+      if (c.midCap) L.push("Mid-cap discovery");
       if (!c.recent) L.push("Fresh name");
       c.lenses = L;
     }
