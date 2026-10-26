@@ -1,5 +1,27 @@
 # Changelog
 
+## Version 26 (2026-10-26)
+- **Specialist panel.** Three more analysts estimate every Recommendations pick, AI decision and market call
+  independently, each with their own tools:
+  - fundamentals: Zacks, earnings, insiders
+  - quant: base rates, the ML model, options, technicals
+  - news and macro: headlines, the economic calendar, the Market Brain.
+
+  The lead analyst and the three specialists count equally, and wide disagreement lowers confidence. Evidence must
+  carry a measured figure or a retrieved source, or it's dropped. It can be switched off in Settings → AI, since it
+  uses about three times the Claude usage.
+- **Conflict check.** When Claude's odds sit more than 20 points from the measured history, it must give specific
+  evidence, or the desk halves the gap. Shown on the card.
+- **Pre-mortem.** Every pick and AI decision states its most likely way to fail, and the reviewer checks it.
+- **A reviewer with its own tools.** The second reviewer can check news, the measured price picture, base rates and
+  the ML model itself, instead of judging only what the analyst cited.
+- **Learned combiner (stacking).** After 30 graded calls, a model trained on the record weighs Claude, the reviewer,
+  the history and the ML model by how each has actually done. It takes over only if it beat the fixed blend on the
+  most recent calls. Every forecast now logs the reviewer's and the ML model's odds for this.
+- **More tools for the pickers.** Recommendations get the ML forecast, base rates and open calls; AI decisions get the
+  ML forecast, portfolio fit and open calls.
+- **Plain-English mode** (Settings → AI): every AI answer in simple language, with finance terms explained.
+
 ## Version 25 (2026-10-26)
 - **Fresher recommendations.**
   - The desk remembers every name recommended in the last 30 days and ranks those lower in the candidate pool.

@@ -211,6 +211,16 @@
     if (items.length < 10) return { wClaude: 0.65, learned: false, n: items.length };
     return Object.assign(MD.quant.blendWeights(items), { learned: true });
   }
+  /* The learned combiner for one source (MD.ml.stacker over graded calls that logged their inputs). */
+  function stackFor(app, source) {
+    const evals = app.store.cached("evals");
+    const items = app.store.cached("forecasts").filter(f => f.source === source && f.claudeUpPct != null && f.modelUpPct != null).sort((a, b) => a.createdAt - b.createdAt).map(f => {
+      const e = evals.find(v => v.forecastId === f.id); if (!e || e.realizedReturnPct == null) return null;
+      const final = f.upProbability != null ? f.upProbability * 100 : f.direction === "up" ? f.probability * 100 : f.direction === "down" ? 100 - f.probability * 100 : null;
+      return { c: f.claudeUpPct, m: f.modelUpPct, r: f.reviewerUpPct ?? null, ml: f.mlUpPct ?? null, final, up: Number(e.realizedReturnPct) > 0 };
+    }).filter(Boolean);
+    return MD.ml.stacker(items);
+  }
   function calibrationNote(tr) {
     const learned = tr && tr.lessons && tr.lessons.items.length ? " Lessons you wrote on " + new Date(tr.lessons.at).toISOString().slice(0, 10) + " after studying your scored calls; apply them: " + tr.lessons.items.join(" ") : "";
     if (!tr || tr.scored < 5) return "Track record: fewer than 5 of your past calls have been scored, so there is no calibration evidence yet; keep stated probabilities modest." + learned;
@@ -262,7 +272,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
   function contextNote(app) { const m = MD.brain ? MD.brain.note(app) : ""; return profileNote(app) + (m ? "\n" + m : ""); }
   function profileNote(app) {
     const p = (app.settings && app.settings.profile) || {};
-    return "Investor profile (set by the user in Settings; respect it): risk appetite " + (RISK[p.risk] || RISK.mid) + "; typical holding period " + (HZ[p.horizon] || HZ.mid) + (p.income ? "; wants income (dividends)" : "") + (p.goals ? "; goals: " + String(p.goals).slice(0, 300) : "") + (p.avoid ? "; avoid: " + String(p.avoid).slice(0, 200) : "") + "; experience: " + ((app.settings && app.settings.mode) || "intermediate") + ".";
+    return (app.settings && app.settings.plainEnglish ? "Write for a newer investor: plain, short sentences; explain any finance term the first time you use it (e.g. 'RSI, a measure of how stretched recent moves are'). Keep every number. " : "") + "Investor profile (set by the user in Settings; respect it): risk appetite " + (RISK[p.risk] || RISK.mid) + "; typical holding period " + (HZ[p.horizon] || HZ.mid) + (p.income ? "; wants income (dividends)" : "") + (p.goals ? "; goals: " + String(p.goals).slice(0, 300) : "") + (p.avoid ? "; avoid: " + String(p.avoid).slice(0, 200) : "") + "; experience: " + ((app.settings && app.settings.mode) || "intermediate") + ".";
   }
   /* Score forecasts whose date has passed, from the close on (or after) the due date. Runs from the journal's
      button and quietly in the background, so every AI's track record stays current. */
@@ -349,11 +359,13 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
         step("Context", "Every prompt carries your investor profile, the Market Brain (" + days + " session" + (days === 1 ? "" : "s") + " studied, " + active + " active pattern" + (active === 1 ? "" : "s") + ")" + (W ? ", the weekly review of " + W.week : "") + ", the desk's past calls on the asset and the latest lessons" + (L ? " (" + U.fmtDate(L.createdAt) + ")" : " (none yet)") + "."),
         step("Review", "A second, sceptical reader checks each call against the measured data and sources, keeps, revises or drops it, and gives its own probability, which is averaged in."),
         step("Blend", "Claude's probability is blended with the measured history. The weights start at 65% Claude / 35% history and are learned from each feature's graded calls (whichever has been more accurate gets more weight)."),
-        step("Calibrate", "Once a feature has 10 graded calls, stated odds are pulled toward how often calls at that level actually came true."),
+        step("Specialist panel", "Three more analysts (fundamentals, quant, news and macro) estimate the same odds independently with their own tools; the lead analyst and the panel count equally, wide disagreement lowers confidence, and evidence without a measured figure or a retrieved source is dropped. A conflict of more than 20 points with the measured history must be justified or the gap is halved."),
+        step("Calibrate", "Once a feature has 10 graded calls, stated odds are pulled toward how often calls at that level actually came true. After 30, a learned combiner (stacking) weighs Claude, the reviewer, the history and the ML model by how each has actually done, and takes over if it beats the fixed blend on the most recent calls."),
         step("Log, grade, monitor", "Every call is logged with its price and graded from the close on its due date. Open calls are priced every two hours and you're told when one turns."),
         step("Learn", "After 10 more graded calls Claude re-studies the record and writes lessons; the weekly review adds what the week taught. Both reach every forecasting prompt.")),
       U.table([{ t: "Feature", v: (r) => r.label }, { t: "Graded", v: (r) => String(r.tr.scored), n: true }, { t: "Came true", v: (r) => r.tr.hitPct != null ? r.tr.hitPct.toFixed(0) + "%" : "—", n: true },
         { t: "Weight on Claude", v: (r) => !r.bw ? "—" : Math.round(r.bw.wClaude * 100) + "% " + (r.bw.learned ? "(learned)" : "(default; learns at 10, " + r.bw.n + " so far)") },
+        { t: "Learned combiner", v: (r) => { if (!BLENDED.has(r.s)) return "—"; const st = stackFor(app, r.s); return st.used ? "active (" + st.n + " graded)" : st.n >= 30 ? "checked; fixed blend still better" : "starts at 30 (" + st.n + " so far)"; } },
         { t: "Calibration", v: (r) => !r.cal ? "—" : r.cal.applied ? "active (" + r.cal.scored + " graded)" : r.cal.scored >= 10 ? "checked; no correction needed" : "starts at 10 (" + r.cal.scored + " so far)" }], rows),
       h("p", { class: "tiny muted" }, "Read-only throughout: the desk never trades or bets. Numbers come from the page's own measurements; Claude never supplies prices."));
   }
@@ -472,23 +484,78 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
   /* ---------- review pass ---------- */
   /* A skeptical second reader checks each item of a draft against the measured data and the sources
      actually retrieved: unsupported claims, ignored risks, overconfidence. Returns per-item verdicts. */
-  async function review(app, { task, items, facts, S, signal }) {
+  async function review(app, { task, items, facts, S, signal, tools: toolNames }) {
     const s = app.caps.sample; if (!s || !items.length) return null;
+    // The reviewer can check claims itself (news, the measured price picture, base rates, the ML model) instead of
+    // judging only what the analyst cited.
+    const lim = await s.limits().catch(() => null), rtools = lim && lim.tools ? tools(app, S, toolNames || ["search_news", "search_web", "stock_snapshot", "base_rates", "ml_forecast"]) : undefined;
     const st = S.step("run", "Independent review of " + items.length + " item" + (items.length > 1 ? "s" : ""));
     const prompt = `You are a skeptical independent reviewer checking an analyst's draft before an investor sees it. Task the draft answers: ${task}
 Check each item ONLY against the measured data and the list of sources that were actually retrieved. Flag: claims not supported by the data or sources, figures that contradict the measured data, risks ignored, confidence that is too high for the evidence, and anything that reads like advice to act. Be concrete. Keep items that hold up.
 When an item states a probability (upProbabilityPct), also give YOUR OWN independent estimate of that same probability as probabilityPct, from the evidence, without anchoring on the draft's number; leave it null otherwise.
+When an item has a preMortem (how it would most likely fail), judge whether that is really the most likely failure and whether the probability allows for it; say so in issues if not.${rtools ? " Use up to 4 tool calls to check the claims you doubt most (news for a stated catalyst, the measured snapshot for a figure, base_rates or ml_forecast for the odds). Cite only what the tools returned." : ""}
 Measured data: ${JSON.stringify(facts).slice(0, 60000)}
 Sources retrieved: ${JSON.stringify(S.sourceList()).slice(0, 12000)}
 Draft items: ${JSON.stringify(items).slice(0, 60000)}
 Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"revise"|"drop", "issues": ["short, specific problems; empty if none"], "adjustedConfidence": 0-100, "probabilityPct": 0-100 or null, "note": "one sentence the investor should read"}], "overall": "one sentence on the draft as a whole"}`;
     try {
-      const r = await s.json(prompt, { modelTier: "complex", signal, cache: false });
+      const r = await s.json(prompt, Object.assign({ modelTier: "complex", signal }, rtools ? { tools: rtools } : { cache: false }));
       const reviews = (Array.isArray(r.reviews) ? r.reviews : []).filter(x => x && x.id != null).map(x => ({ id: String(x.id), verdict: ["keep", "revise", "drop"].includes(x.verdict) ? x.verdict : "keep", issues: (x.issues || []).slice(0, 4).map(String), adjustedConfidence: x.adjustedConfidence == null ? null : Math.max(0, Math.min(100, Number(x.adjustedConfidence) || 0)), probabilityPct: x.probabilityPct == null || !isFinite(Number(x.probabilityPct)) ? null : Math.max(1, Math.min(99, Number(x.probabilityPct))), note: String(x.note || "") }));
       S.done(st, "ok", " → " + reviews.filter(x => x.verdict === "keep").length + " kept, " + reviews.filter(x => x.verdict === "revise").length + " revised, " + reviews.filter(x => x.verdict === "drop").length + " dropped");
       return { reviews, overall: String(r.overall || "") };
     } catch (e) { if (e && e.code === "cancelled") throw e; S.done(st, "fail", " → didn't complete; showing the draft unreviewed"); return null; }
   }
+
+  /* ---------- specialist panel ---------- */
+  /* Three specialist analysts estimate the same items independently: none sees another's answer or the lead
+     analyst's number, and each works from its own tools. Evidence must carry a measured figure or a URL a tool
+     returned; an estimate with no usable evidence counts at half strength. Averaging independent estimates and
+     reading their disagreement is one of the most reliable ways to improve forecasts. */
+  const PANEL = [
+    ["fundamentals", "fundamentals analyst (earnings, estimate revisions, valuation, analyst ratings, insider activity)", ["zacks_view", "earnings_info", "insider_activity", "stock_snapshot", "search_news"]],
+    ["quant", "quantitative analyst (the asset's own base rates, the machine-learning model and similar past setups, technicals, options-implied moves, volatility)", ["base_rates", "ml_forecast", "options_move", "price_range", "explain_move"]],
+    ["news", "news and macro analyst (latest headlines, the economic calendar, the market regime, the desk's Market Brain record)", ["search_news", "crypto_news", "economic_calendar", "market_pulse", "market_memory", "search_web"]]];
+  const panelOn = (app) => !!(app.settings && app.settings.aiPanel !== false);
+  async function panel(app, { task, items, facts, S, signal }) {
+    const s = app.caps.sample; if (!s || !items.length || !panelOn(app)) return null;
+    const lim = await s.limits().catch(() => null);
+    const one = async ([key, brief, names]) => {
+      const st = S.step("run", "Specialist panel: the " + key + " analyst"), kt = lim && lim.tools ? tools(app, S, names) : undefined;
+      const prompt = `You are the desk's ${brief}. ${task}
+Work independently and give your OWN probability for each item from your specialty's evidence. ${kt ? "Use 2 to 5 tool calls on the items where your specialty matters most. Cite only URLs the tools returned." : "Tools are unavailable; use the measured data."}
+Every piece of evidence must carry a measured figure (e.g. "Zacks Rank 2", "RSI 28", "options price ±9%") or a URL a tool returned; evidence with neither is ignored.
+${contextNote(app)}
+Measured data: ${JSON.stringify(facts).slice(0, 50000)}
+Items: ${JSON.stringify(items)}
+Reply with ONLY JSON: {"estimates": [{"id": "the item's id", "upProbabilityPct": 5-95, "evidence": [{"claim": "...", "figure": "a measured number, or null", "url": "https://..., or null"}], "biggestRisk": "..."}]}`;
+      try {
+        const r = await s.json(prompt, Object.assign({ modelTier: "complex", signal }, kt ? { tools: kt } : { cache: false }));
+        const urls = new Set(S.sourceList().map(x => x.url));
+        const est = (Array.isArray(r.estimates) ? r.estimates : []).filter(x => x && x.id != null).map(x => {
+          const ev = (Array.isArray(x.evidence) ? x.evidence : []).filter(e => e && ((e.figure && /\d/.test(String(e.figure))) || (e.url && urls.has(e.url)))).slice(0, 4).map(e => ({ claim: String(e.claim || ""), figure: e.figure ? String(e.figure) : null, url: e.url && urls.has(e.url) ? e.url : null }));
+          let p = Math.max(5, Math.min(95, Number(x.upProbabilityPct) || 50)); if (!ev.length) p = 50 + (p - 50) / 2;
+          return { id: String(x.id), upPct: p, evidence: ev, risk: String(x.biggestRisk || "") };
+        });
+        S.done(st, "ok", " → " + est.map(x => x.id + " " + Math.round(x.upPct) + "%").join(", "));
+        return [key, est];
+      } catch (e) { if (e && e.code === "cancelled") throw e; S.done(st, "fail", " → " + errText(e)); return [key, []]; }
+    };
+    const res = Object.fromEntries(await Promise.all(PANEL.map(one))), out = {};
+    for (const it of items) {
+      const id = String(it.id), by = {}, ev = [];
+      for (const [k] of PANEL) { const e = (res[k] || []).find(x => x.id === id); if (e) { by[k] = Math.round(e.upPct); for (const x of e.evidence) ev.push(Object.assign({ by: k }, x)); } }
+      const ps = Object.values(by); if (!ps.length) continue;
+      out[id] = { by, n: ps.length, meanPct: ps.reduce((a, b) => a + b, 0) / ps.length, evidence: ev.slice(0, 8), risks: PANEL.map(([k]) => ((res[k] || []).find(x => x.id === id) || {}).risk).filter(Boolean) };
+    }
+    return out;
+  }
+  /* The team's probability: the lead analyst and each specialist count equally; their spread is the disagreement. */
+  function teamUp(leadPct, P) {
+    const xs = [leadPct].concat(P ? Object.values(P.by) : []), m = xs.reduce((a, b) => a + b, 0) / xs.length;
+    return { upPct: m, spread: Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length), n: xs.length };
+  }
+  // Wide disagreement lowers confidence: 2 points per point of spread beyond 10.
+  const disagreementPenalty = (spread) => Math.max(0, Math.round((spread - 10) * 2));
 
   /* Overall confidence from parts (0–100 each) with weights; parts missing are skipped. */
   function blend(parts) {
@@ -522,5 +589,5 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { followed, spyEach, openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { stackFor, panel, panelOn, teamUp, disagreementPenalty, followed, spyEach, openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

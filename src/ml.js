@@ -187,5 +187,22 @@
       timeline: rows.map((r, i) => ({ time: r.time, g: km.labels[i] })) };
   }
 
-  MD.ml = { kmeans, regimes, FEATURES, features, label, scaler, logisticFit, knn, auc, scores, forecast };
+  /* Learned combiner ("stacking"): a logistic regression on the logits of each input probability (Claude's team, the
+     measured history, the reviewer, the ML model), fitted on graded calls in time order. It is used only if, trained
+     on the first 70% of the record, it beat the desk's own logged odds on the last 30%; then it is refitted on all.
+     items: [{c, m, r, ml, final, up}] with probabilities in % and up = the asset finished higher. */
+  function stacker(items, opts = {}) {
+    const minN = opts.minN || 30, lg = (p) => { const q = clamp((p ?? 50) / 100, 0.02, 0.98); return Math.log(q / (1 - q)); };
+    const X = (it) => [lg(it.c), lg(it.m ?? it.c), lg(it.r ?? it.c), lg(it.ml ?? it.m ?? it.c)];
+    if (items.length < minN) return { used: false, n: items.length, reason: "needs " + minN + " graded calls with every input" };
+    const cut = Math.floor(items.length * 0.7), tr = items.slice(0, cut), te = items.slice(cut);
+    const fit = (rows) => { const S = scaler(rows.map(X)), m = logisticFit(rows.map(r => S.z(X(r))), rows.map(r => r.up ? 1 : 0), opts.l2 ?? 4); return (it) => m.predict(S.z(X(it))) * 100; };
+    const f1 = fit(tr), brier = (ps) => te.reduce((s, it, i) => s + (ps[i] / 100 - (it.up ? 1 : 0)) ** 2, 0) / te.length;
+    const bStack = brier(te.map(f1)), bLogged = brier(te.map(it => it.final ?? it.c));
+    if (!(bStack < bLogged)) return { used: false, n: items.length, brierStack: bStack, brierLogged: bLogged, reason: "didn't beat the desk's own odds on the latest " + te.length + " calls" };
+    const fAll = fit(items);
+    return { used: true, n: items.length, brierStack: bStack, brierLogged: bLogged, apply: (it) => clamp(fAll(it), 5, 95) };
+  }
+
+  MD.ml = { stacker, kmeans, regimes, FEATURES, features, label, scaler, logisticFit, knn, auc, scores, forecast };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 25; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 26; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading and a Sports Betting tab.
@@ -92,6 +92,12 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   economic_calendar. The runtime caps tools per request (limits().tools.maxCount, 20): use `MD.ai.selectTools(tools,
   questionText, cap, core)` whenever a request could carry more. `MD.ai.contextNote(app)` = investor profile + the
   Market Brain note; use it in every AI prompt (not profileNote alone).
+- **AI strength:** `MD.ai.panel(app, {task, items:[{id,…}], facts, S, signal})` runs three specialists (fundamentals, quant, news)
+  in parallel (off when `settings.aiPanel === false`); `MD.ai.teamUp(lead, P)` averages lead + panel; `disagreementPenalty`.
+  Conflict check: >20 points from `modelUp` without `conflictJustification` halves the gap. `MD.ai.stackFor(app, source)` →
+  `MD.ml.stacker` (needs 30 graded calls logging claudeUpPct/modelUpPct/reviewerUpPct/mlUpPct; used only if it beat the
+  logged odds on the last 30%). `review()` takes `tools` (default news/web/snapshot/base_rates/ml_forecast).
+  `settings.plainEnglish` adds a plain-language instruction through `profileNote`.
 - **Recommendations variety:** `recentPicks(app)` (30 days) marks candidates `recent`; repeats need `repeatReason` and are capped at
   count/3; max 2 picks per sector ETF; Claude returns 2 `alternates` that only replace set-aside picks. Stock pools come from
   `D.stocks.screener(0, 150, "nyse"|"nasdaq")` (rows carry `exchange`); `opts.exchange` = both | nyse | nasdaq.

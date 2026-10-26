@@ -324,6 +324,13 @@
     ok(sig.oos.predictions > 500 && sig.analogs.length === 8 && sig.upPct >= 20 && sig.upPct <= 80);
     ok(M.forecast(mk(3, 0).slice(0, 300), { horizonBars: 21 }).error, "too little history is refused");
   });
+  test("machine learning: the learned combiner is used only when it beats the logged odds out of sample", () => {
+    const C = MD.core, r = C.rng(21), mk = (informative) => Array.from({ length: 80 }, () => { const m = 20 + r() * 60, up = r() * 100 < (informative ? m : 50), c = 30 + r() * 40; return { c, m, r: c, ml: m, final: c, up }; });
+    const good = MD.ml.stacker(mk(true)); ok(good.used && good.brierStack < good.brierLogged, JSON.stringify(good));
+    ok(good.apply({ c: 50, m: 80, r: 50, ml: 80 }) > good.apply({ c: 50, m: 20, r: 50, ml: 20 }) + 20, "leans on the input that has been right");
+    eq(MD.ml.stacker(mk(true).slice(0, 20)).used, false);
+    const noise = MD.ml.stacker(Array.from({ length: 80 }, () => ({ c: 50, m: 50, r: 50, ml: 50, final: 50, up: r() < 0.5 }))); eq(noise.used, false);
+  });
   test("machine learning: k-means separates clear groups; regimes label a calm uptrend and a sell-off", () => {
     const C = MD.core, r = C.rng(9), Z = [];
     for (let i = 0; i < 200; i++) Z.push(i < 100 ? [C.gauss(r) * 0.2, C.gauss(r) * 0.2] : [5 + C.gauss(r) * 0.2, 5 + C.gauss(r) * 0.2]);
