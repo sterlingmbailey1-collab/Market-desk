@@ -187,10 +187,11 @@
         nextEarnings: arr(d.notifications).flatMap(n => arr(n.eventTypes)).map(e => e.message || "").find(m => /Earnings Date/i.test(m))?.replace(/.*:\s*/, "") || null };
     },
     /* Lists. The screener is Nasdaq's snapshot and can lag a session; asset pages show the live quote. */
-    async screener(offset = 0, limit = 100) {
-      const r = await fetchJSON(`https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=${limit}&offset=${offset}&sortcolumn=marketCap&sortorder=desc`, 160000, 300000);
+    // exchange: "nasdaq" or "nyse" (both when omitted). Share classes written with a slash (BRK/B) are skipped.
+    async screener(offset = 0, limit = 100, exchange) {
+      const r = await fetchJSON(`https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=${limit}&offset=${offset}&sortcolumn=marketCap&sortorder=desc` + (exchange ? "&exchange=" + exchange : ""), 160000, 300000);
       const t = r && r.data && r.data.table;
-      return arr(t && t.rows).map(x => ({ id: "stock:" + x.symbol, cls: "stock", symbol: x.symbol, name: String(x.name || "").replace(/ Common Stock$| Class A Common Stock$/, ""), price: num(x.lastsale), change: num(x.netchange), changePct: num(x.pctchange), marketCap: num(x.marketCap), currency: "USD" }));
+      return arr(t && t.rows).filter(x => /^[A-Z][A-Z.\-]{0,5}$/.test(String(x.symbol || ""))).map(x => ({ id: "stock:" + x.symbol, cls: "stock", symbol: x.symbol, name: String(x.name || "").replace(/ Common Stock$| Class A Common Stock$| Common Shares$/, ""), price: num(x.lastsale), change: num(x.netchange), changePct: num(x.pctchange), marketCap: num(x.marketCap), currency: "USD", exchange: exchange ? (exchange === "nyse" ? "NYSE" : "Nasdaq") : null }));
     },
     // status: currentMarket, preMarket or afterHours (outside those hours Nasdaq returns the last session's list).
     async movers(status = "currentMarket") {

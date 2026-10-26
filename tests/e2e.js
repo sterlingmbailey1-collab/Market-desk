@@ -177,6 +177,16 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("recommendations: every measured candidate carries the machine-learning model's odds and out-of-sample record", await page.evaluate(() => { const pr = (window.__mock.fullPrompts || []).filter(x => /LARGE price move/.test(x)).pop() || ""; return /"mlModel":\{"horizonDays":\d+,"upPct":[\d.]+,"edgeOutOfSample":(true|false)/.test(pr); }));
   check("recommendations focus: Claude names assets for the theme, the app verifies them (a fake ticker drops out) and the picks lead with them", foc.focus === "AI chips" && foc.focusPicks.length >= 1 && foc.focusPicks.every(s => ["AMD", "NVDA"].includes(s)) && foc.prompt && !foc.fake && foc.log.some(t => /2 of 3 focus names verified/.test(t)), JSON.stringify(foc));
   await page.evaluate(() => document.querySelectorAll("#content details").forEach(d => d.open = true));
+  const vr = await page.evaluate(async () => {
+    const first = MD.app.store.cached("picks")[0].picks.map(p => p.symbol), lines = [];
+    const set = await MD.picks.generate(MD.app, { stocks: true, crypto: false, mine: false, window: "3m", count: 3, exchange: "both" }, (k, t) => lines.push(t), new AbortController().signal, () => {});
+    const pr = (window.__mock.fullPrompts || []).filter(x => /LARGE price move/.test(x)).pop() || "";
+    return { first, now: set.picks.map(p => p.symbol), aside: set.excluded.filter(e => /no new reason/.test(e.reason)).map(e => e.symbol), alternates: set.picks.filter(p => p.alternate).map(p => p.symbol), exch: set.picks.map(p => p.exchange),
+      recentInPrompt: /"recentlyRecommended":\{"times":1/.test(pr), nyse: /"exchange":"NYSE"/.test(pr), nasdaq: /"exchange":"Nasdaq"/.test(pr), angles: /"angles":\["/.test(pr), rule: /Prefer fresh names/.test(pr), log: lines.filter(t => /Variety|Shortlist|liquid companies/.test(t)) };
+  });
+  check("recommendations stay fresh: a recent pick without a new reason is set aside, alternates fill in, and NYSE and Nasdaq names are both in the pool", vr.recentInPrompt && vr.rule && vr.aside.length >= 1 && vr.now.length >= 1 && vr.now.every(s => !vr.first.includes(s)) && vr.nyse && vr.nasdaq && vr.angles && vr.exch.every(x => x === "NYSE" || x === "Nasdaq"), JSON.stringify(vr));
+  const nyseOnly = await page.evaluate(async () => { const set = await MD.picks.generate(MD.app, { stocks: true, crypto: false, mine: false, window: "3m", count: 3, exchange: "nyse" }, () => {}, new AbortController().signal, () => {}); return set.picks.map(p => p.exchange); });
+  check("recommendations can be limited to NYSE-listed stocks", nyseOnly.length >= 1 && nyseOnly.every(x => x === "NYSE"), JSON.stringify(nyseOnly));
   const pkTxt = await page.locator("#content").innerText();
   check("pick odds explanation names the year its history starts (never 'since NaN')", /window since 20\d\d/.test(pkTxt) && !/NaN/.test(pkTxt), (pkTxt.match(/Over every[^\n]{0,80}/) || [""])[0]);
   check("pick explains why, up/down odds and time window (no 'either way')", /Why it could move/i.test(pkTxt) && /Time window/i.test(pkTxt) && /% chance up/i.test(pkTxt) && /Chance up \/ down/i.test(pkTxt) && !/either way/i.test(pkTxt) && await page.locator(".probbar").count() >= 2, pkTxt.slice(0, 400));
