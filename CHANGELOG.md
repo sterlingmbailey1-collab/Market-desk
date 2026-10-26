@@ -1,5 +1,10 @@
 # Changelog
 
+## Version 43 (2026-10-26)
+- The dashboard's What's new card now covers everything through Version 42: auto-following AI decisions, the paper
+  account chart and coach, saved screens, and the ML's self-recalibration. It shows again once for anyone who
+  dismissed the earlier one.
+
 ## Version 42 (2026-10-26)
 - **Saved screens.** "Save this screen" keeps up to eight named screens in this browser. One click reruns a saved
   screen, and × deletes it.

@@ -172,14 +172,14 @@
     const R = app.settings.reportingCurrency;
     root.append(head("Dashboard", new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) + " · reporting in " + R, [h("button", { class: "btn ghost sm", type: "button", onclick: () => customize(app) }, "Customize")]));
     // What's new since Version 25, once, until dismissed.
-    const NEW_IN = 35;
+    const NEW_IN = 42;
     if ((app.ls.get("whatsNew", 0) || 0) < NEW_IN) {
       const go = (route, pre) => () => { if (pre) pre(); app.go(route, null, { fromNav: true }); };
       const items = [["Today's Game Plan", "the day's clock, SPY call, releases, earnings for your names (with implied moves), calls due, and an AI plan; a daily digest goes to the inbox", go("today")],
-        ["Paper Trading", "virtual money at live prices, judged against the same trades in the S&P 500; can follow the AI's picks automatically", go("paper")],
-        ["Stock screener", "NYSE and Nasdaq by sector, size, price and today's move; send results to the ML scan or Recommendations", go("opportunities", () => app.ls.set("oppTab", "screener"))],
+        ["Paper Trading", "virtual money at live prices, judged against the same trades in the S&P 500, with a chart over time; can follow the AI's picks and buy decisions automatically, and an AI coach reads your results", go("paper")],
+        ["Stock screener", "NYSE and Nasdaq by sector, size, price and today's move; save screens and send results to the ML scan or Recommendations", go("opportunities", () => app.ls.set("oppTab", "screener"))],
         ["Fresher recommendations", "NYSE + Nasdaq, mid-cap discovery in rotating sectors, no repeats without a reason, a correlation check and analysts' targets", go("picks")],
-        ["Stronger AI", "a specialist panel that learns from its record, a conflict check, desk consensus on every asset page, and an ML model with boosted trees that checks whether its edge still holds", go("research", () => app.ls.set("resTab", "journal"))],
+        ["Stronger AI", "a specialist panel that learns from its record, a conflict check, desk consensus on every asset page, and an ML model with boosted trees that recalibrates itself and checks whether its edge still holds", go("research", () => app.ls.set("resTab", "journal"))],
         ["Portfolio", "health score, news sentiment for your holdings, sector allocation, risk-parity rebalancing and realized gains by tax year", go("portfolio")]];
       const card = h("section", { class: "card whatsnew" }, h("div", { class: "hd" }, h("h2", { class: "sec" }, "What's new"), h("button", { class: "btn ghost sm", type: "button", onclick: () => { app.ls.set("whatsNew", NEW_IN); card.remove(); } }, "Got it")),
         h("div", { class: "bd" }, h("ul", { class: "small", style: "margin:0;padding-left:1.1em;display:grid;gap:6px" }, items.map(([t, d, f]) => h("li", {}, h("a", { href: "#", onclick: (e) => { e.preventDefault(); f(); } }, h("strong", {}, t)), " — " + d)))));
