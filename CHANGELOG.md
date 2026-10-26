@@ -1,5 +1,43 @@
 # Changelog
 
+## Version 28 (2026-10-26)
+- **Paper trading** (new page under Decide). A virtual account with $100,000 to start; you can change the amount
+  when you start over. Nothing is ever bought or sold for real.
+  - Orders fill at the live quote, and the quote's source and time are kept with each order. Estimated commission
+    and spread come from Settings. There's no margin and no short selling.
+  - Every buy is mirrored into SPY with the same dollars at the same moment. Each closed trade shows the S&P 500's
+    return over the same days.
+  - Closed trades are grouped by where the idea came from: your own, an asset page, Recommendations, an AI decision
+    or the screener. This shows which source of ideas actually works when sized like real trades.
+  - "Paper trade" appears on stock and crypto pages, on recommendations that lean up, on AI buy decisions (sized at
+    the decision's ceiling) and on screener rows.
+- **Stock screener** (Opportunities → Stock screener).
+  - Filters: NYSE and/or Nasdaq, sector, company size, price range and today's move. Sort by size, move or price.
+  - The results can go to the machine-learning scan, to your watchlist, or to Recommendations as a focus list. The
+    focus-list names are verified and measured like any other candidate.
+  - Shows the screener's as-of time; each stock's page has the live quote.
+- **Today's Game Plan** (new page under Overview).
+  - The market clock and the desk's SPY call.
+  - Today's US economic releases and earnings in the next five trading days for your holdings and watchlist.
+  - How your names are moving, AI calls coming due this week, what was graded since yesterday, unread alerts and
+    the paper account.
+  - An optional AI game plan turns those measured facts into a few priorities. Claude adds no prices or events of its
+    own, and unknown tickers or pages are dropped.
+- **Daily digest.** Once a day after 6 a.m. New York time (while the desk is open), a summary of the day goes to the
+  inbox. Switch it off on the game-plan page.
+- **News sentiment for your holdings** (Portfolio). For up to eight holdings, the latest headlines come from
+  Bigdata.com (stocks) and CoinMarketCap (coins).
+  - Claude judges each headline for someone who owns the asset and drops the ones that aren't about it.
+  - The page scores each holding from −100 to +100; recent and material news counts more.
+  - Links are only the retrieved articles. The day's reading also feeds the digest and the game plan.
+- **Risk-parity rebalancing.** The rebalancing helper adds:
+  - Equal risk contribution: every holding adds the same share of the portfolio's swings.
+  - Minimum volatility, with no position above your cap.
+
+  Both use the measured covariance. A new column shows each holding's share of the risk before and after.
+- **Sector on stock pages.** The header shows the sector and industry next to the exchange, and asset search shows
+  each result's exchange.
+
 ## Version 27 (2026-10-26)
 - **Boosted trees in the ML forecast.** A third model (40 small gradient-boosted decision trees) joins the logistic
   regression and the similar-past-setups model. The three count equally and are tested the same way, on history they

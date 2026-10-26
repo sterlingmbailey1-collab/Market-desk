@@ -1,10 +1,10 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 27; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 28; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
-AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading and a Sports Betting tab.
+AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading, Paper Trading, Today's Game Plan (with a daily inbox digest), a stock screener and a Sports Betting tab.
 
 ## Build, test, publish
 
@@ -75,7 +75,7 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   (`ailessons`); `trackRecord()` attaches the latest lessons, filtered by feature, so `calibrationNote()` carries
   them into every forecasting prompt. Collections added in v10–v19: follows, smcache, smai, ideas, aitakes, briefs,
   proppicks, ailessons, marketdays, brain (the playbook doc), dayplans, daytrades, pickhide, marketcalls, pickchecks, decisions,
-  callwatch (one doc per open-call notice, id `<forecastId>:<against|working>`), weekly (Market Brain weekly reviews,
+  callwatch (one doc per open-call notice, id `<forecastId>:<against|working>`), paper (v28, append-only), gameplans, sentiment, weekly (Market Brain weekly reviews,
   `MD.brain.weeklyReview`, keyed by the week's Monday; lessons reach every prompt through `MD.brain.note`).
   `MD.ai.assetNote(app, asset)` = the desk's past calls on one asset (add it to any asset-specific prompt).
   `MD.ai.blendFor(app, source)` = learned Claude/history weights (inverse Brier, 10+ graded calls); `MD.ai.statusCard` is the
@@ -132,11 +132,15 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 | ask-ai.js | Ask AI from any page: context-aware chat with the kit tools, profile and a double-check |
 | views-watch.js | Watchlist scanner (measured signals across watchlist + holdings) with AI triage |
 | views-earnings.js | Earnings tab: Nasdaq surprises, two-day reactions, consensus revisions, implied move, AI preview |
-| views-rebalance.js | Portfolio stress test and rebalancing helper (cap / equal / inverse-vol) with AI weighing |
+| views-rebalance.js | Portfolio stress test and rebalancing helper (cap / equal / inverse-vol / equal risk contribution / capped minimum volatility via `MD.quant.ercWeights/minVarWeights`) with AI weighing |
 | props.js | Player props data: VegasInsider NBA points and NFL anytime-TD props, ESPN game logs, recency-weighted model, next game + injury, pick grading |
 | views-props.js | Sports Betting → Player props view and AI prop picks |
 | smartmoney.js | Smart Money data: Capitol Trades / Dataroma / FMP parsers, trade returns vs SPY, copy-trade backtest, projection model |
 | views-smartmoney.js | Smart Money tab: leaderboard, member and investor pages, most bought, latest filings, follows |
+| paper.js | Paper Trading page (`MD.paper`: ticket, place, state, button): virtual USD account; ledger is `C.paperLedger/paperValue` (SPY mirror per buy), orders in append-only `paper`, account start in `settings.paper` |
+| views-screener.js | Opportunities → Stock screener (`MD.screener`): `D.stocks.screen({exchange, sector, size})` + in-page price/move filters; hands off to `MD.watchScan.mlScan(app, days, cb, list)`, Recommendations (`app.ctx.picks = {symbols, label}` → `opts.symbols`), watchlist, paper |
+| today.js | Today's Game Plan (`MD.today`: gather, facts, aiPlan → `gameplans`, digestText, autoDigest → inbox kind `digest`, once per NY date after 6 a.m., `settings.digest`) |
+| sentiment.js | News sentiment for holdings (`MD.sentiment`, Portfolio section): headlines per holding, Claude's per-headline reading, `MD.quant.newsScore`; one doc per day in `sentiment` |
 | template.html | CSS (theme tokens, light/dark) and the page skeleton |
 
 ## Rules this project follows (from the owner's build prompt)
