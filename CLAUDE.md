@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 26; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 27; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading and a Sports Betting tab.
@@ -121,8 +121,8 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 | views-*.js | Pages (markets, cards, insights, decide, portfolio analysis, picks, betting, AI) |
 | research.js | Deep Research engine |
 | quant.js | Base rates + conditional odds and the shrunk direction model, OLS factor model and move attribution, VWAP, opening range, pivots, ATR, gap stats, RVOL, position sizing, trade stats, New York session clock + NYSE holidays |
-| ml.js | Machine learning (`MD.ml`): k-means and S&P 500 regimes (`regimes`, shown in the Market Brain via `MD.brain.regimesNow`), features (no look-ahead), L2 logistic regression (Newton), k-nearest-neighbour analogs, walk-forward validation with a purge gap, Brier/AUC/log loss, equal-weight ensemble, block t-test for a clear edge |
-| views-ml.js | ML forecast card on asset pages (`MD.mlView.run/compact/card`), logged as source `ml` |
+| ml.js | Machine learning (`MD.ml`): k-means and S&P 500 regimes (`regimes`, shown in the Market Brain via `MD.brain.regimesNow`), features (no look-ahead), L2 logistic regression (Newton), depth-2 gradient-boosted trees (`gbtFit`), k-nearest-neighbour analogs, cross-stock "beat SPY" model (`pooled`, used by Recommendations), walk-forward validation with a purge gap, Brier/AUC/log loss, equal-weight ensemble, block t-test for a clear edge |
+| views-ml.js | ML forecast card on asset pages (`MD.mlView.run/compact/card`), logged as source `ml`, self-calibrated via `calibrateUp(app, "ml")` |
 | ai-kit.js | Shared AI kit: tools, tool router, review pass, track-record calibration, lessons, confidence blending, UI helpers |
 | market-brain.js | Market Brain: pulse/regime/sensitivities, explainMove (factor attribution), session study, scored playbook, refine, note for prompts, auto-study, Why it's moving card |
 | ai-decide.js | AI decision card on asset pages (profile-fit decision, EV, quarter-Kelly ceiling, logged as ai-decide) |

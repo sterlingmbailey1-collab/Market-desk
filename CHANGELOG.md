@@ -1,5 +1,18 @@
 # Changelog
 
+## Version 27 (2026-10-26)
+- **Boosted trees in the ML forecast.** A third model (40 small gradient-boosted decision trees) joins the logistic
+  regression and the similar-past-setups model. The three count equally and are tested the same way, on history they
+  hadn't seen. The card shows which features the trees split on most.
+- **The ML model calibrates itself.** Once its own logged forecasts have 10 or more grades, its odds are corrected
+  toward how often calls at that level actually came true. The card shows the correction.
+- **Cross-stock model for Recommendations.** One model is trained across all the stock candidates at once on which
+  ones beat the S&P 500 over the window. It's tested walk-forward by date: did its top third beat its bottom third on
+  data it hadn't seen? Claude sees each candidate's odds and rank. The set header shows the model's record, and the
+  set says plainly when it has no edge.
+- **Correlation check.** The set check measures how closely each pair of picks has moved over the last 120 sessions.
+  It flags pairs at 0.7 or above, since holding both is closer to one bet than two.
+
 ## Version 26 (2026-10-26)
 - **Specialist panel.** Three more analysts estimate every Recommendations pick, AI decision and market call
   independently, each with their own tools:

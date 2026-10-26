@@ -308,6 +308,23 @@
     const m = M.logisticFit(Z, y, 1); ok(m.w[1] > 1 && Math.abs(m.w[2]) < 0.4, JSON.stringify(m.w)); ok(m.predict([2, 0]) > 0.9 && m.predict([-2, 0]) < 0.1);
     near(M.auc([0.1, 0.4, 0.35, 0.8], [0, 0, 1, 1]), 0.75, 1e-12); near(M.auc([0.5, 0.5], [0, 1]), 0.5, 1e-12);
   });
+  test("machine learning: boosted trees learn a threshold pattern the logistic model can't", () => {
+    const C = MD.core, M = MD.ml, r = C.rng(17), mk = (n) => Array.from({ length: n }, () => { const a = C.gauss(r), b = C.gauss(r); return { x: [a, b], y: Math.abs(a) > 1 ? 1 : 0 }; });
+    const tr = mk(800), te = mk(400), gb = M.gbtFit(tr.map(d => d.x), tr.map(d => d.y), { rounds: 40, minLeaf: 20 }), lg = M.logisticFit(tr.map(d => d.x), tr.map(d => d.y), 1);
+    const aucG = M.auc(te.map(d => gb.predict(d.x)), te.map(d => d.y)), aucL = M.auc(te.map(d => lg.predict(d.x)), te.map(d => d.y));
+    ok(aucG > 0.85 && aucL < 0.65, "trees " + aucG + " vs logistic " + aucL); ok(gb.uses[0] > gb.uses[1], "splits on the feature that matters");
+  });
+  test("machine learning: the cross-stock model finds a shared pattern across names and ranks them", () => {
+    const C = MD.core, r = C.rng(31), N = 700, mkt = []; let mp = 100;
+    for (let i = 0; i < N; i++) { mp *= Math.exp(0.0003 + 0.008 * C.gauss(r)); mkt.push({ time: (18000 + i) * 86400, close: mp }); }
+    // Every name mean-reverts against the market over 5 days (a pattern shared across stocks).
+    const mk = (seed, revert) => { const rr = C.rng(seed), rets = [], pts = []; let p = 100; for (let i = 0; i < N; i++) { const m5 = rets.slice(-5).reduce((s, x) => s + x, 0), mret = i ? Math.log(mkt[i].close / mkt[i - 1].close) : 0; const e = mret - revert * m5 + 0.012 * C.gauss(rr); rets.push(e - mret); p *= Math.exp(e); pts.push({ time: mkt[i].time, close: p }); } return pts; };
+    const sig = MD.ml.pooled(Array.from({ length: 8 }, (_, k) => ({ key: "S" + k, points: mk(40 + k, 0.3) })), mkt, { horizonBars: 5 });
+    ok(!sig.error && sig.edge && sig.oos.brierSkill > 0.02 && sig.oos.topVsBottomPct > 0.5 && sig.today.length === 8 && sig.today[0].rank === 1, JSON.stringify(sig.error || sig.oos));
+    const noise = MD.ml.pooled(Array.from({ length: 8 }, (_, k) => ({ key: "N" + k, points: mk(60 + k, 0) })), mkt, { horizonBars: 5 });
+    ok(!noise.edge && noise.today.every(t => Math.abs(t.beatPct - noise.baseRatePct) < 1e-6), JSON.stringify(noise.oos));
+    ok(MD.ml.pooled([{ key: "A", points: mk(1, 0) }], mkt, {}).error, "too few names is refused");
+  });
   test("machine learning: features never look ahead", () => {
     const C = MD.core, r = C.rng(5); let p = 100; const pts = Array.from({ length: 400 }, (_, i) => { p *= Math.exp(0.01 * C.gauss(r)); return { time: (19000 + i) * 86400, close: p }; });
     const a = MD.ml.features(pts.slice(0, 300)).rows, changed = pts.map((x, i) => i >= 300 ? { time: x.time, close: x.close * 3 } : x), b = MD.ml.features(changed).rows.slice(0, a.length);

@@ -342,7 +342,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
 
   /* How a probability on the desk is made, with the live state of each step: what has been studied and learned, and,
      per feature, how much its odds lean on Claude versus measured history and whether calibration has started. */
-  const BLENDED = new Set(["ai-picks", "ai-decide", "ai-market"]), CALIBRATED = new Set(["ai-picks", "ai-decide", "ai-market", "ai-day"]);
+  const BLENDED = new Set(["ai-picks", "ai-decide", "ai-market"]), CALIBRATED = new Set(["ai-picks", "ai-decide", "ai-market", "ai-day", "ml"]);
   function howItDecides(app) {
     const days = MD.brain ? MD.brain.latestPerDay(app).length : 0, pb = MD.brain ? MD.brain.playbook(app) : { patterns: [] }, active = pb.patterns.filter(p => p.status === "active").length;
     const L = latestLessons(app), W = MD.brain && MD.brain.reviews ? MD.brain.reviews(app)[0] : null;
@@ -354,7 +354,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     return h("details", { class: "howai" }, h("summary", { class: "label", style: "cursor:pointer" }, "How the desk's AI decides"),
       h("ol", { class: "small", style: "margin:8px 0 0;padding-left:1.3em;display:grid;gap:6px" },
         step("Measure", "The page computes the numbers first: prices, the asset's own base rate (how often it was higher over the same horizon in situations like today's), options-implied moves, volatility, Zacks, insiders, smart money and what moved it (market, sector, rates, dollar, oil)."),
-        step("Machine learning", "A logistic-regression model and a nearest-neighbour model of similar past days are trained in the browser on the asset's history and tested walk-forward on years they hadn't seen. Their odds count only as far as they beat the base rate out of sample; the AI is told both the odds and that record."),
+        step("Machine learning", "A logistic-regression model, gradient-boosted decision trees and a nearest-neighbour model of similar past days are trained in the browser on the asset's history and tested walk-forward on years they hadn't seen. Their odds count only as far as they beat the base rate out of sample; the AI is told both the odds and that record."),
         step("Research", "Claude investigates with tools (news, web pages, earnings, options, filings) and reasons over what they return. Citations are checked against the pages actually retrieved; unverified ones are flagged."),
         step("Context", "Every prompt carries your investor profile, the Market Brain (" + days + " session" + (days === 1 ? "" : "s") + " studied, " + active + " active pattern" + (active === 1 ? "" : "s") + ")" + (W ? ", the weekly review of " + W.week : "") + ", the desk's past calls on the asset and the latest lessons" + (L ? " (" + U.fmtDate(L.createdAt) + ")" : " (none yet)") + "."),
         step("Review", "A second, sceptical reader checks each call against the measured data and sources, keeps, revises or drops it, and gives its own probability, which is averaged in."),

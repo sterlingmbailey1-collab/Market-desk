@@ -20,6 +20,10 @@
     const r = MD.ml.forecast(hs.points, { horizonBars: bars, market: ms ? ms.points : null });
     if (r.error) throw new Error(r.error);
     Object.assign(r, { at: Date.now(), days, symbol: asset.symbol, source: hs.source, marketSymbol: ms ? mktSym : null });
+    // Self-calibration: once the model's own logged forecasts have 10+ grades, its odds are corrected toward how often
+    // calls at that level came true (as for every other AI source on the desk).
+    const cal = MD.ai && MD.ai.calibrateUp ? MD.ai.calibrateUp(app, "ml", r.upPct) : null;
+    if (cal && cal.applied) { r.calibration = { fromPct: r.upPct, scored: cal.scored }; r.upPct = cal.upPct; }
     cache.set(key, r);
     return r;
   }
@@ -27,10 +31,10 @@
   function compact(r) {
     if (!r) return null;
     const o = r.oos;
-    return { horizonDays: r.days, upPct: +r.upPct.toFixed(1), edgeOutOfSample: r.edge, trustPct: Math.round(r.trust * 100), logisticPct: +r.models.logisticPct.toFixed(1), similarSetupsPct: +r.models.analogsPct.toFixed(1), baseRatePct: +r.models.baseRatePct.toFixed(1),
+    return { horizonDays: r.days, upPct: +r.upPct.toFixed(1), edgeOutOfSample: r.edge, trustPct: Math.round(r.trust * 100), logisticPct: +r.models.logisticPct.toFixed(1), boostedTreesPct: r.models.treesPct != null ? +r.models.treesPct.toFixed(1) : null, similarSetupsPct: +r.models.analogsPct.toFixed(1), baseRatePct: +r.models.baseRatePct.toFixed(1),
       outOfSample: { predictions: o.predictions, independent: o.independent, accuracyPct: +(o.ensemble.accuracy * 100).toFixed(1), alwaysMajorityAccuracyPct: +(Math.max(r.models.baseRatePct, 100 - r.models.baseRatePct)).toFixed(1), brierSkillPct: +(o.skillEnsemble * 100).toFixed(1), tStatVsBaseRate: +(o.tStat || 0).toFixed(2), auc: o.ensemble.auc != null ? +o.ensemble.auc.toFixed(3) : null },
       topDrivers: r.drivers.slice(0, 4).map(d => d.name + (d.push > 0 ? " (pushes up)" : " (pushes down)")), similarPastSetups: { n: r.analogs.length, roseAfter: r.analogs.filter(a => a.up).length },
-      trainedOn: r.from + " to " + r.asOf + " (" + r.bars + " daily bars)", note: "Logistic regression + nearest-neighbour analogs (equal weights), walk-forward validated; the odds stay at the base rate unless the models beat it clearly out of sample (t >= 1.64 over independent blocks)." };
+      trainedOn: r.from + " to " + r.asOf + " (" + r.bars + " daily bars)", note: "Logistic regression + gradient-boosted trees + nearest-neighbour analogs (equal weights), walk-forward validated; the odds stay at the base rate unless the models beat it clearly out of sample (t >= 1.64 over independent blocks)." };
   }
   async function log(app, asset, r) {
     if (app.demo || Math.abs(r.upPct - 50) < 1) return null;
@@ -52,9 +56,10 @@
         : "No clear edge on data it hadn't seen (Brier skill " + sgn(o.skillEnsemble * 100) + " against the base rate, t = " + (isFinite(o.tStat) ? o.tStat.toFixed(1) : "—") + " across " + o.blocks + " independent stretches; 1.6 or more counts), so the odds stay at the base rate: how often " + r.symbol + " rose over " + label + " in its history. That's an honest answer, not a failure: most price patterns don't repeat reliably."),
       h("div", { class: "kpis k4" },
         kpi("Logistic model", pct(r.models.logisticPct), "Brier skill " + sgn(o.skillLogistic * 100) + " · L2 " + r.l2),
+        kpi("Boosted trees", pct(r.models.treesPct), "40 small trees · skill " + sgn((o.skillTrees || 0) * 100)),
         kpi("Similar past setups", pct(r.models.analogsPct), "40 nearest days · skill " + sgn(o.skillAnalogs * 100)),
-        kpi("Base rate", pct(r.models.baseRatePct), "how often it rose over " + label),
-        kpi("Out-of-sample tests", String(o.predictions), "about " + o.independent + " independent " + (o.independent === 1 ? "window" : "windows"))),
+        kpi("Base rate", pct(r.models.baseRatePct), "how often it rose over " + label)),
+      h("p", { class: "small muted" }, "Tested on " + o.predictions + " out-of-sample predictions (about " + o.independent + " independent " + (o.independent === 1 ? "window" : "windows") + ")" + (r.treeSplits && r.treeSplits.length ? ". The trees split most on: " + r.treeSplits.map(x => x.name.toLowerCase()).join(", ") : "") + (r.calibration ? ". Calibrated from the model's own " + r.calibration.scored + " graded forecasts (" + pct(r.calibration.fromPct) + " → " + pct(r.upPct) + ")" : "") + "."),
       o.confident.n ? h("p", { class: "small" }, "When the models leaned 60% or more one way out of sample, they were right " + o.confident.right + " of " + o.confident.n + " times (" + pct(o.confident.right / o.confident.n * 100) + ").") : null,
       h("div", { class: "grid g2", style: "align-items:start" },
         h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, "What drives today's reading"),
@@ -63,7 +68,7 @@
         h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, "Most similar past days and what followed"),
           U.table([{ t: "Date", v: (a) => a.date }, { t: "Next " + label, v: (a) => h("span", { class: a.up ? "up" : "down" }, sgn(a.forwardPct)), n: true }], r.analogs),
           h("span", { class: "tiny muted" }, r.analogs.filter(a => a.up).length + " of " + r.analogs.length + " rose afterwards."))),
-      h("p", { class: "tiny muted" }, "Trained on " + r.bars + " daily bars (" + r.from + " to " + r.asOf + ", " + (r.source || "price history") + ")" + (r.marketSymbol ? " with " + r.marketSymbol + " as market context" : "") + ". Logistic regression and nearest-neighbour analogs over " + r.features.length + " measured features, refitted walk-forward so every score above comes from predictions on data the model hadn't seen yet. Past patterns can stop working; this is one input, not advice."));
+      h("p", { class: "tiny muted" }, "Trained on " + r.bars + " daily bars (" + r.from + " to " + r.asOf + ", " + (r.source || "price history") + ")" + (r.marketSymbol ? " with " + r.marketSymbol + " as market context" : "") + ". Logistic regression, gradient-boosted trees and nearest-neighbour analogs (equal weights) over " + r.features.length + " measured features, refitted walk-forward so every score above comes from predictions on data the model hadn't seen yet. Past patterns can stop working; this is one input, not advice."));
   }
   function card(app, asset) {
     const out = h("div", { class: "stack" }), phase = h("span", { class: "small muted" });
@@ -77,7 +82,7 @@
       btn.disabled = false;
     };
     btn.onclick = go; paintSeg();
-    out.append(h("p", { class: "small muted" }, "Trains two models in your browser on this asset's measured daily history, then tests them on stretches of history they hadn't seen before showing a number."));
+    out.append(h("p", { class: "small muted" }, "Trains three models in your browser on this asset's measured daily history, then tests them on stretches of history they hadn't seen before showing a number."));
     const sec = U.section("Machine-learning forecast", h("div", { class: "stack" }, h("div", { class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center" }, seg, btn, phase), out));
     sec.id = "sec-ml";
     return sec;
