@@ -324,6 +324,17 @@
     ok(sig.oos.predictions > 500 && sig.analogs.length === 8 && sig.upPct >= 20 && sig.upPct <= 80);
     ok(M.forecast(mk(3, 0).slice(0, 300), { horizonBars: 21 }).error, "too little history is refused");
   });
+  test("machine learning: k-means separates clear groups; regimes label a calm uptrend and a sell-off", () => {
+    const C = MD.core, r = C.rng(9), Z = [];
+    for (let i = 0; i < 200; i++) Z.push(i < 100 ? [C.gauss(r) * 0.2, C.gauss(r) * 0.2] : [5 + C.gauss(r) * 0.2, 5 + C.gauss(r) * 0.2]);
+    const km = MD.ml.kmeans(Z, 2, 3); ok(km.labels.slice(0, 100).every(x => x === km.labels[0]) && km.labels.slice(100).every(x => x === km.labels[100]) && km.labels[0] !== km.labels[100]);
+    // 400 calm rising days, then 120 volatile falling days, then calm again.
+    let p = 100; const pts = [];
+    for (let i = 0; i < 700; i++) { const calm = i < 400 || i >= 520; p *= Math.exp(calm ? 0.0008 + 0.004 * C.gauss(r) : -0.004 + 0.03 * C.gauss(r)); pts.push({ time: (18000 + i) * 86400, close: p }); }
+    const R = MD.ml.regimes(pts, { k: 3 }); ok(!R.error && R.groups.length === 3, R.error);
+    const stressed = R.groups.find(g => /sell-off|Volatile/.test(g.name)); ok(stressed && stressed.volPct > 25, JSON.stringify(R.groups.map(g => [g.name, Math.round(g.volPct)])));
+    ok(R.groups.reduce((s, g) => s + g.days, 0) === R.days && R.todayGroup && R.since <= R.asOf);
+  });
   test("technical alerts: average crosses, RSI thresholds, 52-week high and low, each firing once", () => {
     const Q = MD.quant, now = 400 * 86400, pts = Array.from({ length: 300 }, (_, i) => ({ time: (i + 90) * 86400, close: 100 + Math.sin(i / 9) * 5 }));
     const ts = Q.techState(pts, 120, now); ok(ts.ma50 > 0 && ts.ma200 > 0 && ts.rsi14 > 50 && ts.high52 <= 105.0001 && ts.low52 >= 94.9999, JSON.stringify(ts));

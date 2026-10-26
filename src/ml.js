@@ -147,5 +147,45 @@
       edge: clear, l2, drivers: contrib, analogs, features: F.names.map(([, n]) => n), usedMarket: F.names.length > 11 };
   }
 
-  MD.ml = { FEATURES, features, label, scaler, logisticFit, knn, auc, scores, forecast };
+  /* k-means with k-means++ seeding (deterministic for a seed) on rows of numbers. Returns centroids and labels. */
+  function kmeans(Z, k, seed = 7, iters = 60) {
+    const r = C.rng(seed), n = Z.length, d2 = (a, b) => { let s = 0; for (let j = 0; j < a.length; j++) s += (a[j] - b[j]) ** 2; return s; };
+    const cents = [Z[Math.floor(r() * n)].slice()];
+    while (cents.length < k) { const dist = Z.map(z => Math.min(...cents.map(c => d2(z, c)))), tot = dist.reduce((s, x) => s + x, 0); let u = r() * tot, i = 0; while (i < n - 1 && (u -= dist[i]) > 0) i++; cents.push(Z[i].slice()); }
+    let labels = new Array(n).fill(0);
+    for (let it = 0; it < iters; it++) {
+      const next = Z.map(z => { let b = 0, bd = Infinity; cents.forEach((c, j) => { const dd = d2(z, c); if (dd < bd) { bd = dd; b = j; } }); return b; });
+      const moved = next.some((x, i) => x !== labels[i]); labels = next;
+      for (let j = 0; j < k; j++) { const mem = Z.filter((_, i) => labels[i] === j); if (mem.length) cents[j] = mem[0].map((_, q) => mem.reduce((s, z) => s + z[q], 0) / mem.length); }
+      if (!moved && it) break;
+    }
+    return { centroids: cents, labels, nearest: (z) => { let b = 0, bd = Infinity; cents.forEach((c, j) => { const dd = d2(z, c); if (dd < bd) { bd = dd; b = j; } }); return b; } };
+  }
+  /* Market regimes: S&P 500 days clustered (k-means) by 20-day trend, 20-day volatility, distance from the 200-day
+     average and drawdown from the 1-year high; for each regime, what SPY did over the next `h` bars. Measured history. */
+  function regimes(points, opts = {}) {
+    const v = points.map(closeOf), h = opts.horizonBars || 21, k = opts.k || 4, rows = [];
+    for (let i = 200; i < v.length; i++) {
+      let s = 0, s2 = 0; for (let t = i - 19; t <= i; t++) { const x = Math.log(v[t] / v[t - 1]); s += x; s2 += x * x; }
+      let hi = 0; for (let t = Math.max(0, i - 251); t <= i; t++) hi = Math.max(hi, v[t]);
+      let m200 = 0; for (let t = i - 199; t <= i; t++) m200 += v[t] / 200;
+      rows.push({ i, time: points[i].time, x: [Math.log(v[i] / v[i - 20]), Math.sqrt(Math.max(0, s2 / 20 - (s / 20) ** 2)) * Math.sqrt(252), v[i] / m200 - 1, v[i] / hi - 1] });
+    }
+    if (rows.length < 120) return { error: "Not enough history to find regimes (" + v.length + " bars)." };
+    const S = scaler(rows.map(r => r.x)), Z = rows.map(r => S.z(r.x)), km = kmeans(Z, k, opts.seed || 7);
+    const groups = Array.from({ length: k }, (_, j) => {
+      const mem = rows.filter((_, i) => km.labels[i] === j), fwd = mem.filter(r => r.i + h < v.length).map(r => (v[r.i + h] / v[r.i] - 1) * 100);
+      const mean = (a) => a.length ? a.reduce((s, x) => s + x, 0) / a.length : null, c = (q) => mean(mem.map(r => r.x[q]));
+      return { id: j, days: mem.length, sharePct: mem.length / rows.length * 100, trend20Pct: c(0) * 100, volPct: c(1) * 100, from200Pct: c(2) * 100, fromHighPct: c(3) * 100,
+        next: { n: fwd.length, independent: Math.floor(fwd.length / h), avgPct: mean(fwd), upPct: fwd.length ? fwd.filter(x => x > 0).length / fwd.length * 100 : null } };
+    });
+    const byVol = groups.slice().sort((a, b) => b.volPct - a.volPct);
+    for (const g of groups) g.name = g === byVol[0] ? (g.trend20Pct < 0 ? "Stressed sell-off" : "Volatile") : g.fromHighPct <= -12 ? "Correction (deep drawdown)" : g.from200Pct > 0 && g.trend20Pct > 0 ? (g.volPct < byVol[byVol.length - 1].volPct * 1.15 ? "Calm uptrend" : "Uptrend") : g.trend20Pct < 0 ? "Pullback" : "Sideways";
+    const seen = {}; for (const g of groups) { seen[g.name] = (seen[g.name] || 0) + 1; if (seen[g.name] > 1) g.name += " " + seen[g.name]; }
+    const today = km.labels[km.labels.length - 1], runStart = (() => { let t = km.labels.length - 1; while (t > 0 && km.labels[t - 1] === today) t--; return rows[t].time; })();
+    return { groups, today, todayGroup: groups[today], since: new Date(runStart * 1000).toISOString().slice(0, 10), asOf: new Date(rows[rows.length - 1].time * 1000).toISOString().slice(0, 10), from: new Date(rows[0].time * 1000).toISOString().slice(0, 10), horizonBars: h, days: rows.length,
+      timeline: rows.map((r, i) => ({ time: r.time, g: km.labels[i] })) };
+  }
+
+  MD.ml = { kmeans, regimes, FEATURES, features, label, scaler, logisticFit, knn, auc, scores, forecast };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -1,5 +1,17 @@
 # Changelog
 
+## Version 23 (2026-10-26)
+- **Market regimes (unsupervised machine learning)** in the Market Brain. k-means clusters three years of S&P 500
+  days by trend, volatility, distance from the 200-day average and drawdown. You see:
+  - which regime today belongs to and since when
+  - a year-long strip of regimes
+  - for each regime, what the S&P 500 did over the following month (average and how often it rose, with the number
+    of independent months).
+  The regime goes to every AI on the desk and into the daily market call.
+- **Machine-learning scan** (Opportunities → Watchlist scanner). The ML model is trained on every name in your
+  watchlist and holdings, and the names are ranked with clear out-of-sample edges first. Each forecast is logged and
+  graded, and the AI triage sees the results.
+
 ## Version 22 (2026-10-26)
 - **Fix: overlapping text in the Recommendations prediction log.** The "▲ 61% up" pill no longer spills into the
   "Price then" column; the column widens and the table scrolls instead. The same fix covers every table with pills or

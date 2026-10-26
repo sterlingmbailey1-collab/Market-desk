@@ -281,6 +281,36 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
 
   /* ---------- the daily market call: will the S&P 500 close up? ---------- */
   const SPY = etf("SPY");
+  /* Market regimes found by k-means on SPY's daily history (MD.ml.regimes), cached for the session and given to the AI. */
+  let regimeCache = null;
+  async function regimesNow() {
+    if (regimeCache && Date.now() - regimeCache.at < 3 * 3600e3) return regimeCache;
+    const hs = await D.dailyLong(SPY), R = MD.ml.regimes(hs.points, { k: 4, horizonBars: 21 });
+    if (R.error) throw new Error(R.error);
+    regimeCache = Object.assign(R, { at: Date.now(), source: hs.source });
+    return regimeCache;
+  }
+  function regimeNote() {
+    const R = regimeCache; if (!R) return "";
+    const g = R.todayGroup, n = g.next;
+    return " Machine-learning regime (k-means on SPY since " + R.from + "): " + g.name + " since " + R.since + " (20-day trend " + g.trend20Pct.toFixed(1) + "%, volatility " + g.volPct.toFixed(0) + "%); in this regime SPY rose over the next month " + (n.upPct != null ? n.upPct.toFixed(0) + "% of the time, average " + (n.avgPct >= 0 ? "+" : "") + n.avgPct.toFixed(1) + "% (about " + n.independent + " independent months)" : "with too few months to measure") + ".";
+  }
+  const REGIME_COLORS = ["var(--accent)", "var(--up)", "var(--down)", "var(--warn)", "var(--muted)"];
+  function regimeView(R) {
+    const g0 = R.todayGroup, last = R.timeline.slice(-252), w = last.length;
+    const svg = '<svg viewBox="0 0 ' + w + ' 14" preserveAspectRatio="none" width="100%" height="14" role="img" aria-label="Regime of each day over the past year">' + last.map((d, i) => '<rect x="' + i + '" y="0" width="1.05" height="14" fill="' + REGIME_COLORS[d.g % REGIME_COLORS.length] + '"/>').join("") + "</svg>";
+    const sw = (j) => h("span", { style: "display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;background:" + REGIME_COLORS[j % REGIME_COLORS.length] });
+    const f1 = (x) => x == null ? "—" : (x > 0 ? "+" : "") + x.toFixed(1) + "%";
+    return h("div", { class: "stack" },
+      h("p", {}, h("strong", {}, "Today: " + g0.name), " · since " + R.since + " · " + "S&P 500 rose over the next month " + (g0.next.upPct != null ? g0.next.upPct.toFixed(0) + "% of the time in this regime (average " + f1(g0.next.avgPct) + ")" : "— too few months to measure") + "."),
+      h("div", { html: svg, style: "border-radius:6px;overflow:hidden" }), h("div", { class: "row between tiny muted" }, h("span", {}, "a year ago"), h("span", {}, "today")),
+      U.table([{ t: "Regime", v: (g) => h("span", { style: g.id === R.today ? "font-weight:700" : "" }, sw(g.id), g.name + (g.id === R.today ? " (today)" : "")) },
+        { t: "Share of days", v: (g) => g.sharePct.toFixed(0) + "%", n: true }, { t: "20-day trend", v: (g) => f1(g.trend20Pct), n: true }, { t: "Volatility", v: (g) => g.volPct.toFixed(0) + "%", n: true },
+        { t: "vs 200-day", v: (g) => f1(g.from200Pct), n: true }, { t: "From 1-yr high", v: (g) => f1(g.fromHighPct), n: true },
+        { t: "Next month: avg", v: (g) => h("span", { class: g.next.avgPct > 0 ? "up" : g.next.avgPct < 0 ? "down" : "" }, f1(g.next.avgPct)), n: true },
+        { t: "Next month: rose", v: (g) => g.next.upPct != null ? g.next.upPct.toFixed(0) + "% (" + g.next.independent + ")" : "—", n: true }], R.groups),
+      h("p", { class: "tiny muted" }, "Unsupervised machine learning: k-means groups " + R.days + " S&P 500 days (" + R.from + " to " + R.asOf + ", " + (R.source || "Nasdaq") + ") by trend, volatility, distance from the 200-day average and drawdown. The regimes come from the data, not from fixed rules; names are given afterwards from each group's averages. \"Next month\" is what SPY did over the following 21 trading days, with the number of independent months in brackets. Measured history, not a forecast."));
+  }
   function callsFor(app) { return app.store.cached("marketcalls").slice().sort((a, b) => b.at - a.at); }
   function latestCall(app) { const t = Q.targetSession(); return callsFor(app).find(c => c.target === t) || null; }
   /* Claude's call on the next close, anchored to SPY's own one-day base rate, checked by the review pass. The first
@@ -308,7 +338,8 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
     // Machine learning on SPY's daily history for the next session, judged out of sample.
     let ml = null;
     if (MD.mlView) { e = step("Training the machine-learning model on SPY's daily history"); try { ml = MD.mlView.compact(await MD.mlView.run(app, SPY, 1)); S.done(e, "ok", " → " + ml.upPct + "% up, " + (ml.edgeOutOfSample ? "clear edge out of sample" : "no clear edge out of sample")); } catch (err) { S.done(e, "fail", " → " + U.errorText(err)); } }
-    const measured = { mlModel: ml, target, phase: sess.phase, live, referencePrice: ref, reference: refLabel, spyBaseRate: br ? { modelUpPct: br.model.upPct, overallUpPct: Math.round(br.overall.upPct), conditions: br.conditions.map(c => ({ condition: c.label, upPct: Math.round(c.upPct), days: c.n })), typicalUpDayPct: br.model.avgUpPct, typicalDownDayPct: br.model.avgDownPct } : null,
+    const reg = await regimesNow().catch(() => null);
+    const measured = { mlModel: ml, regime: reg ? { name: reg.todayGroup.name, since: reg.since, nextMonthUpPct: reg.todayGroup.next.upPct != null ? Math.round(reg.todayGroup.next.upPct) : null, nextMonthAvgPct: reg.todayGroup.next.avgPct != null ? +reg.todayGroup.next.avgPct.toFixed(2) : null, independentMonths: reg.todayGroup.next.independent } : null, target, phase: sess.phase, live, referencePrice: ref, reference: refLabel, spyBaseRate: br ? { modelUpPct: br.model.upPct, overallUpPct: Math.round(br.overall.upPct), conditions: br.conditions.map(c => ({ condition: c.label, upPct: Math.round(c.upPct), days: c.n })), typicalUpDayPct: br.model.avgUpPct, typicalDownDayPct: br.model.avgDownPct } : null,
       preMarket: it && it.pre && !live ? { high: it.pre.high, low: it.pre.low, last: it.pre.last, vsPreviousClosePct: it.previousClose ? Math.round((it.pre.last / it.previousClose - 1) * 1e4) / 100 : null } : null,
       now: P ? P.rows.map(r => ({ symbol: r.symbol, todayPct: r1(r.changePct), fiveDayPct: r1(r.ret5d) })) : null, regime: P && P.regime, economicReleases: events, largeCapEarnings: reports, backtestedPatterns: rules };
     e = step("Claude is making the call (usually under a minute)");
@@ -367,7 +398,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
   }
   function note(app) {
     if (!app || !app.store) return "";
-    const days = latestPerDay(app); if (!days.length) { const wn = weeklyNote(app); return wn ? ("Market Brain:" + wn).slice(0, 900) : ""; }
+    const days = latestPerDay(app); if (!days.length) { const wn = weeklyNote(app) + regimeNote(); return wn ? ("Market Brain:" + wn).slice(0, 1300) : ""; }
     const pb = playbook(app), last = days[0], rg = (pulseCache && pulseCache.regime) || (last.measured && last.measured.regime) || null;
     const ranked = pb.patterns.filter(p => p.status === "active").map(p => Object.assign({ st: stats(p) }, p));
     const proven = ranked.filter(p => p.st.tested >= 2).sort((a, b) => b.st.reliability * Math.log(1 + b.st.tested) - a.st.reliability * Math.log(1 + a.st.tested)).slice(0, 4);
@@ -384,7 +415,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
       (backed.length ? " Backtested over a year of daily moves: " + backed.map(p => "\"" + p.pattern + "\" held " + p.backtest.held + " of " + p.backtest.occurrences + " times (" + p.backtest.heldPct + "% vs " + p.backtest.baselinePct + "% on all days)").join("; ") + "." : "") +
       (fresh.length ? " Untested hypotheses: " + fresh.map(p => "\"" + p.pattern + "\"").join("; ") + "." : "") +
       (() => { const c = latestCall(app); return c ? " The desk's market call for " + c.target + ": SPY " + (c.upPct >= 50 ? "up" : "down") + " " + Math.max(c.upPct, 100 - c.upPct) + "% (" + c.summary.slice(0, 160) + ")." : ""; })() +
-      weeklyNote(app).slice(0, 600) +
+      weeklyNote(app).slice(0, 600) + regimeNote() +
       " Use this as context and check it against current data; patterns can break.").slice(0, 2600);
   }
   // What the brain knows about one symbol, sector ETF or theme (for the market_memory tool and asset pages).
@@ -572,6 +603,9 @@ Reply with ONLY JSON:
         h("p", { class: "tiny muted" }, "Today's moves from Nasdaq quotes (bitcoin from the crypto feed, 24-hour change); 5-day and 1-month figures and the regime from 1-year daily histories. As of " + new Date(P.at).toLocaleTimeString() + "."));
     }, { loading: "Measuring 22 instruments and a year of their history…" });
     const openId = app.ls.get("brainOpen", null), cur = days.find(d => d.id === openId) || days[0] || null;
+    const regBox = h("div", { class: "stack" });
+    root.append(U.section("Market regimes (machine learning)", regBox));
+    U.async(regBox, () => regimesNow(), (R) => regBox.replaceChildren(regimeView(R)), { loading: "Clustering three years of S&P 500 days…" });
     root.append(U.section("Latest study", recapView(app, cur)));
     const pb = playbook(app), pbPhase = h("span", { class: "small muted" });
     const refine = h("button", { class: "btn ghost sm", type: "button", disabled: days.length < 2 || !app.caps.sample, onclick: async () => {
@@ -707,5 +741,5 @@ Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": ".
       h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")));
   }
 
-  MD.brain = { weeklyReview, reviews, weekKey, reviewView, fitFactors, exposures, scenarioMove, exposureSection, SCENARIOS, marketCall, latestCall, callsFor, testIdea, backtest, RULE_HELP, labView, whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
+  MD.brain = { regimesNow, regimeView, weeklyReview, reviews, weekKey, reviewView, fitFactors, exposures, scenarioMove, exposureSection, SCENARIOS, marketCall, latestCall, callsFor, testIdea, backtest, RULE_HELP, labView, whyCard, FACTORS, NAME, sectorEtf, assetOf, pulse, regimeOf, sensitivities, explainMove, playbook, stats, similar, recaps, latestPerDay, lastClosedSession, studySession, refinePlaybook, note, memory, autoStudy, dashboardCard, recapView };
 })(typeof window !== "undefined" ? window : globalThis);
