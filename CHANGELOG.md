@@ -1,5 +1,13 @@
 # Changelog
 
+## Version 40 (2026-10-26)
+- **Accuracy of what the desk says about its data.**
+  - Settings → Data sources and the AI tool descriptions now say that Nasdaq's daily history covers about 3 years
+    (from late October 2023), not 10 or 5.
+  - The Nasdaq entry lists everything the desk now reads from it: the screener, sector, industry, analysts' targets,
+    insider trades, short interest, option chains and calendars.
+  - It also notes that dividend history covers Nasdaq-listed symbols only.
+
 ## Version 39 (2026-10-26)
 - **Paper account value over time.**
   - A chart of the paper account at each close since its first order, against the same trades in the S&P 500.
