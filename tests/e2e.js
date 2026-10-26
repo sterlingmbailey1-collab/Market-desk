@@ -546,7 +546,8 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const macroTxt = await page.locator("#sec-analysis").innerText();
   check("macro sensitivity: portfolio betas, scenario estimates in money, biggest contributors", /Macro sensitivity/i.test(macroTxt) && /S&P 500 β/i.test(macroTxt) && /Stocks fall 10%/.test(macroTxt) && /Long yields jump/.test(macroTxt) && /Asset-specific risk left/.test(macroTxt), macroTxt.slice(macroTxt.search(/Macro sensitivity/i), macroTxt.search(/Macro sensitivity/i) + 700));
   await page.locator("#sec-analysis summary:has-text('Your own scenario')").click(); await page.locator("#sec-analysis input[aria-label='Shock to SPY']").fill("-20"); await page.waitForTimeout(300);
-  check("your own scenario: a shock to the market gives an estimated loss", /Estimated move: -\d/.test(await page.locator("#sec-analysis").innerText()));
+  const scnTxt = await page.locator("#sec-analysis").innerText();
+  check("your own scenario: a shock to the market gives an estimated loss", /Estimated move: -\d/.test(scnTxt), (scnTxt.match(/Your own scenario[\s\S]{0,600}/) || [scnTxt.slice(-600)])[0]);
   await page.screenshot({ path: path.join(shots, "e2e-analysis.png"), fullPage: true });
   check("demo mode shows banner and demo ledger", /Demo mode/.test(await page.locator("#content").innerText()) && await page.evaluate(() => MD.app.store.cached("tx").every(t => t.demo)));
   await page.screenshot({ path: path.join(shots, "e2e-demo.png"), fullPage: false });
@@ -555,13 +556,26 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
 
   // ---- Mobile width and dark theme
   await page.setViewportSize({ width: 400, height: 860 });
-  for (const r of ["dashboard", "portfolio", "fx", "metals", "cards", "card-detail", "betting", "picks", "stocks", "stock-detail", "research", "settings"]) {
+  for (const r of ["dashboard", "portfolio", "fx", "metals", "cards", "card-detail", "betting", "picks", "stocks", "stock-detail", "research", "settings", "brain", "daytrade"]) {
     if (r === "stock-detail") await page.evaluate(() => MD.app.openAsset({ id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" })); else if (r === "card-detail") await page.evaluate(() => MD.app.openAsset({ id: "pkm:sv03.5-199", cls: "pokemon", tcgdexId: "sv03.5-199", symbol: "sv03.5-199", name: "Charizard ex" })); else await page.evaluate((r) => MD.app.go(r, null, { fromNav: true }), r);
     await page.waitForTimeout(r === "stock-detail" ? 3000 : 1300);
     if (r === "stock-detail") await page.screenshot({ path: path.join(shots, "e2e-mobile-stock.png"), fullPage: true });
     const sw = await page.evaluate(() => document.documentElement.scrollWidth);
     check("no horizontal scroll at 400px: " + r, sw <= 401, "scrollWidth " + sw);
   }
+  // The newer panels opened at phone width: open calls on the dashboard, If you buy on an asset page, the AI pipeline.
+  await page.evaluate(() => MD.app.go("dashboard", null, { fromNav: true })); await page.waitForTimeout(1500);
+  if (await page.locator("button:has-text('Where do the open calls stand?')").count()) { await page.click("button:has-text('Where do the open calls stand?')"); await page.waitForTimeout(3000); }
+  const swDash = await page.evaluate(() => document.documentElement.scrollWidth);
+  await page.evaluate(() => MD.app.openAsset({ id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" })); await page.waitForTimeout(3000);
+  await page.click("#sec-buy button:has-text('Preview')"); await page.waitForTimeout(3500);
+  const swBuy = await page.evaluate(() => document.documentElement.scrollWidth);
+  await page.locator("#sec-buy").screenshot({ path: path.join(shots, "e2e-mobile-buy.png") });
+  await page.evaluate(() => MD.app.go("research", {})); await page.waitForTimeout(2500);
+  if (await page.locator("details.howai summary").count()) await page.locator("details.howai summary").first().click();
+  await page.waitForTimeout(300);
+  const swHow = await page.evaluate(() => document.documentElement.scrollWidth);
+  check("no horizontal scroll at 400px with the open-calls table, If you buy and the AI pipeline open", swDash <= 401 && swBuy <= 401 && swHow <= 401, JSON.stringify({ swDash, swBuy, swHow }));
   await page.screenshot({ path: path.join(shots, "e2e-mobile.png") });
   await page.emulateMedia({ colorScheme: "dark" });
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -761,7 +775,10 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("investor page: top-holdings backtest and projection range", /Today's top holdings over the past year/i.test(wb) && /5–95% range/i.test(wb) && !/needs volatility/i.test(wb), wb.slice(0, 600));
   await page.screenshot({ path: path.join(shots, "e2e-smartmoney-investor.png"), fullPage: false });
   await page.evaluate(() => { MD.app.ls.set("sm.tab", "consensus"); MD.app.go("smartmoney", null, { fromNav: true }); }); await page.waitForTimeout(1200);
-  check("most bought: tickers with Congress buyers and investors", /BE/.test(await page.locator("#content .tbl").first().innerText()) && /Warren Buffett/.test(await page.locator("#content").innerText()));
+  const mbTxt = await page.locator("#content").innerText();
+  // The captured Capitol Trades page has fixed dates: its newest buys (BE, 28 Jul 2026) leave the 90-day window on 26 Oct 2026.
+  const beInWindow = (Date.now() - Date.parse("2026-07-28")) / 864e5 <= 90, mbTbl = await page.locator("#content .tbl").first().innerText().catch(() => "");
+  check("most bought: tickers with Congress buyers (90-day window) and investors", (beInWindow ? /\bBE\b/.test(mbTbl) : !/\bBE\b/.test(mbTbl) && /Congress buyers \(90 days\)/i.test(mbTbl)) && /Warren Buffett/.test(mbTxt), mbTxt.slice(0, 900));
   await page.evaluate(() => { window.__mock.failFMP = true; MD.app.ls.set("sm.tab", "latest"); MD.app.go("smartmoney", null, { fromNav: true }); }); await page.waitForTimeout(1200);
   check("FMP missing: clear message", /FMP isn't connected/.test(await page.locator("#content .banner.err").innerText().catch(() => "")));
   await page.evaluate(() => { window.__mock.failFMP = false; MD.data.resetConnectors(); MD.app.go("smartmoney", null, { fromNav: true }); }); await page.waitForTimeout(1500);

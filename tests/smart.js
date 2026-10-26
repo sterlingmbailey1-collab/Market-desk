@@ -88,6 +88,8 @@ ok(near(M.project({ excessPct: 10, years: 1, n: 0, riskFreePct: 4 }).driftPct, 9
 // consensus
 const cons = M.consensus([{ name: "A", trades: [{ ticker: "AAA", issuer: "AAA Inc", traded: new Date().toISOString().slice(0, 10), type: "buy", size: M.sizeRange("1K–15K") }] }], [{ name: "B", holdings: [{ symbol: "AAA", name: "AAA Inc", activityKind: "Add" }, { symbol: "BBB", name: "B Co", activityKind: null }] }]);
 ok(cons.length === 1 && cons[0].people === 2 && cons[0].politicians[0] === "A" && cons[0].investors[0] === "B", "consensus counts politicians and investors");
+const old = M.consensus([{ name: "A", trades: [{ ticker: "OLD", issuer: "Old Inc", traded: new Date(Date.now() - 91 * 864e5).toISOString().slice(0, 10), type: "buy", size: M.sizeRange("1K–15K") }, { ticker: "NEW", issuer: "New Inc", traded: new Date(Date.now() - 89 * 864e5).toISOString().slice(0, 10), type: "buy", size: M.sizeRange("1K–15K") }] }], []);
+ok(!old.some(c => c.symbol === "OLD") && old.some(c => c.symbol === "NEW"), "consensus counts Congress buys from the last 90 days only");
 
 // rebalancing targets
 globalThis.MD.ui = globalThis.MD.ui || { h: () => null };
