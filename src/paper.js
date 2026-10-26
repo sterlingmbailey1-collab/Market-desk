@@ -9,7 +9,7 @@
   const V = (MD.views = MD.views || {});
   const START = 100000;
   const CLASSES = ["stock", "etf", "crypto"];
-  const SOURCES = { manual: "You", asset: "Asset page", pick: "Recommendations", "ai-decide": "AI decision", screener: "Screener", today: "Game plan" };
+  const SOURCES = { manual: "You", asset: "Asset page", pick: "Recommendations", "ai-decide": "AI decision", screener: "Screener", today: "Game plan", daytrade: "Day Trading" };
   const SPY = { id: "stock:SPY", cls: "etf", symbol: "SPY", name: "SPDR S&P 500 ETF" };
 
   const acct = (app) => Object.assign({ startCash: START, startedAt: 0 }, app.settings.paper || {});

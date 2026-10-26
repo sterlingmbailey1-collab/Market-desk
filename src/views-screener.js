@@ -34,6 +34,18 @@
       sort: sel(Object.entries(SORTS).map(([k, [l]]) => [k, l]), saved.sort || "cap", "Sort") };
     const read = () => ({ exchange: f.exchange.value, sector: f.sector.value, size: f.size.value, minPrice: numOrNull(f.minPrice.value), maxPrice: numOrNull(f.maxPrice.value), minMove: numOrNull(f.minMove.value), maxMove: numOrNull(f.maxMove.value), sort: f.sort.value });
     const out = h("div", { class: "stack" }, h("div", { class: "empty" }, "Set the filters and run the screen.")), mlBox = h("div", { class: "stack" });
+    // Saved screens: a name and the filters, kept in this browser.
+    const savedBox = h("div", { class: "row", style: "gap:6px;flex-wrap:wrap;align-items:center" });
+    const paintSaved = () => {
+      const list = app.ls.get("scr.saved", []);
+      savedBox.replaceChildren(...(list.length ? [h("span", { class: "label" }, "Saved screens")].concat(list.map((x, i) => h("span", { class: "row", style: "gap:2px" },
+        h("button", { class: "chip", type: "button", onclick: () => { for (const k of ["exchange", "sector", "size", "sort"]) f[k].value = x.f[k] || (k === "exchange" ? "both" : k === "sort" ? "cap" : ""); for (const k of ["minPrice", "maxPrice", "minMove", "maxMove"]) f[k].value = x.f[k] ?? ""; go.click(); } }, x.name),
+        h("button", { class: "btn ghost sm", type: "button", "aria-label": "Delete saved screen " + x.name, onclick: () => { const l = app.ls.get("scr.saved", []); l.splice(i, 1); app.ls.set("scr.saved", l); paintSaved(); } }, "×")))) : []));
+    };
+    const saveBtn = h("button", { class: "btn ghost", type: "button", onclick: () => {
+      const q = read(), name = describe(q) + (q.minMove != null || q.maxMove != null ? " · move " + (q.minMove ?? "…") + " to " + (q.maxMove ?? "…") + "%" : "") + (q.minPrice != null || q.maxPrice != null ? " · $" + (q.minPrice ?? "…") + "–" + (q.maxPrice ?? "…") : "");
+      const l = app.ls.get("scr.saved", []).filter(x => x.name !== name); l.unshift({ name, f: q }); app.ls.set("scr.saved", l.slice(0, 8)); paintSaved(); U.toast("Screen saved", name);
+    } }, "Save this screen");
     const go = h("button", { class: "btn", type: "button" }, "Run screen");
     let last = null;
     const paint = () => {
@@ -71,8 +83,9 @@
     root.append(U.section("Stock screener", h("div", { class: "stack" },
       h("div", { class: "form" }, U.field("Exchange", f.exchange), U.field("Sector", f.sector), U.field("Company size", f.size), U.field("Sort by", f.sort)),
       h("div", { class: "form" }, U.field("Price from ($)", f.minPrice), U.field("Price to ($)", f.maxPrice), U.field("Today's move from (%)", f.minMove), U.field("Today's move to (%)", f.maxMove)),
-      h("div", { class: "row" }, go),
+      h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, go, saveBtn), savedBox,
       h("p", { class: "small muted" }, "US-listed stocks on the NYSE and Nasdaq from Nasdaq's screener (one data request per exchange). Send the results to the machine-learning scan, to Recommendations as a focus list, to your watchlist, or paper-trade one."), out)));
+    paintSaved();
     if (saved.exchange) go.click();
   }
 

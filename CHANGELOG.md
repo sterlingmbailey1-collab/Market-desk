@@ -1,5 +1,11 @@
 # Changelog
 
+## Version 42 (2026-10-26)
+- **Saved screens.** "Save this screen" keeps up to eight named screens in this browser. One click reruns a saved
+  screen, and × deletes it.
+- **Paper trade from the Day Trading desk.** The desk header has a "Paper trade" button; those trades are grouped
+  under "Day Trading" in the paper account's record by source.
+
 ## Version 41 (2026-10-26)
 - **Follow AI decisions in the paper account too.** A second switch under "Follow the AI automatically" paper-buys
   every AI decision to buy or add.
