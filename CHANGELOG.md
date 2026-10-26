@@ -1,5 +1,12 @@
 # Changelog
 
+## Version 44 (2026-10-26)
+- **Set mix on every recommendation set.** One line shows:
+  - how many picks are NYSE and how many Nasdaq (plus crypto)
+  - how many sectors they span
+  - how many are fresh and how many were picked again with a stated reason
+  - how many came from mid-cap discovery.
+
 ## Version 43 (2026-10-26)
 - The dashboard's What's new card now covers everything through Version 42: auto-following AI decisions, the paper
   account chart and coach, saved screens, and the ML's self-recalibration. It shows again once for anyone who
