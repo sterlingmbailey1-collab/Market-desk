@@ -1,0 +1,163 @@
+/* Paper trading: a virtual US-dollar account for practising and for testing the desk's ideas with real sizing. Orders
+   fill at the live quote at the moment they're placed (its source and time are stored with the order); nothing is ever
+   bought or sold for real. Every buy is mirrored into SPY at the same moment, so the account and each closed trade are
+   judged against "the same trades in the S&P 500". Orders are append-only (collection "paper"); starting over sets a
+   new start time and keeps the old orders. */
+(function (G) {
+  const MD = (G.MD = G.MD || {});
+  const C = MD.core, U = MD.ui, D = MD.data, h = U.h, X = MD.common;
+  const V = (MD.views = MD.views || {});
+  const START = 100000;
+  const CLASSES = ["stock", "etf", "crypto"];
+  const SOURCES = { manual: "You", asset: "Asset page", pick: "Recommendations", "ai-decide": "AI decision", screener: "Screener", today: "Game plan" };
+  const SPY = { id: "stock:SPY", cls: "etf", symbol: "SPY", name: "SPDR S&P 500 ETF" };
+
+  const acct = (app) => Object.assign({ startCash: START, startedAt: 0 }, app.settings.paper || {});
+  const orders = (app) => { const a = acct(app); return app.store.cached("paper").filter(o => (o.createdAt || 0) >= a.startedAt); };
+  const clsOf = (a) => a.cls || String(a.id).split(":")[0];
+  const feeRate = (app, cls) => { const s = app.settings.assumptions || {}; return (cls === "crypto" ? Number(s.cryptoExitPct) || 0 : Number(s.stockExitPct) || 0) / 100; };
+  const usd = (x) => U.money(x, "USD");
+
+  // The ledger marked to live quotes. Quotes that fail are listed as missing (valued at cost), never guessed.
+  async function state(app) {
+    const a = acct(app), L = C.paperLedger(orders(app), a.startCash), prices = {}, quotes = {};
+    const [spyQ] = await Promise.all([app.quote(SPY, 60000).catch(() => null), ...L.positions.map(async p => {
+      try { const q = await app.quote(p.asset || { id: p.assetId, symbol: p.symbol, cls: String(p.assetId).split(":")[0] }, 60000); prices[p.assetId] = q.price; quotes[p.assetId] = q; } catch {}
+    })]);
+    const v = C.paperValue(L, prices, spyQ ? spyQ.price : null, a.startCash);
+    return { a, L, v, prices, quotes, spyQ };
+  }
+
+  async function place(app, asset, side, qty, opts) {
+    const cls = clsOf(asset);
+    if (!CLASSES.includes(cls)) throw new Error("Paper trading covers stocks, ETFs and crypto.");
+    if (app.demo) throw new Error("Demo mode: paper orders aren't saved.");
+    const [q, spy] = await Promise.all([app.quote(asset, 15000), asset.symbol === "SPY" ? null : app.quote(SPY, 60000).catch(() => null)]);
+    if (!(q.price > 0)) throw new Error("No live price for " + asset.symbol + ", so the order can't be filled.");
+    if ((q.currency || "USD") !== "USD") throw new Error(asset.symbol + " is priced in " + q.currency + "; the paper account is in US dollars.");
+    const spyPrice = asset.symbol === "SPY" ? q.price : spy && spy.price > 0 ? spy.price : null;
+    const doc = { side, assetId: asset.id, asset: X.slim(asset), symbol: asset.symbol, qty: +Number(qty).toFixed(6), price: q.price, currency: "USD", priceSource: q.source || "", priceAt: q.ts || Date.now(), priceStatus: q.status || "",
+      feeRate: feeRate(app, cls), spyPrice, source: (opts && opts.source) || "manual", note: (opts && opts.note) || "" };
+    const L = C.paperLedger(orders(app).concat([Object.assign({ createdAt: Date.now() + 1 }, doc)]), acct(app).startCash);
+    if (L.issues.length > C.paperLedger(orders(app), acct(app).startCash).issues.length) throw new Error(L.issues[L.issues.length - 1].msg.replace(/; skipped\.$/, "."));
+    const saved = await app.store.create("paper", doc);
+    app.emit("paper", saved);
+    return saved;
+  }
+
+  /* Order ticket. opts: { source, note, side, amount, pct } (pct = share of the account's value for the default size). */
+  function ticket(app, asset, opts) {
+    opts = opts || {};
+    const cls = clsOf(asset), body = h("div", { class: "stack" }), info = h("div", { class: "stack", style: "gap:4px" }, h("p", { class: "small muted" }, "Getting the live price…"));
+    const side = h("select", { "aria-label": "Side" }, h("option", { value: "buy" }, "Buy"), h("option", { value: "sell", selected: opts.side === "sell" }, "Sell"));
+    const amt = h("input", { type: "number", min: 0, step: "any", "aria-label": "Amount in US dollars" }), qtyIn = h("input", { type: "number", min: 0, step: "any", "aria-label": "Quantity" });
+    const go = h("button", { class: "btn", type: "button", disabled: true }, "Place paper order"), msg = h("p", { class: "small", role: "status" });
+    body.append(h("p", { class: "small" }, h("strong", {}, "Virtual money. "), "Nothing is bought or sold for real: the desk is read-only. The order fills at the live quote when you place it."),
+      info, h("div", { class: "row", style: "gap:10px;flex-wrap:wrap;align-items:flex-end" }, U.field("Side", side), U.field("Amount (USD)", amt), U.field("Quantity", qtyIn), go), msg);
+    const m = U.modal("Paper trade · " + (asset.symbol || asset.name), body);
+    if (!CLASSES.includes(cls)) { info.replaceChildren(h("p", { class: "small warn-t" }, "Paper trading covers stocks, ETFs and crypto.")); return m; }
+    let q = null, st = null;
+    const held = () => st ? st.L.positions.find(p => p.assetId === asset.id) : null;
+    const sync = (from) => {
+      if (!q) return;
+      if (from === "amt") qtyIn.value = Number(amt.value) > 0 ? +(Number(amt.value) / q.price).toFixed(6) : "";
+      else amt.value = Number(qtyIn.value) > 0 ? +(Number(qtyIn.value) * q.price).toFixed(2) : "";
+      const n = Number(qtyIn.value), fee = n * q.price * feeRate(app, cls), p = held();
+      go.disabled = !(n > 0) || (side.value === "sell" && !p);
+      msg.className = "small"; msg.textContent = n > 0 ? (side.value === "buy" ? "Costs about " + usd(n * q.price + fee) + " including " + usd(fee) + " estimated commission/spread; cash after: " + usd(st.L.cash - n * q.price - fee) + "." : p ? "Sells " + Math.min(n, p.qty) + " of " + +p.qty.toFixed(6) + " held for about " + usd(Math.min(n, p.qty) * q.price - fee) + " after costs." : "You don't hold " + asset.symbol + " in the paper account.") : "";
+    };
+    amt.oninput = () => sync("amt"); qtyIn.oninput = () => sync("qty");
+    side.onchange = () => { const p = held(); if (side.value === "sell" && p) { qtyIn.value = +p.qty.toFixed(6); sync("qty"); } else sync("amt"); };
+    (async () => {
+      try {
+        [q, st] = await Promise.all([app.quote(asset, 15000), state(app)]);
+        if ((q.currency || "USD") !== "USD") { info.replaceChildren(h("p", { class: "small warn-t" }, asset.symbol + " is priced in " + q.currency + "; the paper account is in US dollars.")); return; }
+        const p = held();
+        info.replaceChildren(h("div", { class: "row", style: "gap:14px;flex-wrap:wrap" }, h("span", {}, h("span", { class: "label" }, "Live price "), h("b", { class: "num" }, U.money(q.price, "USD", { price: true }))),
+          h("span", {}, h("span", { class: "label" }, "Paper cash "), h("b", { class: "num" }, usd(st.L.cash))), p ? h("span", {}, h("span", { class: "label" }, "Held "), h("b", { class: "num" }, String(+p.qty.toFixed(6)))) : null),
+          h("p", { class: "tiny muted" }, (q.source || "price") + " · " + (q.ts ? U.fmtTs(q.ts) : "time unknown") + (q.status && q.status !== "Live" ? " · " + q.status + ": the order fills at this last price" : "")));
+        if (opts.side === "sell" && p) qtyIn.value = +p.qty.toFixed(6);
+        else { const pct = opts.pct > 0 ? opts.pct : 5; amt.value = opts.amount > 0 ? opts.amount : Math.max(0, Math.min(st.L.cash, Math.round(st.v.equity * pct / 100))); }
+        sync(opts.side === "sell" && p ? "qty" : "amt");
+      } catch (e) { info.replaceChildren(h("p", { class: "small warn-t" }, "No live price: " + U.errorText(e))); }
+    })();
+    go.onclick = async () => {
+      go.disabled = true; msg.textContent = "Filling at the live price…";
+      try {
+        const o = await place(app, asset, side.value, Number(qtyIn.value), opts);
+        m.close(); U.toast("Paper " + o.side + " filled", (o.side === "buy" ? "Bought " : "Sold ") + o.qty + " " + o.symbol + " at " + U.money(o.price, "USD", { price: true }) + " (virtual money)");
+      } catch (e) { msg.className = "small neg"; msg.textContent = U.errorText(e); go.disabled = false; }
+    };
+    return m;
+  }
+  const button = (app, asset, opts, label) => CLASSES.includes(clsOf(asset)) ? h("button", { class: "btn ghost sm", type: "button", onclick: (e) => { e.stopPropagation(); ticket(app, asset, opts); } }, label || "Paper trade") : null;
+
+  // Closed trades grouped by where the idea came from.
+  function bySource(L) {
+    const m = new Map();
+    for (const t of L.closed) for (const s of (t.sources.length ? t.sources : ["manual"])) { if (!m.has(s)) m.set(s, []); m.get(s).push(t); }
+    const open = new Map(); for (const p of L.positions) for (const s of (p.sources.length ? p.sources : ["manual"])) open.set(s, (open.get(s) || 0) + 1);
+    return [...new Set([...m.keys(), ...open.keys()])].map(s => {
+      const ts = m.get(s) || [], vs = ts.filter(t => t.mirrorPct != null);
+      return { source: s, closed: ts.length, open: open.get(s) || 0, winPct: ts.length ? ts.filter(t => t.pnl > 0).length / ts.length * 100 : null, avgPct: ts.length ? ts.reduce((a, t) => a + t.pnlPct, 0) / ts.length : null,
+        vsPct: vs.length ? vs.reduce((a, t) => a + (t.pnlPct - t.mirrorPct), 0) / vs.length : null, pnl: ts.reduce((a, t) => a + t.pnl, 0) };
+    });
+  }
+
+  V.paper = function (root, app) {
+    const a = acct(app);
+    root.append(h("div", { class: "page-head" }, h("div", { class: "stack", style: "gap:4px" }, h("h1", { class: "page" }, "Paper Trading"),
+      h("p", { class: "sub" }, "Virtual money for practising and for testing the desk's ideas with real sizing. Nothing is bought or sold for real.")),
+      h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => restart(app) }, "Start over"))));
+    const kpis = h("div", { class: "kpis k4" }), body = h("div", { class: "stack" }, h("p", { class: "small muted" }, "Valuing the paper account at live prices…"));
+    const picker = X.assetPicker((asset) => ticket(app, asset, { source: "manual" }), CLASSES);
+    root.append(U.section("Paper account", h("div", { class: "stack" }, kpis, h("p", { class: "tiny muted" }, "Started " + (a.startedAt ? U.fmtDate(a.startedAt) : "with the first order") + " with " + usd(a.startCash) + ". Orders fill at the live quote; estimated commission/spread from Settings (stocks " + (app.settings.assumptions.stockExitPct) + "%, crypto " + app.settings.assumptions.cryptoExitPct + "% a side). No margin and no short selling. The S&P 500 comparison puts the same dollars into SPY at the same moments."))),
+      U.section("Place a paper order", h("div", { class: "stack" }, picker, h("p", { class: "tiny muted" }, "Or use “Paper trade” on any stock or crypto page, on a recommendation, or on an AI decision; the account then tracks how each source of ideas does."))), body);
+    const paint = async () => {
+      let S;
+      try { S = await state(app); } catch (e) { body.replaceChildren(U.errorBox({ message: U.errorText(e) })); return; }
+      const { L, v, prices, quotes, spyQ } = S, diff = v.returnPct - v.mirrorReturnPct, wins = L.closed.filter(t => t.pnl > 0).length;
+      const kpi = (l, val, s, cls) => h("div", { class: "kpi" }, h("span", { class: "label" }, l), h("b", { class: "v " + (cls || "") }, val), h("span", { class: "s" }, s));
+      kpis.replaceChildren(kpi("Account value", usd(v.equity), "cash " + usd(L.cash) + " · invested " + usd(v.held)),
+        kpi("Return since start", U.pct(v.returnPct), usd(v.equity - S.a.startCash), U.signCls(v.returnPct)),
+        kpi("Same trades in the S&P 500", U.pct(v.mirrorReturnPct), spyQ ? "SPY " + U.money(spyQ.price, "USD", { price: true }) : "SPY price unavailable", U.signCls(v.mirrorReturnPct)),
+        kpi("Against the S&P 500", (diff > 0 ? "+" : "") + diff.toFixed(2) + " pts", L.closed.length ? wins + " of " + L.closed.length + " closed trades made money" : "no closed trades yet", U.signCls(diff)));
+      const posRows = L.positions.map(p => { const px = prices[p.assetId], val = px ? p.qty * px : null, mirror = spyQ && p.mirrorKnown ? p.mirror * spyQ.price : null; return { p, px, val, pnl: val != null ? val - p.cost : null, pnlPct: val != null ? (val / p.cost - 1) * 100 : null, mirror, mirrorPct: mirror != null ? (mirror / p.cost - 1) * 100 : null, q: quotes[p.assetId] }; });
+      const srcLbl = (ss) => (ss.length ? ss : ["manual"]).map(s => SOURCES[s] || s).join(", ");
+      body.replaceChildren(
+        U.section("Open positions", h("div", { class: "stack" }, U.table([
+          { t: "Asset", v: (r) => h("a", { href: "#", onclick: (e) => { e.preventDefault(); app.openAsset(r.p.asset || { id: r.p.assetId, symbol: r.p.symbol }); } }, r.p.symbol) },
+          { t: "Quantity", v: (r) => String(+r.p.qty.toFixed(6)), n: true }, { t: "Avg cost", v: (r) => U.money(r.p.cost / r.p.qty, "USD", { price: true }), n: true },
+          { t: "Price now", v: (r) => r.px ? h("span", { title: r.q ? (r.q.source || "") + " · " + (r.q.ts ? U.fmtTs(r.q.ts) : "") : "" }, U.money(r.px, "USD", { price: true })) : h("span", { class: "warn-t" }, "unavailable"), n: true },
+          { t: "Value", v: (r) => r.val != null ? usd(r.val) : "—", n: true }, { t: "Return", v: (r) => r.pnlPct != null ? h("span", { class: U.signCls(r.pnlPct) }, U.pct(r.pnlPct)) : "—", n: true },
+          { t: "Same $ in SPY", v: (r) => r.mirrorPct != null ? h("span", { class: U.signCls(r.mirrorPct) }, U.pct(r.mirrorPct)) : "—", n: true },
+          { t: "From", v: (r) => srcLbl(r.p.sources) },
+          { t: "", v: (r) => h("button", { class: "btn ghost sm", type: "button", onclick: () => ticket(app, r.p.asset || { id: r.p.assetId, symbol: r.p.symbol, cls: String(r.p.assetId).split(":")[0] }, { side: "sell", source: r.p.sources[0] || "manual" }) }, "Sell") }], posRows, { empty: "No open paper positions. Search above, or use “Paper trade” on a stock, a recommendation or an AI decision." }),
+          v.missing.length ? h("p", { class: "small warn-t" }, "No live price for " + v.missing.join(", ") + ": valued at cost until one comes back.") : null)),
+        U.section("Closed trades", U.table([{ t: "Asset", v: "symbol" }, { t: "Held", v: (t) => U.fmtDate(t.openedAt) + " → " + U.fmtDate(t.closedAt) },
+          { t: "Return", v: (t) => h("span", { class: U.signCls(t.pnlPct) }, U.pct(t.pnlPct)), n: true }, { t: "P&L", v: (t) => h("span", { class: U.signCls(t.pnl) }, usd(t.pnl)), n: true },
+          { t: "S&P 500, same days", v: (t) => t.mirrorPct != null ? U.pct(t.mirrorPct) : "—", n: true },
+          { t: "Against it", v: (t) => t.mirrorPct != null ? h("span", { class: U.signCls(t.pnlPct - t.mirrorPct) }, ((t.pnlPct - t.mirrorPct) > 0 ? "+" : "") + (t.pnlPct - t.mirrorPct).toFixed(1) + " pts") : "—", n: true },
+          { t: "From", v: (t) => srcLbl(t.sources) }], L.closed.slice().reverse(), { empty: "No closed trades yet." })),
+        U.section("How each source of ideas has done", h("div", { class: "stack" }, U.table([{ t: "Source", v: (r) => SOURCES[r.source] || r.source }, { t: "Open", v: "open", n: true }, { t: "Closed", v: "closed", n: true },
+          { t: "Made money", v: (r) => r.winPct != null ? r.winPct.toFixed(0) + "%" : "—", n: true }, { t: "Avg return", v: (r) => r.avgPct != null ? h("span", { class: U.signCls(r.avgPct) }, U.pct(r.avgPct)) : "—", n: true },
+          { t: "Avg vs S&P 500", v: (r) => r.vsPct != null ? h("span", { class: U.signCls(r.vsPct) }, (r.vsPct > 0 ? "+" : "") + r.vsPct.toFixed(1) + " pts") : "—", n: true }, { t: "P&L", v: (r) => usd(r.pnl), n: true }], bySource(L), { empty: "Closed trades are grouped here by where the idea came from." }),
+          h("p", { class: "tiny muted" }, "A handful of trades says little; the comparison means more after 20 or more closed trades from one source."))),
+        h("details", {}, h("summary", { class: "label", style: "cursor:pointer" }, "Order history (" + orders(app).length + ")"),
+          U.table([{ t: "Time", v: (o) => U.fmtTs(o.createdAt) }, { t: "Order", v: (o) => o.side + " " + o.qty + " " + o.symbol }, { t: "Fill", v: (o) => U.money(o.price, "USD", { price: true }), n: true }, { t: "Price from", v: (o) => (o.priceSource || "—") + (o.priceStatus && o.priceStatus !== "Live" ? " (" + o.priceStatus + ")" : "") }, { t: "From", v: (o) => (SOURCES[o.source] || o.source) + (o.note ? " · " + o.note : "") }],
+            orders(app).slice().sort((x, y) => y.createdAt - x.createdAt))),
+        L.issues.length ? h("p", { class: "small warn-t" }, L.issues.map(i => i.msg).join(" ")) : null);
+    };
+    paint();
+    const off = app.on("paper", () => { if (document.body.contains(root)) paint(); else off(); });
+  };
+
+  async function restart(app) {
+    const box = h("div", { class: "stack" }), cash = h("input", { type: "number", min: 1000, step: 1000, value: acct(app).startCash, "aria-label": "Starting cash" });
+    box.append(h("p", {}, "Start a new paper account? Open positions and the record so far are set aside (the orders stay in the history)."), U.field("Starting cash (USD)", cash));
+    const m = U.modal("Start over", h("div", { class: "stack" }, box, h("div", { class: "row end" }, h("button", { class: "btn ghost", type: "button", onclick: () => m.close() }, "Cancel"),
+      h("button", { class: "btn danger", type: "button", onclick: () => { app.saveSettings({ paper: { startCash: Math.max(1000, Number(cash.value) || START), startedAt: Date.now() } }); m.close(); app.go("paper"); } }, "Start over"))));
+  }
+
+  MD.paper = { ticket, place, state, button, bySource, SOURCES };
+})(typeof window !== "undefined" ? window : globalThis);

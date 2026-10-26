@@ -193,6 +193,16 @@
       const t = r && r.data && r.data.table;
       return arr(t && t.rows).filter(x => /^[A-Z][A-Z.\-]{0,5}$/.test(String(x.symbol || ""))).map(x => ({ id: "stock:" + x.symbol, cls: "stock", symbol: x.symbol, name: String(x.name || "").replace(/ Common Stock$| Class A Common Stock$| Common Shares$/, ""), price: num(x.lastsale), change: num(x.netchange), changePct: num(x.pctchange), marketCap: num(x.marketCap), currency: "USD", exchange: exchange ? (exchange === "nyse" ? "NYSE" : "Nasdaq") : null }));
     },
+    /* Filtered screen of US-listed stocks (Nasdaq's screener: exchange nyse|nasdaq, sector slug, size mega|large|mid|small|
+       micro), largest first. Returns the rows, how many matched in all, and the snapshot's as-of line. */
+    async screen(f) {
+      f = f || {};
+      const q = "&exchange=" + (f.exchange || "") + (f.sector ? "&sector=" + f.sector : "") + (f.size ? "&marketcap=" + f.size : "");
+      const r = await fetchJSON(`https://api.nasdaq.com/api/screener/stocks?tableonly=true&limit=${f.limit || 200}&offset=0&sortcolumn=marketCap&sortorder=desc` + q.replace("&exchange=&", "&").replace(/&exchange=$/, ""), 160000, 300000);
+      const d = (r && r.data) || {}, t = d.table, ex = f.exchange === "nyse" ? "NYSE" : f.exchange === "nasdaq" ? "Nasdaq" : null;
+      const rows = arr(t && t.rows).filter(x => /^[A-Z][A-Z.\-]{0,5}$/.test(String(x.symbol || ""))).map(x => ({ id: "stock:" + x.symbol, cls: "stock", symbol: x.symbol, name: String(x.name || "").replace(/ (Class [A-C] )?(Common Stock|Common Shares|Ordinary Shares)$/, "").trim(), price: num(x.lastsale), change: num(x.netchange), changePct: num(x.pctchange), marketCap: num(x.marketCap), currency: "USD", exchange: ex, sector: f.sector || null }));
+      return { rows, total: num(d.totalrecords), asOf: String(d.asof || (t && t.asOf) || "").replace(/^Last price as of /i, ""), source: "Nasdaq screener" };
+    },
     // status: currentMarket, preMarket or afterHours (outside those hours Nasdaq returns the last session's list).
     async movers(status = "currentMarket") {
       const r = await fetchJSON("https://api.nasdaq.com/api/marketmovers?assetclass=stocks&exchangestatus=" + status + "&limit=50", 160000, 120000);

@@ -7,6 +7,42 @@
   const near = (a, b, tol, msg) => { if (!(Math.abs(Number(a) - Number(b)) <= tol)) throw new Error((msg || "") + " expected ≈" + b + " got " + a); };
   const ok = (c, msg) => { if (!c) throw new Error(msg || "assertion failed"); };
 
+  test("rebalancing maths: minimum variance (with a cap) and equal risk contribution", () => {
+    const Q = MD.quant, two = [[0.04, 0], [0, 0.01]];
+    const mv = Q.minVarWeights(two); near(mv[0], 0.2, 1e-6, "inverse variance when uncorrelated"); near(mv[1], 0.8, 1e-6);
+    const mc = Q.minVarWeights(two, 0.6); near(mc[0], 0.4, 1e-6, "the cap binds"); near(mc[1], 0.6, 1e-6);
+    const e2 = Q.ercWeights(two); near(e2[0], 1 / 3, 1e-6, "inverse volatility when uncorrelated"); near(e2[1], 2 / 3, 1e-6);
+    const S = [[0.09, 0.03, 0.01], [0.03, 0.04, 0.006], [0.01, 0.006, 0.0225]], e3 = Q.ercWeights(S), rs = Q.riskShares(S, e3);
+    near(e3.reduce((a, x) => a + x, 0), 1, 1e-9); for (const r of rs) near(r, 1 / 3, 1e-6, "equal risk shares");
+    const m3 = Q.minVarWeights(S), v = (w) => w.reduce((a, x, i) => a + x * S[i].reduce((b, y, j) => b + y * w[j], 0), 0);
+    ok(m3.every(x => x >= -1e-12) && Math.abs(m3.reduce((a, x) => a + x, 0) - 1) < 1e-9, "long-only, fully invested");
+    ok(v(m3) <= v(e3) + 1e-12 && v(m3) <= v([1 / 3, 1 / 3, 1 / 3]) + 1e-12, "least variance of the three mixes");
+  });
+  test("news sentiment score: materiality and recency weights, labels", () => {
+    const Q = MD.quant, now = Date.parse("2026-10-26T12:00:00Z"), d = (n) => now - n * 864e5;
+    eq(Q.newsScore([], now).score, "null");
+    const a = Q.newsScore([{ s: 2, mat: 3, ts: d(0) }, { s: -2, mat: 1, ts: d(6) }], now);
+    near(a.score, Math.round((3 * 1 - 1 * 0.25) / 3.25 * 100), 0.5, "fresh material good news outweighs old minor bad news"); eq(a.label, "positive");
+    eq(Q.newsScore([{ s: -1, mat: 2, ts: d(1) }, { s: 1, mat: 2, ts: d(1) }], now).label, "mixed");
+    eq(Q.newsScore([{ s: 0, mat: 1, ts: d(0) }], now).label, "neutral");
+    eq(Q.newsScore([{ s: -2, mat: 3, ts: d(0) }], now).score, -100);
+  });
+  test("paper account: cash, fractional sells, the SPY mirror, and no margin or shorting", () => {
+    const C = MD.core, a = { assetId: "stock:AAA", symbol: "AAA" };
+    const L = C.paperLedger([
+      Object.assign({ id: "1", side: "buy", qty: 10, price: 100, spyPrice: 500, createdAt: 1, source: "pick" }, a),
+      Object.assign({ id: "2", side: "buy", qty: 1000, price: 100, spyPrice: 500, createdAt: 2 }, a),
+      Object.assign({ id: "3", side: "sell", qty: 5, price: 120, spyPrice: 550, createdAt: 3 }, a),
+      { id: "4", side: "sell", assetId: "stock:BBB", symbol: "BBB", qty: 1, price: 10, createdAt: 4 }], 10000);
+    near(L.cash, 9600, 1e-9, "cash after a 1000 buy and a 600 sale"); eq(L.issues.length, 2, "over-cash buy and unheld sell skipped");
+    eq(L.positions.length, 1); near(L.positions[0].qty, 5, 1e-12); near(L.positions[0].cost, 500, 1e-9); near(L.positions[0].mirror, 1, 1e-12, "half the 2 SPY shares remain");
+    eq(L.closed.length, 1); near(L.closed[0].pnlPct, 20, 1e-9); near(L.closed[0].mirrorPct, 10, 1e-9, "SPY rose 10% over the same holding"); eq(L.closed[0].sources[0], "pick");
+    near(L.mirrorCash, 9550, 1e-9);
+    const v = C.paperValue(L, { "stock:AAA": 130 }, 600, 10000);
+    near(v.equity, 9600 + 650, 1e-9); near(v.mirrorEquity, 9550 + 600, 1e-9); near(v.returnPct, 2.5, 1e-9); eq(v.missing.length, 0);
+    const fee = C.paperLedger([Object.assign({ id: "f", side: "buy", qty: 10, price: 100, feeRate: 0.001, createdAt: 1 }, a)], 2000);
+    near(fee.cash, 2000 - 1001, 1e-9, "the fee is charged on the buy"); ok(!fee.positions[0].mirrorKnown, "no SPY price → mirror unknown");
+  });
   test("decimal arithmetic avoids binary float error", () => { const C = MD.core; eq(C.dec("0.1").plus(C.dec("0.2")), "0.3"); eq(C.dec("1,234.50"), "1234.5"); eq(C.dec("abc"), "null"); });
   test("registry distinguishes fiat, metals, crypto, stablecoins", () => {
     const r = MD.core.makeRegistry([{ code: "KWD", name: "Kuwaiti dinar", minor: 3 }]);

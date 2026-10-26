@@ -56,8 +56,8 @@
   /* Machine-learning scan: the ML model (MD.mlView) trained on every name in the watchlist and holdings, ranked with
      the ones that show a clear out-of-sample edge first. Each forecast is logged once a day and graded. */
   let lastMl = null;
-  async function mlScan(app, days, onProgress) {
-    const list = universe(app), rows = []; let done = 0;
+  async function mlScan(app, days, onProgress, assets) {
+    const list = assets || universe(app), rows = []; let done = 0;
     await pool(list, 2, async (a) => {
       try { const r = await MD.mlView.run(app, a, days); rows.push({ a, r }); MD.mlView.log(app, a, r).catch(() => {}); } catch (e) { rows.push({ a, err: U.errorText(e) }); }
       onProgress && onProgress(++done, list.length);
@@ -65,6 +65,20 @@
     rows.sort((x, y) => (y.r && y.r.edge ? 1 : 0) - (x.r && x.r.edge ? 1 : 0) || (y.r ? Math.abs(y.r.upPct - 50) : -1) - (x.r ? Math.abs(x.r.upPct - 50) : -1));
     lastMl = { at: Date.now(), days, rows };
     return lastMl;
+  }
+  // The ML scan's results as a table, edge first.
+  function mlTable(app, res) {
+    const ok = res.rows.filter(x => x.r), edge = ok.filter(x => x.r.edge), label = (MD.mlView.HZ.find(x => x[1] === res.days) || [res.days + " days"])[0];
+    return h("div", { class: "stack" },
+      h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, h("span", { class: "pill" }, ok.length + " trained"), h("span", { class: "pill " + (edge.length ? "ok" : "") }, edge.length + " with a clear edge"), res.rows.length > ok.length ? h("span", { class: "pill bad" }, (res.rows.length - ok.length) + " without enough history") : null),
+      U.table([
+        { t: "Asset", v: (x) => h("span", { class: "who sym" }, h("b", {}, x.a.symbol), h("span", { class: "tiny muted" }, (x.a.held ? "Holding" : x.a.held === false ? "Watchlist" : x.a.exchange || ""))) },
+        { t: "Chance higher in " + label, n: true, v: (x) => x.r ? h("span", { class: x.r.upPct > 52 ? "up" : x.r.upPct < 48 ? "down" : "" }, Math.round(x.r.upPct) + "%") : h("span", { class: "tiny warn-t" }, x.err) },
+        { t: "Clear edge?", v: (x) => x.r ? (x.r.edge ? h("span", { class: "verdict sm positive" }, "Yes · t " + x.r.oos.tStat.toFixed(1)) : h("span", { class: "small muted" }, "No (t " + (isFinite(x.r.oos.tStat) ? x.r.oos.tStat.toFixed(1) : "—") + ")")) : "—" },
+        { t: "Brier skill", n: true, v: (x) => x.r ? (x.r.oos.skillEnsemble >= 0 ? "+" : "") + (x.r.oos.skillEnsemble * 100).toFixed(1) + "%" : "—" },
+        { t: "Base rate", n: true, v: (x) => x.r ? Math.round(x.r.models.baseRatePct) + "%" : "—" },
+        { t: "Strongest driver today", v: (x) => x.r && x.r.drivers[0] ? h("span", { class: "small" }, (x.r.drivers[0].push > 0 ? "▲ " : "▼ ") + x.r.drivers[0].name) : "—" }], res.rows, { onRow: (x) => app.openAsset(x.a) }),
+      h("p", { class: "tiny muted" }, "Each model is trained in your browser on that asset's daily history and scored only on stretches it hadn't seen. Without a clear edge (t ≥ 1.64 across independent stretches) its odds are just the base rate. Forecasts are logged once a day and graded; see the scorecard's Machine-learning model row."));
   }
   function mlSection(app) {
     const box = h("div", { class: "stack" }), prog = h("span", { class: "small muted" });
@@ -74,18 +88,9 @@
       btn.disabled = true; box.replaceChildren(h("div", { class: "skeleton" }, "Training…"));
       try {
         const res = await mlScan(app, days, (d, n) => { prog.textContent = "Trained " + d + " of " + n; });
-        const ok = res.rows.filter(x => x.r), edge = ok.filter(x => x.r.edge), label = (MD.mlView.HZ.find(x => x[1] === res.days) || [res.days + " days"])[0];
+        const ok = res.rows.filter(x => x.r);
         prog.textContent = "Trained " + ok.length + " models · " + U.fmtTs(res.at);
-        box.replaceChildren(!res.rows.length ? h("div", { class: "empty" }, "Add stocks, ETFs or coins to your watchlist or portfolio first.") : h("div", { class: "stack" },
-          h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, h("span", { class: "pill" }, ok.length + " trained"), h("span", { class: "pill " + (edge.length ? "ok" : "") }, edge.length + " with a clear edge"), res.rows.length > ok.length ? h("span", { class: "pill bad" }, (res.rows.length - ok.length) + " without enough history") : null),
-          U.table([
-            { t: "Asset", v: (x) => h("span", { class: "who sym" }, h("b", {}, x.a.symbol), h("span", { class: "tiny muted" }, (x.a.held ? "Holding" : "Watchlist"))) },
-            { t: "Chance higher in " + label, n: true, v: (x) => x.r ? h("span", { class: x.r.upPct > 52 ? "up" : x.r.upPct < 48 ? "down" : "" }, Math.round(x.r.upPct) + "%") : h("span", { class: "tiny warn-t" }, x.err) },
-            { t: "Clear edge?", v: (x) => x.r ? (x.r.edge ? h("span", { class: "verdict sm positive" }, "Yes · t " + x.r.oos.tStat.toFixed(1)) : h("span", { class: "small muted" }, "No (t " + (isFinite(x.r.oos.tStat) ? x.r.oos.tStat.toFixed(1) : "—") + ")")) : "—" },
-            { t: "Brier skill", n: true, v: (x) => x.r ? (x.r.oos.skillEnsemble >= 0 ? "+" : "") + (x.r.oos.skillEnsemble * 100).toFixed(1) + "%" : "—" },
-            { t: "Base rate", n: true, v: (x) => x.r ? Math.round(x.r.models.baseRatePct) + "%" : "—" },
-            { t: "Strongest driver today", v: (x) => x.r && x.r.drivers[0] ? h("span", { class: "small" }, (x.r.drivers[0].push > 0 ? "▲ " : "▼ ") + x.r.drivers[0].name) : "—" }], res.rows, { onRow: (x) => app.openAsset(x.a) }),
-          h("p", { class: "tiny muted" }, "Each model is trained in your browser on that asset's daily history and scored only on stretches it hadn't seen. Without a clear edge (t ≥ 1.64 across independent stretches) its odds are just the base rate. Forecasts are logged once a day and graded; see the scorecard's Machine-learning model row.")));
+        box.replaceChildren(!res.rows.length ? h("div", { class: "empty" }, "Add stocks, ETFs or coins to your watchlist or portfolio first.") : mlTable(app, res));
       } catch (e) { box.replaceChildren(U.errorBox({ message: U.errorText(e) })); }
       btn.disabled = false;
     } }, "Run the machine-learning scan");
@@ -152,5 +157,5 @@ Reply with ONLY JSON: {"summary": "2 sentences", "items": [{"symbol": "...", "pr
       h("p", { class: "small", style: "margin:6px 0" }, x.why), A().reviewBadge(x.review), A().sources(x.sources))),
     h("p", { class: "tiny muted" }, "Claude's triage of the measured signals, checked by a second review. Not advice."));
 
-  MD.watchScan = { view, scan, signalsFor, universe };
+  MD.watchScan = { view, scan, signalsFor, universe, mlScan, mlTable };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -44,7 +44,11 @@
     const cands = [];
     // A focus (theme, sector or style) asks Claude which assets fit; the app then verifies and measures each one.
     const focus = { stocks: new Map(), crypto: new Map() };
-    if (opts.focus && app.caps.sample) {
+    const listed = opts.stocks && Array.isArray(opts.symbols) ? [...new Set(opts.symbols.map(s => String(s || "").toUpperCase().trim()).filter(s => /^[A-Z][A-Z.\-]{0,5}$/.test(s)))].slice(0, 12) : [];
+    if (listed.length) {
+      for (const s of listed) focus.stocks.set(s, "from " + (opts.symbolsLabel || "your list"));
+      log("ok", "Focus on " + listed.length + " names from " + (opts.symbolsLabel || "your list") + " (to be verified): " + listed.join(", "));
+    } else if (opts.focus && app.caps.sample) {
       log("run", "Asking Claude which assets fit your focus: “" + opts.focus + "”");
       try {
         const r = await app.caps.sample.json(`An investor wants large-move candidates focused on: "${opts.focus.replace(/"/g, "'")}". List the assets that genuinely fit${opts.stocks ? ": up to 10 US-listed stocks or ETFs" : ""}${opts.crypto ? (opts.stocks ? " and" : ":") + " up to 5 coins (no stablecoins or wrapped tokens)" : ""}. Prefer liquid names. Only real, currently traded tickers; never invent one; leave a list empty when nothing fits.
@@ -318,7 +322,7 @@ Reply with ONLY JSON:
     log("run", "Recording current prices");
     await pool(picks, 5, async (p) => { try { const q = await app.quote(p.asset, 0); p.priceAtPick = q.price; p.currency = q.currency || "USD"; p.priceSource = q.source; } catch { p.priceAtPick = p.measured.price; p.currency = "USD"; p.priceSource = "screener snapshot"; } });
     log("ok", "Done");
-    return { crossStock: pooledRes ? { edge: pooledRes.edge, names: pooledRes.names, brierSkillPct: +(pooledRes.oos.brierSkill * 100).toFixed(1), tStat: +pooledRes.oos.tStat.toFixed(2), topVsBottomPct: pooledRes.oos.topVsBottomPct != null ? +pooledRes.oos.topVsBottomPct.toFixed(2) : null, periods: pooledRes.oos.periods } : null, focus: opts.focus || null, window: opts.window, windowLabel: wLabel, scope: { stocks: !!opts.stocks, crypto: !!opts.crypto }, summary: r.summary || "", picks, excluded: setAside.concat(Array.isArray(r.excluded) ? r.excluded.slice(0, 8) : []).concat(dropped.map(p => ({ symbol: p.symbol, reason: "Dropped by the review: " + (p.review.note || p.review.issues.join("; ")) }))),
+    return { crossStock: pooledRes ? { edge: pooledRes.edge, names: pooledRes.names, brierSkillPct: +(pooledRes.oos.brierSkill * 100).toFixed(1), tStat: +pooledRes.oos.tStat.toFixed(2), topVsBottomPct: pooledRes.oos.topVsBottomPct != null ? +pooledRes.oos.topVsBottomPct.toFixed(2) : null, periods: pooledRes.oos.periods } : null, focus: opts.focus || (opts.symbolsLabel ? "names from " + opts.symbolsLabel : null), window: opts.window, windowLabel: wLabel, scope: { stocks: !!opts.stocks, crypto: !!opts.crypto }, summary: r.summary || "", picks, excluded: setAside.concat(Array.isArray(r.excluded) ? r.excluded.slice(0, 8) : []).concat(dropped.map(p => ({ symbol: p.symbol, reason: "Dropped by the review: " + (p.review.note || p.review.issues.join("; ")) }))),
       review: rv ? { overall: rv.overall, kept: rv.reviews.filter(x => x.verdict === "keep").length, revised: rv.reviews.filter(x => x.verdict === "revise").length, dropped: dropped.length } : null,
       candidates: cands.length, sourcesRetrieved: S.sources.length, toolCalls: S.calls, demo: !!app.demo };
   }
@@ -395,7 +399,10 @@ Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"b
     f.exchange = h("select", { "aria-label": "Exchange" }, [["both", "NYSE + Nasdaq"], ["nyse", "NYSE only"], ["nasdaq", "Nasdaq only"]].map(([v, l]) => h("option", { value: v, selected: v === app.ls.get("pk.exchange", "both") }, l)));
     f.focus = h("input", { type: "text", maxlength: 120, placeholder: "a theme, sector or style, e.g. AI chips, nuclear power, oversold large caps, layer-2 coins", style: "width:100%", value: app.ls.get("pk.focus", ""), "aria-label": "Focus" });
     const log = MD.ai.logBox(), phase = h("div", { class: "label" });
-    let ctl = null;
+    let ctl = null, listFocus = app.ctx.picks && Array.isArray(app.ctx.picks.symbols) && app.ctx.picks.symbols.length ? app.ctx.picks : null;
+    const listChip = h("div", { class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center", hidden: !listFocus });
+    const paintChip = () => { listChip.hidden = !listFocus; if (listFocus) listChip.replaceChildren(h("span", { class: "pill ok" }, "Focus list"), h("span", { class: "small" }, listFocus.symbols.length + " names from " + listFocus.label + ": " + listFocus.symbols.join(", ")), h("button", { class: "btn ghost sm", type: "button", onclick: () => { listFocus = null; app.ctx.picks = null; paintChip(); } }, "Clear list")); };
+    paintChip();
     const go = h("button", { class: "btn", type: "button" }, sets.length ? "Generate a fresh set" : "Generate recommendations");
     const stop = h("button", { class: "btn ghost", type: "button", hidden: true, onclick: () => ctl && ctl.abort() }, "Stop");
     go.onclick = async () => {
@@ -404,7 +411,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"b
       ctl = new AbortController(); go.disabled = true; stop.hidden = false; log.clear(); phase.textContent = "Working…";
       const L = (kind, text) => log.add({ at: Date.now(), kind, text });
       try {
-        const set = await generate(app, { stocks: f.stocks.checked, crypto: f.crypto.checked, mine: f.mine.checked, window: f.window.value, count: Number(f.count.value), focus: f.focus.value.trim().slice(0, 120) || null, exchange: f.exchange.value, signal: ctl.signal }, L, ctl.signal, (e) => log.add(e));
+        const set = await generate(app, { stocks: f.stocks.checked, crypto: f.crypto.checked, mine: f.mine.checked, window: f.window.value, count: Number(f.count.value), focus: listFocus ? null : f.focus.value.trim().slice(0, 120) || null, symbols: listFocus ? listFocus.symbols : null, symbolsLabel: listFocus ? listFocus.label : null, exchange: f.exchange.value, signal: ctl.signal }, L, ctl.signal, (e) => log.add(e));
         if (app.demo) { phase.textContent = "Done (demo mode: not saved)"; body.replaceChildren(setView(app, Object.assign({ id: "unsaved", createdAt: Date.now() }, set))); }
         else { const saved = await app.store.create("picks", set); await journal(app, saved); app.ls.set("picksOpen", saved.id); phase.textContent = "Done · saved and logged in your forecast journal"; app.rerender(); }
       } catch (e) { phase.textContent = e && e.code === "cancelled" ? "Stopped." : ""; if (!(e && e.code === "cancelled")) L("fail", ({ no_sample: "Claude isn't available in this view.", not_granted: "Claude access was declined for this page.", rate_limited: "Usage limit reached; try again later.", invalid_json: "The answer came back unreadable; try again." })[e && e.code] || (e && e.message) || "Failed."); }
@@ -412,6 +419,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"b
     };
     root.append(U.section("Generate", h("div", { class: "stack" },
       h("div", { class: "form" }, h("label", { class: "chk" }, f.stocks, "US stocks"), h("label", { class: "chk" }, f.crypto, "Crypto"), h("label", { class: "chk" }, f.mine, "Include my watchlist & holdings"), U.field("Window", f.window), U.field("How many", f.count), U.field("Stocks from", f.exchange)),
+      listChip,
       h("div", { class: "row", style: "gap:10px;align-items:flex-end;flex-wrap:wrap" }, h("label", { class: "field", style: "flex:1 1 280px;min-width:0" }, h("span", { class: "label" }, "Focus (optional)"), f.focus), h("div", { class: "row" }, go, stop)),
       h("p", { class: "small muted" }, "Takes about 2–4 minutes: the app measures the candidates (including each one's own odds of finishing higher over the window, from 5 years of history), Claude investigates them with news, price, earnings, options, Zacks, insider and smart-money tools and the Market Brain's record, and a second review checks every pick against the evidence before it's shown. Every pick gets a chance of going up and of going down. Uses your Claude usage plus roughly 40–70 data requests through Exa, a few news searches through Bigdata.com and CoinMarketCap, and Zacks lookups when they're connected. Stocks come from the largest companies on the NYSE and Nasdaq (above $2B market cap and $5 a share) through several angles: earnings in the window, today's movers, the biggest moves and a rotating sample of names not recommended lately. Coins come from the top 60 above $1B (no stablecoins or wrapped tokens). A name recommended in the last 30 days is picked again only with a stated reason, and no more than two picks share a sector. A focus adds the names Claude gives for it, each checked with a live quote and measured like the rest; ones that can't be priced are dropped."),
       phase, log,
@@ -624,6 +632,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"b
           } }, "Re-check") : null,
           p.catalyst && /^\d{4}-\d{2}-\d{2}$/.test(p.catalyst.date || "") ? h("button", { class: "btn ghost sm", type: "button", onclick: async () => { await app.store.create("catalysts", { assetId: p.asset.id, symbol: p.symbol, title: p.catalyst.event, date: p.catalyst.date, impact: "High", note: "From recommendations " + U.fmtDate(set.createdAt) }); U.toast("Catalyst tracked"); } }, "Track catalyst") : null,
           h("button", { class: "btn ghost sm", type: "button", onclick: () => { app.ctx.daytrade = { asset: p.asset }; app.go("daytrade", app.ctx.daytrade); } }, "Day-trade view"),
+          MD.paper && p.upPct != null && p.upPct > 50 && set.id !== "unsaved" ? MD.paper.button(app, p.asset, { source: "pick", note: p.upPct + "% up over " + (p.timeframeLabel || p.timeframeDays + " days") + " (" + U.fmtDate(set.createdAt) + ")" }) : null,
           set.id !== "unsaved" ? h("button", { class: "btn ghost sm pickrm", type: "button", "aria-label": "Remove " + p.symbol + " from recommendations", onclick: () => clearPicks(app, "pick", { setId: set.id, symbol: p.symbol }) }, "Remove") : null)));
     }
     wrap.append(grid);

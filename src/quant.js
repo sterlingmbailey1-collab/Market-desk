@@ -284,6 +284,49 @@
   /* Where an open up/down call stands: the move since it was made, that move in daily-volatility units for the bars
      elapsed (positive = in the call's favour), and the chance it finishes beyond its flat band on the called side,
      from a driftless walk over the bars left. Geometry only: it knows nothing about the reasons behind the call. */
+  /* Long-only portfolio weights from an annualised covariance matrix. minVarWeights: the mix with the least variance,
+     no weight above `cap` (projected gradient onto the capped simplex). ercWeights: equal risk contribution, every
+     holding adds the same share of the portfolio's variance (cyclical coordinate descent). riskShares: each one's share. */
+  function capSimplex(v, cap) {
+    let lo = Math.min(...v) - cap - 1, hi = Math.max(...v);
+    for (let k = 0; k < 100; k++) { const t = (lo + hi) / 2, s = v.reduce((a, x) => a + Math.max(0, Math.min(cap, x - t)), 0); if (s > 1) lo = t; else hi = t; }
+    const t = (lo + hi) / 2; return v.map(x => Math.max(0, Math.min(cap, x - t)));
+  }
+  function minVarWeights(cov, cap = 1, iters = 4000) {
+    const n = cov.length; if (!n) return [];
+    cap = Math.max(1 / n, Math.min(1, cap));
+    const L = 2 * Math.max(...cov.map(r => r.reduce((a, x) => a + Math.abs(x), 0))) || 1;
+    let w = Array(n).fill(1 / n);
+    for (let k = 0; k < iters; k++) {
+      const g = cov.map(r => 2 * r.reduce((a, x, j) => a + x * w[j], 0));
+      const nw = capSimplex(w.map((x, i) => x - g[i] / L), cap);
+      const d = nw.reduce((a, x, i) => a + Math.abs(x - w[i]), 0); w = nw; if (d < 1e-12) break;
+    }
+    return w;
+  }
+  function ercWeights(cov, iters = 500) {
+    const n = cov.length; if (!n) return [];
+    let y = cov.map((r, i) => 1 / Math.sqrt(Math.max(r[i], 1e-12)));
+    for (let k = 0; k < iters; k++) {
+      let move = 0;
+      for (let i = 0; i < n; i++) { const c = cov[i].reduce((a, x, j) => a + (j === i ? 0 : x * y[j]), 0), s = Math.max(cov[i][i], 1e-12), ni = (-c + Math.sqrt(c * c + 4 * s / n)) / (2 * s); move += Math.abs(ni - y[i]); y[i] = ni; }
+      if (move < 1e-12) break;
+    }
+    const t = y.reduce((a, x) => a + x, 0); return y.map(x => x / t);
+  }
+  function riskShares(cov, w) {
+    const m = cov.map(r => r.reduce((a, x, j) => a + x * w[j], 0)), v = w.reduce((a, x, i) => a + x * m[i], 0);
+    return w.map((x, i) => v > 0 ? x * m[i] / v : 0);
+  }
+  /* News sentiment score (−100…100) from classified headlines {s: −2…2, mat: 1…3, ts}, weighted by materiality and
+     recency (half-life three days). label: positive/negative at ±25, mixed when material good and bad news meet. */
+  function newsScore(items, now = Date.now()) {
+    let w = 0, s = 0;
+    for (const x of items) { const age = x.ts ? Math.max(0, (now - x.ts) / 864e5) : 3, wt = Math.max(1, Math.min(3, x.mat || 1)) * Math.pow(0.5, age / 3); w += wt; s += wt * Math.max(-2, Math.min(2, Number(x.s) || 0)) / 2; }
+    if (!(w > 0)) return { score: null, label: "none" };
+    const score = Math.round(s / w * 100), good = items.some(x => x.s >= 1 && x.mat >= 2), bad = items.some(x => x.s <= -1 && x.mat >= 2);
+    return { score, label: score >= 25 ? "positive" : score <= -25 ? "negative" : good && bad ? "mixed" : "neutral" };
+  }
   function callStanding({ direction, p0, price, bandPct = 1, dailyVolPct, barsElapsed, barsLeft }) {
     const a = Number(p0), b = Number(price), v = Number(dailyVolPct) / 100;
     if (!(a > 0 && b > 0 && v > 0) || (direction !== "up" && direction !== "down")) return null;
@@ -441,6 +484,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { TECH_ALERTS, techState, evaluateTechAlert, alertText, tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { minVarWeights, ercWeights, riskShares, newsScore, TECH_ALERTS, techState, evaluateTechAlert, alertText, tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

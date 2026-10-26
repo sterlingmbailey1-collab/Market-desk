@@ -21,7 +21,7 @@
       h("button", { class: "btn ghost", type: "button", onclick: () => importModal(app) }, "Import CSV")]));
     const sum = h("div", {}), hold = h("div", {}), alloc = h("div", {}), risk = h("div", {}), ledger = h("div", {}), analysis = h("div", { class: "stack", style: "gap:18px" });
     const anSec = U.section("Portfolio analysis · " + R, analysis); anSec.id = "sec-analysis";
-    root.append(sum, U.section("Holdings · " + R, hold), h("div", { class: "grid g2" }, U.section("Allocation", alloc), U.section("Risk & currency exposure", risk)), anSec, U.section("Transaction ledger", ledger, [h("button", { class: "btn ghost sm", type: "button", onclick: () => U.download("market-desk-transactions.csv", C.txsToCSV(app.store.cached("tx"))) }, "Export CSV")]));
+    root.append(sum, U.section("Holdings · " + R, hold), h("div", { class: "grid g2" }, U.section("Allocation", alloc), U.section("Risk & currency exposure", risk)), anSec, MD.sentiment ? MD.sentiment.section(app) : null, U.section("Transaction ledger", ledger, [h("button", { class: "btn ghost sm", type: "button", onclick: () => U.download("market-desk-transactions.csv", C.txsToCSV(app.store.cached("tx"))) }, "Export CSV")]));
     const draw = () => U.async(sum, () => app.valuePortfolio(R), (pv) => {
       const t = pv.totals;
       sum.append(h("div", { class: "grid g4" },
@@ -260,10 +260,11 @@ Facts: ${facts.join(" | ") || "no material moves"} | Alerts: ${d.alerts.map(a =>
     const ctx = app.ctx.opportunities || {};
     const tab = ctx.compare ? "compare" : (app.ls.get("oppTab", "scan"));
     root.append(head("Opportunities", "Screens, comparisons and AI idea finding built on measured data. Claude researches with news and market-data tools, a second review checks its reasoning, and every number comes from the app. A result is a lead to research, not a recommendation."),
-      U.tabs([["scan", "Scanner"], ["watch", "Watchlist scanner"], ["compare", "Investment decision comparator"], ["ideas", "AI idea finder"]], tab, (k) => { app.ls.set("oppTab", k); app.ctx.opportunities = k === "compare" ? { compare: ctx.compare || [] } : {}; app.rerender(); }));
+      U.tabs([["scan", "Scanner"], ["screener", "Stock screener"], ["watch", "Watchlist scanner"], ["compare", "Investment decision comparator"], ["ideas", "AI idea finder"]], tab, (k) => { app.ls.set("oppTab", k); app.ctx.opportunities = k === "compare" ? { compare: ctx.compare || [] } : {}; app.rerender(); }));
     if (tab === "compare") return comparator(root, app, ctx.compare || []);
     if (tab === "ideas") return MD.oppAI.ideaFinder(root, app);
     if (tab === "watch") return MD.watchScan.view(root, app);
+    if (tab === "screener") return MD.screener.view(root, app);
     scanner(root, app, ctx.screen);
   };
   const PRESETS = {

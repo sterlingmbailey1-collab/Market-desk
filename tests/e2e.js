@@ -36,13 +36,15 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.goto("file://" + page_ + "#dashboard");
   await page.waitForSelector(".nav a", { timeout: 10000 });
   await page.waitForTimeout(1500);
-  check("app boots and renders navigation", (await page.locator(".nav a").count()) === 21, String(await page.locator(".nav a").count()));
-  check("every section has an icon", await page.locator(".nav a .ico svg").count() === 21);
+  check("app boots and renders navigation", (await page.locator(".nav a").count()) === 23, String(await page.locator(".nav a").count()));
+  check("every section has an icon", await page.locator(".nav a .ico svg").count() === 23);
+  // The daily digest is tested on its own below; keep the timed one out of the other inbox checks.
+  await page.evaluate(() => MD.app.saveSettings({ digest: false }));
   await page.waitForTimeout(1500);
   check("ticker tape shows markets and opens them", await page.locator("#tape .tape-set").first().locator(".tk").count() >= 8, String(await page.locator("#tape .tk").count()));
   check("account storage selected", await page.locator("text=Saved to account").count() > 0);
 
-  const routes = ["dashboard", "markets", "brain", "stocks", "crypto", "fx", "metals", "cards", "betting", "smartmoney", "portfolio", "opportunities", "picks", "daytrade", "research", "calendar", "advisor", "strategies", "reports", "inbox", "settings"];
+  const routes = ["dashboard", "today", "markets", "brain", "stocks", "crypto", "fx", "metals", "cards", "betting", "smartmoney", "portfolio", "paper", "opportunities", "picks", "daytrade", "research", "calendar", "advisor", "strategies", "reports", "inbox", "settings"];
   for (const r of routes) {
     const before = errors.length;
     await page.click(`.nav a[href="#${r}"]`);
@@ -59,6 +61,8 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("stock page shows quote with status and source", await page.locator(".ds .st").first().count() > 0 && (await page.locator("text=Nasdaq").count()) > 0);
   check("stock chart drawn", await page.locator(".chartbox canvas").count() > 0);
   check("hero quote header and jump links", await page.locator(".hero").count() === 1 && await page.locator(".jump a").count() >= 6);
+  await page.waitForSelector(".hero .sector-pill", { timeout: 15000 }).catch(() => {});
+  check("stock page header shows the exchange and the sector", await page.locator(".hero .pill:has-text('NASDAQ')").count() + await page.locator(".hero .pill:has-text('Nasdaq')").count() >= 1 && /Technology/i.test(await page.locator(".hero .sector-pill").innerText().catch(() => "")), await page.evaluate(() => (document.querySelector(".hero .row") || {}).innerHTML + " | heroes " + document.querySelectorAll(".hero").length + " | route " + MD.app.route));
   await page.waitForTimeout(1500);
   check("projection fan chart and outcome tiles render", await page.locator("#sec-projection .fan svg path.fan-90").count() === 1 && /Middle outcome/i.test(await page.locator("#sec-projection").innerText()));
   await page.click("#sec-projection .seg button:has-text('1Y')"); await page.waitForTimeout(300);
@@ -175,6 +179,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
     return { focus: set.focus, focusPicks: set.picks.filter(p => p.focus).map(p => p.symbol), all: set.picks.map(p => p.symbol), log: lines.filter(t => /focus/i.test(t)), prompt: /asked to focus on: "AI chips"/.test(pr) && /"fitsFocus":"AI chips"/.test(pr), fake: /"symbol":"ZZZZ"/.test(pr) };
   });
   const pkTxt0 = await page.locator("#content").innerText();
+  check("recommendations: picks that lean up offer a one-click paper trade", await page.locator("#content button:text-is('Paper trade')").count() >= 1);
   check("recommendations: a cross-stock model ranks the stock candidates on beating the S&P 500, with its out-of-sample record", await page.evaluate(() => { const pr = (window.__mock.fullPrompts || []).filter(x => /LARGE price move/.test(x)).pop() || ""; const s = MD.app.store.cached("picks")[0]; return /"crossStockModel":\{"chanceToBeatSP500Pct":[\d.]+,"rankAmongStockCandidates":"\d+ of \d+","edgeOutOfSample":(true|false)\}/.test(pr) && s.crossStock && s.crossStock.names >= 4 && typeof s.crossStock.tStat === "number"; }) && /Cross-stock model across \d+ stock candidates/.test(pkTxt0), pkTxt0.match(/Cross-stock[^\n]*/)?.[0]);
   check("recommendations: every measured candidate carries the machine-learning model's odds and out-of-sample record", await page.evaluate(() => { const pr = (window.__mock.fullPrompts || []).filter(x => /LARGE price move/.test(x)).pop() || ""; return /"mlModel":\{"horizonDays":\d+,"upPct":[\d.]+,"edgeOutOfSample":(true|false)/.test(pr); }));
   check("recommendations focus: Claude names assets for the theme, the app verifies them (a fake ticker drops out) and the picks lead with them", foc.focus === "AI chips" && foc.focusPicks.length >= 1 && foc.focusPicks.every(s => ["AMD", "NVDA"].includes(s)) && foc.prompt && !foc.fake && foc.log.some(t => /2 of 3 focus names verified/.test(t)), JSON.stringify(foc));
@@ -472,6 +477,14 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("rebalancing helper: targets, trades, costs, volatility before and after", /Rebalancing helper/i.test(stTxt) && /Turnover/i.test(stTxt) && /Estimated costs/i.test(stTxt) && /→/.test(stTxt));
   await page.selectOption("#sec-analysis select.rebal-strat", "equal"); await page.waitForTimeout(400);
   check("rebalance strategy switch recomputes targets", (await page.locator("#sec-analysis").innerText()).includes("Equal weight") || await page.evaluate(() => MD.app.ls.get("rebal", {}).strategy === "equal"));
+  await page.selectOption("#sec-analysis select.rebal-strat", "erc"); await page.waitForTimeout(500);
+  const rbUi = await page.locator("#sec-analysis").innerText();
+  const rbT = await page.evaluate(() => { const S = [[0.09, 0.03, 0.01], [0.03, 0.04, 0.006], [0.01, 0.006, 0.0225]], items = [{ symbol: "A", weight: 0.5 }, { symbol: "B", weight: 0.2 }, { symbol: "C", weight: 0.1 }, { symbol: "EUR", weight: 0.2 }];
+    const e = MD.rebalance.targets(items, "erc", { cov: S, symbols: ["A", "B", "C"] }), m = MD.rebalance.targets(items, "minvol", { cov: S, symbols: ["A", "B", "C"], cap: 0.4 });
+    const live = (w) => w.slice(0, 3).map(x => x / 0.8), rs = MD.quant.riskShares(S, live(e)), v = (w) => { const x = live(w); return x.reduce((a, xi, i) => a + xi * S[i].reduce((b, y, j) => b + y * x[j], 0), 0); };
+    return { e, m, rs, cashE: e[3], cashM: m[3], vE: v(e), vM: v(m), maxM: Math.max(...m.slice(0, 3)) }; });
+  check("rebalancing: equal risk contribution and capped minimum volatility from the measured covariance; holdings without history keep their weight", /Share of risk/i.test(rbUi) && rbT.rs.every(x => Math.abs(x - 1 / 3) < 1e-4) && Math.abs(rbT.cashE - 0.2) < 1e-9 && Math.abs(rbT.cashM - 0.2) < 1e-9 && rbT.vM <= rbT.vE + 1e-12 && rbT.maxM <= 0.4 + 1e-6, JSON.stringify(rbT));
+  await page.selectOption("#sec-analysis select.rebal-strat", "equal"); await page.waitForTimeout(300);
   await page.click("#sec-analysis button:has-text('Ask Claude about this rebalance')"); await page.waitForTimeout(2000);
   check("AI weighs the rebalance with a gentler path and review", /Gentler path/i.test(await page.locator("#sec-analysis").innerText()));
   await page.screenshot({ path: path.join(shots, "e2e-portfolio-filled.png"), fullPage: true });
@@ -761,6 +774,54 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("AI decision weighs portfolio fit: correlation, volatility and worst drop for a max-size position, measured and given to Claude", !!(fitRes.fit && fitRes.fit.correlationWithPortfolio != null && fitRes.fit.portfolioVolPct.before > 0 && fitRes.inPrompt), JSON.stringify(fitRes));
   check("AI decision gets the machine-learning model's odds and record (3-month horizon)", fitRes.ml && fitRes.probs && fitRes.probs.ml != null && typeof fitRes.probs.mlEdge === "boolean", JSON.stringify(fitRes.probs));
 
+  // ---- Paper trading: virtual orders at the live quote, each mirrored into SPY
+  await page.click("button:text-is('Paper trade')"); await page.waitForTimeout(1800);
+  const tk = await page.locator(".modal").innerText();
+  await page.click(".modal button:has-text('Place paper order')"); await page.waitForTimeout(1500);
+  const po = await page.evaluate(() => MD.app.store.cached("paper").map(o => ({ side: o.side, symbol: o.symbol, qty: o.qty, price: o.price, spy: o.spyPrice, source: o.source, ps: o.priceSource })));
+  check("paper trade from an asset page: virtual money, fills at the live quote, the same dollars mirrored into SPY", /Virtual money/i.test(tk) && /Live price/i.test(tk) && po.length === 1 && po[0].side === "buy" && po[0].symbol === "AAPL" && po[0].price > 0 && po[0].spy > 0 && po[0].source === "asset" && Math.abs(po[0].qty * po[0].price - 5000) < po[0].price, JSON.stringify({ po, tk: tk.slice(0, 300) }));
+  const over = await page.evaluate(async () => { try { await MD.paper.place(MD.app, { id: "stock:AAPL", cls: "stock", symbol: "AAPL" }, "buy", 1e6); return "placed"; } catch (e) { return e.message; } });
+  const short = await page.evaluate(async () => { try { await MD.paper.place(MD.app, { id: "stock:MSFT", cls: "stock", symbol: "MSFT" }, "sell", 1); return "placed"; } catch (e) { return e.message; } });
+  check("paper account: no margin and no short selling", /only .* cash/.test(over) && /without a holding/.test(short) && await page.evaluate(() => MD.app.store.cached("paper").length === 1), over + " | " + short);
+  await page.evaluate(() => MD.app.go("paper", null, { fromNav: true })); await page.waitForTimeout(2500);
+  let ptTxt = await page.locator("#content").innerText();
+  check("paper trading page: account value, return, the same trades in the S&P 500, and the open position", /Account value/i.test(ptTxt) && /Same trades in the S&P 500/i.test(ptTxt) && /Against the S&P 500/i.test(ptTxt) && /Open positions[\s\S]*AAPL[\s\S]*Asset page/i.test(ptTxt), ptTxt.slice(0, 900));
+  await page.click("#content button:text-is('Sell')"); await page.waitForTimeout(1800);
+  await page.click(".modal button:has-text('Place paper order')"); await page.waitForTimeout(2500);
+  ptTxt = await page.locator("#content").innerText();
+  check("paper sell closes the trade, judged against the S&P 500 over the same days and grouped by where the idea came from", /Closed trades[\s\S]*AAPL/i.test(ptTxt) && /S&P 500, same days/i.test(ptTxt) && /How each source of ideas has done[\s\S]*Asset page/i.test(ptTxt) && await page.evaluate(() => { const L = MD.core.paperLedger(MD.app.store.cached("paper"), 100000); return L.positions.length === 0 && L.closed.length === 1 && L.closed[0].mirrorPct != null; }), ptTxt.slice(0, 1200));
+  await page.screenshot({ path: path.join(shots, "e2e-paper.png"), fullPage: true });
+  await page.setViewportSize({ width: 400, height: 860 }); await page.waitForTimeout(600);
+  const swPaper = await page.evaluate(() => document.documentElement.scrollWidth), ovPaper = await overlaps(page);
+  check("paper trading page at 400px: no horizontal scroll, no overlapping text", swPaper <= 401 && ovPaper.length === 0, JSON.stringify({ swPaper, ov: ovPaper.slice(0, 4) }));
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  // ---- News sentiment for holdings (Portfolio)
+  await page.evaluate(() => MD.app.go("portfolio", null, { fromNav: true })); await page.waitForTimeout(2000);
+  await page.click("#sec-sentiment button:has-text('Read the news')"); await page.waitForFunction(() => /Headlines from Bigdata/i.test(document.querySelector("#sec-sentiment").innerText), null, { timeout: 20000 }).catch(() => {});
+  const snTxt = await page.locator("#sec-sentiment").innerText();
+  const sn = await page.evaluate(() => { const d = MD.sentiment.latest(MD.app); return d && { rows: d.rows.map(r => ({ s: r.symbol, score: r.score, label: r.label, rel: r.relevant, n: r.headlines, top: r.top && r.top.url, summary: r.summary })), p: /never add facts/.test(window.__mock.sentimentPrompt || "") }; });
+  check("news sentiment for holdings: headlines per holding, Claude's reading scored by the page, off-topic ones left out, links only to retrieved articles", !!sn && sn.rows.length >= 1 && sn.rows[0].label === "positive" && sn.rows[0].score > 0 && (sn.rows[0].n < 3 || sn.rows[0].rel < sn.rows[0].n) && sn.rows.every(r => !r.top || /^https:\/\/app\.bigdata\.com\//.test(r.top)) && /steady demand/.test(sn.rows[0].summary) && sn.p && /Positive/.test(snTxt) && /Headlines from Bigdata\.com/.test(snTxt), JSON.stringify(sn) + " " + snTxt.slice(0, 300));
+
+  // ---- Today's game plan and the daily digest
+  const tmpWatch = await page.evaluate(async () => (await MD.app.store.create("watch", { assetId: "stock:AAPL", id: undefined, cls: "stock", symbol: "AAPL", name: "Apple" })).id);
+  await page.evaluate(() => MD.app.go("today", null, { fromNav: true })); await page.waitForFunction(() => /Your names today/i.test(document.querySelector("#content").innerText), null, { timeout: 20000 }).catch(() => {});
+  let gpTxt = await page.locator("#content").innerText();
+  check("today's game plan: session clock, SPY call, calls due, alerts, paper account at a glance", /Today's Game Plan/i.test(gpTxt) && /(US market|Pre-market|After-hours|Market closed|markets are closed)/.test(gpTxt) && /SPY call/i.test(gpTxt) && /Calls due this week/i.test(gpTxt) && /Unread alerts/i.test(gpTxt) && /Paper account/i.test(gpTxt), gpTxt.slice(0, 700));
+  check("today's game plan: US economic releases only, and earnings for your names (once each)", /Nonfarm Payrolls/.test(gpTxt) && !/ECB Interest Rate/.test(gpTxt) && (gpTxt.match(/Earnings for your names[\s\S]*?(?=Your names today)/i) || [""])[0].split("AAPL").length === 2, (gpTxt.match(/US economic releases today[\s\S]{0,600}/i) || [gpTxt.slice(0, 600)])[0]);
+  await page.click("button:has-text('Make today')"); await page.waitForTimeout(2500);
+  gpTxt = await page.locator("#content").innerText();
+  const gpPrompt = await page.evaluate(() => window.__mock.plannerPrompt || "");
+  check("AI game plan: priorities from the measured facts only; unknown tickers and pages dropped; saved for the day", /Payrolls at 12:30 GMT/.test(gpTxt) && /Decide on AAPL before its report/.test(gpTxt) && await page.locator(".aiplan button:has-text('Open AAPL')").count() === 1 && await page.locator(".aiplan button:has-text('ZZZZ')").count() === 0 && await page.locator(".aiplan button:has-text('bogus')").count() === 0 && /"usEconomicReleasesToday":\[\{"gmt":"12:30","event":"Nonfarm Payrolls"/.test(gpPrompt) && !/ECB/.test(gpPrompt) && /never invent/.test(gpPrompt) && await page.evaluate(() => MD.app.store.cached("gameplans").length === 1), gpPrompt.slice(0, 300));
+  const dg = await page.evaluate(async () => { MD.app.saveSettings({ digest: true }); const a = await MD.today.autoDigest(MD.app, { force: true }), b = await MD.today.autoDigest(MD.app, { force: true }); MD.app.saveSettings({ digest: false }); const off = await MD.today.autoDigest(MD.app, { force: true }); return { a: a && a.title, body: a && a.body, b: !!b, off: !!off, n: MD.app.store.cached("inbox").filter(i => i.kind === "digest").length }; });
+  check("daily digest: one inbox item a day with the session, releases, earnings, calls and paper account; off switch respected", /^Daily digest · /.test(dg.a || "") && /Nonfarm Payrolls/.test(dg.body || "") && /Earnings for your names: .*AAPL/.test(dg.body || "") && /Paper account/.test(dg.body || "") && /News tone for your holdings: positive for/.test(dg.body || "") && !dg.b && !dg.off && dg.n === 1, JSON.stringify(dg));
+  await page.screenshot({ path: path.join(shots, "e2e-today.png"), fullPage: true });
+  await page.setViewportSize({ width: 400, height: 860 }); await page.waitForTimeout(600);
+  const swToday = await page.evaluate(() => document.documentElement.scrollWidth), ovToday = await overlaps(page);
+  check("today's game plan at 400px: no horizontal scroll, no overlapping text", swToday <= 401 && ovToday.length === 0, JSON.stringify({ swToday, ov: ovToday.slice(0, 4) }));
+  await page.evaluate((id) => MD.app.store.remove("watch", id), tmpWatch);
+  await page.setViewportSize({ width: 1280, height: 900 });
+
   // ---- Opportunities AI: scan review, comparison scorecard, idea finder
   await page.evaluate(() => { MD.app.ls.set("oppTab", "scan"); MD.app.go("opportunities", null, { fromNav: true }); }); await page.waitForTimeout(800);
   await page.click("button:has-text('Run scan')"); await page.waitForTimeout(3500);
@@ -780,10 +841,32 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.click(".aicard button:has-text('Watch')"); await page.waitForTimeout(400);
   check("add an idea to the watchlist", await page.evaluate(() => MD.app.store.cached("watch").some(w => w.symbol === "NVDA" || w.symbol === "SMH" || w.symbol === "BE")));
 
+  // ---- Stock screener: exchange/sector/size from Nasdaq, price and move filters in the page, hand-offs
+  await page.evaluate(() => { MD.app.ls.set("scr.f", {}); MD.app.ls.set("oppTab", "screener"); MD.app.go("opportunities", null, { fromNav: true }); }); await page.waitForTimeout(800);
+  await page.selectOption("select[aria-label='Sector']", "technology"); await page.click("button:has-text('Run screen')"); await page.waitForTimeout(2500);
+  let scrTxt = await page.locator("#content").innerText();
+  const scrUrls = await page.evaluate(() => window.__mock.toolCalls.filter(c => c.tool === "web_fetch_exa" && /screener\/stocks.*sector=technology/.test(c.input.urls[0])).map(c => c.input.urls[0]));
+  check("stock screener: sector filter sent to Nasdaq for both exchanges; matches labelled with their exchange and the snapshot's as-of", /3 matches/i.test(scrTxt) && /NVDA[\s\S]*Nasdaq/.test(scrTxt) && /AAPL/.test(scrTxt) && /MSFT/.test(scrTxt) && !/\bJPM\b/.test(scrTxt) && /last price as of Oct 24, 2026/i.test(scrTxt) && scrUrls.some(u => /exchange=nyse/.test(u)) && scrUrls.some(u => /exchange=nasdaq/.test(u)), JSON.stringify({ scrUrls, t: scrTxt.slice(0, 700) }));
+  await page.fill("input[aria-label=\"Today's move at least (%)\"]", "1"); await page.click("button:has-text('Run screen')"); await page.waitForTimeout(2000);
+  scrTxt = await page.locator("#content").innerText();
+  check("stock screener: today's-move filter applied in the page (NVDA +2.4% stays, MSFT +0.9% and AAPL −0.6% drop)", /1 match\b/i.test(scrTxt) && /NVDA/.test(scrTxt) && !/\bMSFT\b/.test(scrTxt.split("Market cap")[1] || ""), scrTxt.slice(0, 600));
+  await page.fill("input[aria-label=\"Today's move at least (%)\"]", ""); await page.click("button:has-text('Run screen')"); await page.waitForTimeout(2000);
+  await page.click("button:has-text('Machine-learning scan of the top 10')"); await page.waitForFunction(() => /Machine-learning scan of the screen[\s\S]*trained/i.test(document.querySelector("#content").innerText), null, { timeout: 60000 }).catch(() => {});
+  scrTxt = await page.locator("#content").innerText();
+  check("stock screener → machine-learning scan of the matches, edge first", /Machine-learning scan of the screen/i.test(scrTxt) && /3 trained/i.test(scrTxt) && /Chance higher in/i.test(scrTxt), (scrTxt.match(/Machine-learning scan of the screen[\s\S]{0,400}/i) || [scrTxt.slice(0, 400)])[0]);
+  await page.screenshot({ path: path.join(shots, "e2e-screener.png"), fullPage: true });
+  await page.click("button:has-text('Recommendations from the top')"); await page.waitForTimeout(1500);
+  const lfTxt = await page.locator("#content").innerText();
+  const lfC = await page.evaluate(async () => { const c = await MD.picks.buildCandidates(MD.app, Object.assign({ stocks: true, crypto: false, window: "3m", count: 6 }, { symbols: MD.app.ctx.picks.symbols, symbolsLabel: MD.app.ctx.picks.label }), () => {}); return c.filter(x => x.focus).map(x => x.asset.symbol + ":" + x.focus); });
+  check("stock screener → Recommendations: the screen becomes the focus list, verified and measured like any candidate", /Focus list/i.test(lfTxt) && /3 names from your stock screen \(NYSE \+ Nasdaq, Technology\)/.test(lfTxt) && lfC.length === 3 && lfC.every(x => /from your stock screen/.test(x)), JSON.stringify({ lfC, t: (lfTxt.match(/Focus list[^\n]*\n?[^\n]*/) || [""])[0] }));
+  await page.click("button:has-text('Clear list')"); await page.waitForTimeout(300);
+  check("focus list can be cleared", await page.evaluate(() => !MD.app.ctx.picks) && !(await page.locator("#content").innerText()).includes("names from your stock screen"));
+
   // ---- AI quick take on an asset page, and the dashboard morning brief
   await page.evaluate(() => MD.app.openAsset({ id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple Inc." })); await page.waitForTimeout(2500);
   await page.click("#sec-ai button:has-text('Get AI quick take')"); await page.waitForTimeout(3500);
   const takeTxt = await page.locator("#sec-ai").innerText();
+  check("AI decision card offers a paper trade sized at the decision's ceiling", await page.locator("#sec-decide button:has-text('Paper trade this decision')").count() === 1);
   check("AI quick take: stance, leans, both sides, measured levels, review", /Constructive, but stretched/i.test(takeTxt) && /3M lean/i.test(takeTxt) && /Working against it/i.test(takeTxt) && /200-day average/i.test(takeTxt) && /Review:/i.test(takeTxt), takeTxt.slice(0, 500));
   check("AI quick take saved and its 3-month lean journaled", await page.evaluate(() => MD.app.store.cached("aitakes").some(d => d.id === "stock_AAPL") && MD.app.store.cached("forecasts").some(f => f.source === "ai-take" && f.symbol === "AAPL" && f.direction === "up")));
   await page.click("#sec-company .tabs button:has-text('Earnings')"); await page.waitForTimeout(2500);

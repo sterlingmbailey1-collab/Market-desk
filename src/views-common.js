@@ -148,6 +148,7 @@
     return h("div", { class: "row" },
       h("button", { class: "btn sm", type: "button", onclick: () => app.go("research", Object.assign({}, app.ctx.research || {}, { asset: slim(asset), autostart: false })) }, "Deep research"),
       h("button", { class: "btn ghost sm", type: "button", onclick: () => txModal(asset, getQuote && getQuote()) }, "Add to portfolio"),
+      MD.paper ? MD.paper.button(app, asset, { source: "asset" }) : null,
       watchBtn,
       h("button", { class: "btn ghost sm", type: "button", onclick: () => alertModal(asset, getQuote && getQuote()) }, "Create alert"),
       h("button", { class: "btn ghost sm", type: "button", onclick: () => scenarioModal(asset, getQuote && getQuote(), getSeries && getSeries()) }, "Run scenario"),
@@ -185,7 +186,7 @@
         const res = await Promise.allSettled(tasks);
         if (my !== id) return;
         for (const r of res) if (r.status === "fulfilled") out.push(...r.value.slice(0, 5));
-        list.replaceChildren(...out.filter(a => !classes || classes.includes(a.cls)).map(a => h("button", { class: "btn ghost sm", type: "button", style: "justify-content:space-between;width:100%", onclick: () => { onPick(a); list.replaceChildren(); input.value = (a.symbol || "") + " — " + a.name; } }, h("span", {}, (a.symbol ? a.symbol + " — " : "") + a.name), h("span", { class: "faint tiny" }, a.cls))));
+        list.replaceChildren(...out.filter(a => !classes || classes.includes(a.cls)).map(a => h("button", { class: "btn ghost sm", type: "button", style: "justify-content:space-between;width:100%", onclick: () => { onPick(a); list.replaceChildren(); input.value = (a.symbol || "") + " — " + a.name; } }, h("span", {}, (a.symbol ? a.symbol + " — " : "") + a.name), h("span", { class: "faint tiny" }, [a.exchange, a.cls].filter(Boolean).join(" · ")))));
         if (!out.length) list.replaceChildren(h("div", { class: "muted small" }, "No matches. For sports cards or other collectibles, use “Custom asset”."));
       }, 350);
     });

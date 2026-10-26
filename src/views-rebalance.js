@@ -11,6 +11,15 @@
   function targets(items, strategy, opts = {}) {
     const n = items.length; if (!n) return [];
     if (strategy === "equal") return items.map(() => 1 / n);
+    // Minimum volatility (capped) and equal risk contribution use the measured covariance of the holdings with history;
+    // holdings without history (cash, cards…) keep their weight.
+    if (strategy === "minvol" || strategy === "erc") {
+      const idx = items.map(it => (opts.symbols || []).indexOf(it.symbol)), live = idx.map((k, i) => [k, i]).filter(([k]) => k >= 0);
+      if (live.length < 2 || !opts.cov) return items.map(it => it.weight);
+      const sub = live.map(([k]) => live.map(([k2]) => opts.cov[k][k2])), fixedW = items.reduce((s, it, i) => s + (idx[i] < 0 ? it.weight : 0), 0);
+      const w = strategy === "minvol" ? MD.quant.minVarWeights(sub, Math.min(1, (Number(opts.cap) || 0.4) / Math.max(1e-9, 1 - fixedW))) : MD.quant.ercWeights(sub);
+      const out = items.map(it => it.weight); live.forEach(([, i], j) => { out[i] = (1 - fixedW) * w[j]; }); return out;
+    }
     if (strategy === "invvol") {
       const priced = items.filter(it => it.volPct > 0), fixedW = items.filter(it => !(it.volPct > 0)).reduce((s, it) => s + it.weight, 0);
       const inv = priced.reduce((s, it) => s + 1 / it.volPct, 0);
@@ -37,13 +46,17 @@
   }
   function plan(app, m, strategy, opts) {
     const items = m.items.map(it => ({ symbol: it.symbol, name: it.name, cls: it.cls, weight: it.weight, value: it.value, volPct: it.volPct }));
-    const t = targets(items, strategy, opts);
+    const t = targets(items, strategy, Object.assign({ cov: m.cov, symbols: m.live.map(x => x.symbol) }, opts));
     const rows = items.map((it, i) => {
       const trade = (t[i] - it.weight) * m.total, ex = app.exitAssumption(it.cls, "USD", m.R);
       return Object.assign({}, it, { target: t[i], trade, cost: Math.abs(trade) * ((ex.exitCostPct || 0) + (ex.fxSpreadPct || 0)) / 100 });
     });
     const newW = new Map(rows.map(r => [r.symbol, r.target]));
     const hhi = rows.reduce((s, r) => s + r.target * r.target, 0);
+    // Each holding's share of the portfolio's risk (variance), before and after, from the measured covariance.
+    const share = (wOf) => { const w = m.live.map(x => wOf(x.symbol) || 0), s = MD.quant.riskShares(m.cov, w); return new Map(m.live.map((x, i) => [x.symbol, s[i]])); };
+    const rsB = share((s) => (items.find(it => it.symbol === s) || {}).weight), rsA = share((s) => newW.get(s));
+    for (const r of rows) { r.riskBefore = rsB.get(r.symbol) ?? null; r.riskAfter = rsA.get(r.symbol) ?? null; }
     return { rows, volBefore: m.volPct, volAfter: volOf(m, newW), effBefore: m.effective, effAfter: hhi > 0 ? 1 / hhi : 0, turnover: rows.reduce((s, r) => s + Math.abs(r.trade), 0) / 2, cost: rows.reduce((s, r) => s + r.cost, 0) };
   }
 
@@ -63,11 +76,11 @@
   function section(app, m) {
     const st = Object.assign({ strategy: "cap", cap: 20 }, app.ls.get("rebal", {}));
     const out = h("div", { class: "stack" }), ai = h("div", { class: "stack" });
-    const strat = h("select", { class: "rebal-strat", style: "width:auto", "aria-label": "Rebalancing strategy" }, [["cap", "Cap any position at…"], ["equal", "Equal weight"], ["invvol", "Weight by inverse volatility (risk parity, simple)"]].map(([v, l]) => h("option", { value: v, selected: v === st.strategy }, l)));
+    const strat = h("select", { class: "rebal-strat", style: "width:auto", "aria-label": "Rebalancing strategy" }, [["cap", "Cap any position at…"], ["equal", "Equal weight"], ["invvol", "Weight by inverse volatility (simple risk parity)"], ["erc", "Equal risk contribution (risk parity)"], ["minvol", "Minimum volatility, no position above…"]].map(([v, l]) => h("option", { value: v, selected: v === st.strategy }, l)));
     const cap = h("input", { type: "number", min: 5, max: 100, step: 5, value: st.cap, style: "width:80px" });
     const paint = () => {
       st.strategy = strat.value; st.cap = Math.max(5, Math.min(100, Number(cap.value) || 20)); app.ls.set("rebal", st);
-      cap.hidden = st.strategy !== "cap";
+      cap.hidden = st.strategy !== "cap" && st.strategy !== "minvol";
       const p = plan(app, m, st.strategy, { cap: st.cap / 100 });
       const money = (v) => U.money(v, m.R);
       out.replaceChildren(
@@ -77,7 +90,7 @@
           h("div", { class: "kpi" }, h("span", { class: "label" }, "Turnover"), h("span", { class: "v" }, money(p.turnover)), h("span", { class: "s" }, bare(p.turnover / m.total * 100) + " of the portfolio")),
           h("div", { class: "kpi" }, h("span", { class: "label" }, "Estimated costs"), h("span", { class: "v" }, money(p.cost)), h("span", { class: "s" }, "your fee and spread assumptions; taxes not included"))),
         U.table([{ t: "Holding", v: (r) => h("span", { class: "who sym" }, h("b", {}, r.symbol), h("span", { class: "tiny muted" }, String(r.name || "").slice(0, 24))) }, { t: "Now", v: (r) => bare(r.weight * 100), n: true }, { t: "Target", v: (r) => bare(r.target * 100), n: true },
-          { t: "Change", v: (r) => Math.abs(r.trade) < m.total * 0.001 ? h("span", { class: "faint" }, "—") : h("span", { class: "num " + (r.trade > 0 ? "up" : "down") }, (r.trade > 0 ? "Add " : "Trim ") + money(Math.abs(r.trade))), n: true }, { t: "Volatility", v: (r) => bare(r.volPct), n: true }], p.rows.slice().sort((a, b) => b.weight - a.weight)),
+          { t: "Change", v: (r) => Math.abs(r.trade) < m.total * 0.001 ? h("span", { class: "faint" }, "—") : h("span", { class: "num " + (r.trade > 0 ? "up" : "down") }, (r.trade > 0 ? "Add " : "Trim ") + money(Math.abs(r.trade))), n: true }, { t: "Volatility", v: (r) => bare(r.volPct), n: true }, { t: "Share of risk", v: (r) => r.riskBefore == null ? "—" : bare(r.riskBefore * 100) + " → " + bare(r.riskAfter * 100), n: true }], p.rows.slice().sort((a, b) => b.weight - a.weight)),
         h("p", { class: "tiny muted" }, "A what-if, not an instruction: Market Desk never places trades. Selling can realise taxable gains, and adding new money to underweight holdings can get you most of the way without selling."));
       ai.replaceChildren(MD.oppAI.runner(app, "Ask Claude about this rebalance", (S, signal) => weigh(app, m, p, st, S, signal), aiView, { primary: false }));
     };
@@ -88,7 +101,7 @@
   async function weigh(app, m, p, st, S, signal) {
     const lim = await app.caps.sample.limits().catch(() => null);
     const tools = lim && lim.tools ? MD.ai.tools(app, S, ["search_news", "zacks_view", "stock_snapshot", "compare_returns"]) : undefined;
-    const facts = MD.ai.rnd({ reportingCurrency: m.R, totalValue: m.total, strategy: st.strategy === "cap" ? "cap positions at " + st.cap + "%" : st.strategy, volatilityPctBefore: p.volBefore, volatilityPctAfter: p.volAfter, effectiveHoldingsBefore: p.effBefore, effectiveHoldingsAfter: p.effAfter, turnover: p.turnover, estimatedCosts: p.cost, betaVsSPY: m.beta ? m.beta.beta : null,
+    const facts = MD.ai.rnd({ reportingCurrency: m.R, totalValue: m.total, strategy: ({ cap: "cap positions at " + st.cap + "%", equal: "equal weight", invvol: "inverse volatility (simple risk parity)", erc: "equal risk contribution (risk parity)", minvol: "minimum volatility, no position above " + st.cap + "%" })[st.strategy] || st.strategy, volatilityPctBefore: p.volBefore, volatilityPctAfter: p.volAfter, effectiveHoldingsBefore: p.effBefore, effectiveHoldingsAfter: p.effAfter, turnover: p.turnover, estimatedCosts: p.cost, betaVsSPY: m.beta ? m.beta.beta : null,
       changes: p.rows.filter(r => Math.abs(r.trade) >= m.total * 0.001).map(r => ({ symbol: r.symbol, class: r.cls, weightNowPct: r.weight * 100, targetPct: r.target * 100, trade: r.trade, volPct: r.volPct })) });
     const r = await app.caps.sample.json(`Today is ${new Date().toISOString().slice(0, 10)}. The investor is considering this rebalance of their portfolio (measured by the app). ${tools ? "Use 2 to 5 tool calls on the biggest trims and adds (search_news, zacks_view or stock_snapshot) so the trade-offs reflect what's happening now. Cite only URLs the tools returned." : ""}
 ${MD.ai.contextNote(app)}

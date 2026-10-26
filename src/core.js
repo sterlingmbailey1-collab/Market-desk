@@ -295,6 +295,45 @@
   function hhi(weightsPct) { return weightsPct.reduce((a, w) => a + Math.pow(Number(w) / 100, 2), 0); }
 
   /* ---------- risk / reward ---------- */
+  /* Paper account (virtual US dollars): orders in time order → cash, open positions and closed trades. Each buy is
+     mirrored into SPY at the same moment with the same dollars; a sell closes the same fraction of the position and of
+     its SPY mirror, so every trade can be judged against "the same trade in the S&P 500". No margin, no short selling:
+     a buy beyond the cash or a sell of something not held is skipped and reported. feeRate = cost per side. */
+  function paperLedger(orders, startCash) {
+    let cash = Number(startCash) || 0, mirrorCash = cash;
+    const pos = new Map(), closed = [], issues = [];
+    for (const o of [...orders].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))) {
+      const qty = Number(o.qty), price = Number(o.price), feeRate = Number(o.feeRate) || 0, spy = Number(o.spyPrice) > 0 ? Number(o.spyPrice) : null;
+      if (!(qty > 0) || !(price > 0)) { issues.push({ id: o.id, msg: "Order without a quantity or price; skipped." }); continue; }
+      let p = pos.get(o.assetId);
+      if (o.side === "buy") {
+        const amount = qty * price * (1 + feeRate);
+        if (amount > cash + 0.005) { issues.push({ id: o.id, msg: "Buy of " + o.symbol + " needs " + amount.toFixed(2) + " but only " + cash.toFixed(2) + " cash was left; skipped." }); continue; }
+        if (!p) pos.set(o.assetId, p = { assetId: o.assetId, asset: o.asset || null, symbol: o.symbol, qty: 0, cost: 0, mirror: 0, mirrorKnown: true, openedAt: o.createdAt, sources: [] });
+        p.qty += qty; p.cost += amount; cash -= amount; mirrorCash -= amount;
+        if (spy) p.mirror += amount / spy; else p.mirrorKnown = false;
+        if (o.source && !p.sources.includes(o.source)) p.sources.push(o.source);
+      } else if (o.side === "sell") {
+        if (!p || p.qty <= 0) { issues.push({ id: o.id, msg: "Sell of " + o.symbol + " without a holding; skipped." }); continue; }
+        const q = Math.min(qty, p.qty), frac = q / p.qty, proceeds = q * price * (1 - feeRate), costOut = p.cost * frac, mirrorOut = p.mirror * frac;
+        const mirrorProceeds = spy && p.mirrorKnown ? mirrorOut * spy : null;
+        if (q < qty - 1e-9) issues.push({ id: o.id, msg: "Sell of " + o.symbol + " was more than held; capped at the holding." });
+        cash += proceeds; mirrorCash += mirrorProceeds != null ? mirrorProceeds : proceeds;
+        closed.push({ orderId: o.id, assetId: o.assetId, asset: p.asset, symbol: p.symbol, qty: q, cost: costOut, proceeds, pnl: proceeds - costOut, pnlPct: costOut > 0 ? (proceeds / costOut - 1) * 100 : null,
+          mirrorPct: mirrorProceeds != null && costOut > 0 ? (mirrorProceeds / costOut - 1) * 100 : null, openedAt: p.openedAt, closedAt: o.createdAt, sources: p.sources.slice() });
+        p.qty -= q; p.cost -= costOut; p.mirror -= mirrorOut;
+        if (p.qty <= 1e-9) pos.delete(o.assetId);
+      }
+    }
+    return { cash, mirrorCash, positions: [...pos.values()], closed, issues };
+  }
+  // Mark a ledger to market: prices = {assetId: price}, spyNow = SPY's price now. Missing prices are listed, not guessed.
+  function paperValue(L, prices, spyNow, startCash) {
+    let held = 0, mirror = 0; const missing = [];
+    for (const p of L.positions) { const px = prices[p.assetId]; if (px > 0) held += p.qty * px; else { missing.push(p.symbol); held += p.cost; } if (spyNow > 0 && p.mirrorKnown) mirror += p.mirror * spyNow; else mirror += p.cost; }
+    const equity = L.cash + held, mirrorEquity = L.mirrorCash + mirror, s = Number(startCash) || 0;
+    return { equity, mirrorEquity, held, returnPct: s > 0 ? (equity / s - 1) * 100 : null, mirrorReturnPct: s > 0 ? (mirrorEquity / s - 1) * 100 : null, missing };
+  }
   function rewardRisk({ entry, target, stop, side = "long", feePct = 0, fxCostPct = 0, pUp = null }) {
     const e = dec(entry), t = dec(target), s = dec(stop);
     if (!e || e.lte(0)) return { ok: false, reason: "Entry price must be greater than zero." };
@@ -661,7 +700,7 @@
       maxDrawdownYrPct: maxDrawdown(yr.map(p => p.close ?? p.value)).mdd * 100, trend };
   }
 
-  MD.core = { D, dec, applyTick, straddleMove, expectedMoveFromVol, normCdf, normInv, projectPrice, impliedVolFromMove, ema, rsi, macd, betaTo, periodReturns, technicals, ZERO, ONE, sum, BASE_CURRENCIES, ECB_CODES, makeRegistry, PAIR_PRIORITY, marketPair, parsePair, quote, invert, cross, rateFromTable, convert, spreadBps,
+  MD.core = { paperLedger, paperValue, D, dec, applyTick, straddleMove, expectedMoveFromVol, normCdf, normInv, projectPrice, impliedVolFromMove, ema, rsi, macd, betaTo, periodReturns, technicals, ZERO, ONE, sum, BASE_CURRENCIES, ECB_CODES, makeRegistry, PAIR_PRIORITY, marketPair, parsePair, quote, invert, cross, rateFromTable, convert, spreadBps,
     fmtNum, fmtMoney, fmtPct, GRAMS_PER, UNIT_NAMES, convertWeight, bullion, TX_TYPES, validDate, validateTx, activeTxs, buildPositions, valuePosition, realizedInReporting,
     netLiquidation, allocation, hhi, rewardRisk, returnsFrom, mean, stdev, annVol, maxDrawdown, cagr, sharpe, correlation, alignByTime, seriesStats, rng, gauss, percentile,
     touchProbability, goalSimulation, sma, backtest, fxStress, ripple, catalystImpact, evaluateForecast, calibration, evaluateAlert, materiality, inQuietHours,

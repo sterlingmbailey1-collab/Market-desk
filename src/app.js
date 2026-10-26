@@ -4,10 +4,10 @@
   const C = MD.core, U = MD.ui, D = MD.data, h = U.h;
 
   const ROUTES = [
-    ["dashboard", "Dashboard", "Overview"], ["markets", "Global Markets", "Overview"], ["brain", "Market Brain", "Overview"],
+    ["dashboard", "Dashboard", "Overview"], ["today", "Today's Game Plan", "Overview"], ["markets", "Global Markets", "Overview"], ["brain", "Market Brain", "Overview"],
     ["stocks", "Stocks & ETFs", "Markets"], ["crypto", "Crypto", "Markets"], ["fx", "FX & Currencies", "Markets"], ["metals", "Precious Metals", "Markets"], ["cards", "Trading Cards", "Markets"],
     ["betting", "Sports Betting", "Sports"],
-    ["smartmoney", "Smart Money", "Decide"], ["portfolio", "Portfolio", "Decide"], ["picks", "Recommendations", "Decide"], ["daytrade", "Day Trading", "Decide"], ["opportunities", "Opportunities", "Decide"], ["research", "Deep Research", "Decide"], ["calendar", "Calendar & Catalysts", "Decide"], ["advisor", "AI Advisor", "Decide"], ["strategies", "Strategies & Backtesting", "Decide"],
+    ["smartmoney", "Smart Money", "Decide"], ["portfolio", "Portfolio", "Decide"], ["paper", "Paper Trading", "Decide"], ["picks", "Recommendations", "Decide"], ["daytrade", "Day Trading", "Decide"], ["opportunities", "Opportunities", "Decide"], ["research", "Deep Research", "Decide"], ["calendar", "Calendar & Catalysts", "Decide"], ["advisor", "AI Advisor", "Decide"], ["strategies", "Strategies & Backtesting", "Decide"],
     ["reports", "Reports", "Workflow"], ["inbox", "Alerts & Research Inbox", "Workflow"], ["settings", "Settings & Data Sources", "Workflow"]
   ];
   const DEFAULT_SETTINGS = {
@@ -277,7 +277,9 @@
     strategies: "M12 3l9 5-9 5-9-5zM3 13l9 5 9-5M3 17l9 5 9-5",
     reports: "M6 3h9l4 4v14H6zM14 3v5h5M9 13h7M9 17h5",
     inbox: "M6 9a6 6 0 0 1 12 0c0 6.5 3 8 3 8H3s3-1.5 3-8M10 20a2 2 0 0 0 4 0",
-    settings: "M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4"
+    settings: "M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1M15 4v4M9 10v4M17 16v4",
+    paper: "M6 3h9l4 4v14H6zM15 3v4h4M9 16l2.5-3 2 2L17 11",
+    today: "M4 5h16v15H4zM4 9h16M8 3v4M16 3v4M8 13l2 2 4-4"
   };
   app.ICONS = ICONS;
   const icon = (d) => h("span", { class: "ico", "aria-hidden": "true", html: '<svg viewBox="0 0 24 24" width="18" height="18"><path d="' + d + '"/></svg>' });
@@ -551,6 +553,9 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
     };
     setTimeout(autoCalls, 70000); setInterval(autoCalls, 30 * 60e3);
     // Once a session has been studied, the Market Brain studies each new session after the close.
+    // Once a day after 6 a.m. New York time, the daily digest goes to the inbox (Today's Game Plan has the switch).
+    const autoDigest = () => { if (MD.today) MD.today.autoDigest(app).then(d => { if (d) renderNav(); }).catch(() => {}); };
+    setTimeout(autoDigest, 30000); setInterval(autoDigest, 30 * 60e3);
     const autoBrain = () => { if (MD.brain) MD.brain.autoStudy(app).catch(() => {}); };
     setTimeout(autoBrain, 45000); setInterval(autoBrain, 30 * 60e3);
     try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderView()); } catch {}

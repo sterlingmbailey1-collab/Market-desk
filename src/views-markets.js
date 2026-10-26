@@ -122,6 +122,8 @@
       quote = q; const asset = Object.assign({}, a, { name: q.name, cls: q.cls, listing: q.listing, exchange: q.exchange, currency: "USD" });
       app.ctx.stocks = X.slim(asset); app.ls.set("ctx", app.ctx);
       top.append(X.quoteHeader(Object.assign({}, q, { clsLabel: q.cls === "etf" ? "ETF" : "Stock", subline: q.marketStatus, changeLabel: "today", kind: "stock" }), q.nextEarnings ? h("span", { class: "small muted" }, "Next earnings: " + q.nextEarnings) : null, { asset, onTick: (p, t) => panel.tick(p, t) }));
+      // Sector and industry from Nasdaq's summary, added to the header's pills when they come back.
+      if (q.cls === "stock") D.stocks.profile(q.symbol, q.cls).then(pr => { const row = top.querySelector(".hero .row"); if (row && pr && (pr.sector || pr.industry)) row.append(h("span", { class: "pill sector-pill", title: "Sector and industry (Nasdaq)" }, [pr.sector, pr.industry].filter(Boolean).join(" · "))); }).catch(() => {});
       actions.replaceChildren(X.actionBar(asset, () => quote, () => panel && panel.series));
     });
     const priceSec = U.section("Price", panel.el); priceSec.id = "sec-price";

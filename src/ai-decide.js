@@ -113,6 +113,7 @@ Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoi
         if (tp) await app.store.create("alerts", Object.assign({}, base, { kind: "above", threshold: tp, note: "AI decision on " + d.symbol + ": take-profit area" }));
         ev.currentTarget.disabled = true; ev.currentTarget.textContent = "Alerts set"; U.toast("Alerts set for " + d.symbol, [stop && "below " + stop, tp && "above " + tp].filter(Boolean).join(" and "));
       } }, "Alerts at the stop and take-profit") : null,
+      MD.paper && (d.decision === "buy" || d.decision === "accumulate") ? MD.paper.button(app, { id: d.assetId, cls: String(d.assetId).split(":")[0], symbol: d.symbol, name: d.name || d.symbol }, { source: "ai-decide", pct: d.math && d.math.ceilingPct > 0 ? d.math.ceilingPct : 5, note: (DECISIONS[d.decision] || [d.decision])[0] + " · " + d.upPct + "% up over " + d.days + " days" }, "Paper trade this decision") : null,
       h("p", { class: "tiny muted" }, d.forecastId ? "Logged in the forecast journal and graded in " + d.days + " days. Not advice: you decide and place any order yourself." : "Not advice: you decide and place any order yourself."));
   }
   function card(app, asset) {

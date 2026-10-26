@@ -3,7 +3,7 @@ globalThis.Decimal = require("../vendor/decimal.js");
 require("../src/core.js"); require("../src/quant.js"); require("../src/data.js");
 const fs = require("fs"), D = MD.data, Q = MD.quant, R = (f) => fs.readFileSync(__dirname + "/real/" + f, "utf8");
 let fail = 0; const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); if (!c) fail++; };
-const pages = [[/\/MSFT\/chart/, "nasdaq-chart-msft.md"], [/\/NVDA\/summary/, "nasdaq-summary-nvda.md"], [/marketmovers.*preMarket/, "nasdaq-movers-premarket.md"]];
+const pages = [[/\/MSFT\/chart/, "nasdaq-chart-msft.md"], [/\/NVDA\/summary/, "nasdaq-summary-nvda.md"], [/marketmovers.*preMarket/, "nasdaq-movers-premarket.md"], [/screener\/stocks.*exchange=nyse&sector=energy/, "nasdaq-screener-nyse-energy.md"]];
 D.init({ async callTool(server, tool, input) {
   if (server === "Exa") { const u = input.urls[0], hit = pages.find(([re]) => re.test(u)); if (!hit) throw Object.assign(new Error("no fixture for " + u), { code: "not_found" }); return { content: [{ type: "text", text: R(hit[1]).replace(/^<!--.*-->$/m, "") }] }; }
   if (server === "Twelve Data" && tool === "get_time_series") return { content: [{ type: "text", text: JSON.stringify({ result: R("twelvedata-aapl-5min.csv") }) }] };
@@ -19,6 +19,8 @@ D.init({ async callTool(server, tool, input) {
   ok(pr.sector === "Technology" && pr.industry === "Semiconductors" && pr.avgVolume === 114391116 && pr.volume === 80191997 && pr.target1y === 315 && pr.previousClose === 212.21, "real Nasdaq summary: sector, industry, volumes, 1-year target");
   const mv = await D.stocks.movers("preMarket");
   ok(mv.asOf === "Oct 23, 2026 4:15 PM ET" && mv.active.rows.length === 10 && mv.active.rows[5].symbol === "SPCX" && mv.active.rows[5].price === 147.49 && mv.active.rows[5].volume > 1e8, "real pre-market movers: as-of, most active with price and volume");
+  const sc = await D.stocks.screen({ exchange: "nyse", sector: "energy", limit: 5 });
+  ok(sc.rows.length === 5 && sc.total === 122 && sc.asOf === "Oct 22, 2026" && sc.rows[0].symbol === "XOM" && sc.rows[0].name === "ExxonMobil Holdings Corporation" && sc.rows[0].price === 178.23 && sc.rows[4].changePct === -4.009 && sc.rows[0].marketCap === 732866068631 && sc.rows[0].exchange === "NYSE", "real Nasdaq screener with exchange and sector filters: rows, total matches, as-of");
   const ib = await D.intradayBars({ id: "stock:AAPL", cls: "stock", symbol: "AAPL" });
   const off = D.tzOffsetSec("America/New_York");
   ok(ib.bars.length === 4 && ib.date === "2026-10-23" && ib.bars[0].time === Date.parse("2026-10-23T15:40:00Z") / 1000 - off && ib.bars[3].volume === 9480724, "real Twelve Data 5-minute bars: oldest first, New York time converted to UTC, volume kept");

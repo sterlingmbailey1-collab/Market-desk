@@ -5,8 +5,8 @@
    Append-only collections (ledger, forecasts, evaluations, research) expose create() but no update(). */
 (function (G) {
   const MD = (G.MD = G.MD || {});
-  const APPEND_ONLY = new Set(["tx", "forecasts", "evals", "reports", "picks", "betpicks", "betgrades"]);
-  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas", "aitakes", "briefs", "proppicks", "ailessons", "marketdays", "brain", "dayplans", "daytrades", "pickhide", "marketcalls", "pickchecks", "decisions", "callwatch", "weekly"];
+  const APPEND_ONLY = new Set(["tx", "forecasts", "evals", "reports", "picks", "betpicks", "betgrades", "paper"]);
+  const COLLECTIONS = ["settings", "tx", "forecasts", "evals", "reports", "watch", "alerts", "inbox", "tasks", "catalysts", "comps", "assets", "searches", "fxcache", "picks", "notes", "photos", "bets", "betpicks", "betgrades", "follows", "smcache", "smai", "ideas", "aitakes", "briefs", "proppicks", "ailessons", "marketdays", "brain", "dayplans", "daytrades", "pickhide", "marketcalls", "pickchecks", "decisions", "callwatch", "weekly", "paper", "gameplans", "sentiment"];
   const newId = () => Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
   const clone = (o) => JSON.parse(JSON.stringify(o));
 
