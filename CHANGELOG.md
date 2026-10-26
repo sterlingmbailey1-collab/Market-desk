@@ -1,5 +1,12 @@
 # Changelog
 
+## Version 38 (2026-10-26)
+- **The AI sees the portfolio health score.**
+  - Claude's portfolio review and the AI Advisor's portfolio tool (also used by Ask AI) now get the 0–100 health
+    score and its parts, against your risk setting.
+  - The review also gets the sector mix of your stock holdings once their sectors have been looked up.
+  - The page, the review and the advisor all use the same measured numbers.
+
 ## Version 37 (2026-10-26)
 - **ML odds recalibrated on their own record (Platt scaling).**
   - The ensemble's raw odds are refitted on its own out-of-sample predictions.

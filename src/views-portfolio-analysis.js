@@ -92,6 +92,11 @@
     btn.disabled = true; out.replaceChildren(h("div", { class: "skeleton" }, "Claude is reviewing your portfolio…"));
     const facts = { reportingCurrency: m.R, totalValue: Math.round(m.total), holdings: m.items.map(it => ({ symbol: it.symbol, name: it.name, class: it.cls, weightPct: +(it.weight * 100).toFixed(1), return1yPct: it.ret1y != null ? +it.ret1y.toFixed(1) : null, volatilityPct: it.volPct != null ? +it.volPct.toFixed(1) : null, shareOfRiskPct: it.riskShare != null ? +(it.riskShare * 100).toFixed(1) : null, hasPriceHistory: !!it.path })),
       portfolio: { return1yOfCurrentMixPct: m.ret1y != null ? +m.ret1y.toFixed(1) : null, volatilityPct: +m.volPct.toFixed(1), maxDrawdown1yPct: m.stats.maxDrawdownPct != null ? +m.stats.maxDrawdownPct.toFixed(1) : null, sharpe: isFinite(m.sharpe) ? +m.sharpe.toFixed(2) : null, betaVsSPY: m.beta ? +m.beta.beta.toFixed(2) : null, effectiveNumberOfHoldings: +m.effective.toFixed(1), largestPositionPct: +(m.top.weight * 100).toFixed(1), top3Pct: +(m.top3 * 100).toFixed(1), assetClasses: m.classes }, macroExposure: m.exposure || null };
+    // The health score (as shown) and the sector mix of stock holdings (from the cached sector lookups).
+    { const hs = health(app, m);
+      if (hs.score != null) facts.healthScore = { score: hs.score, parts: hs.parts.map(x => ({ part: x.key, score: x.value, band: x.band })) };
+      const sec = app.ls.get("sectors", {}), bySec = {}; for (const it of m.items) { const s = sec[it.symbol] && sec[it.symbol].sector; if (s) bySec[s] = +((bySec[s] || 0) + it.weight * 100).toFixed(1); }
+      if (Object.keys(bySec).length) facts.sectorWeightsPct = bySec; }
     try {
       const log = MD.ai.logBox(); out.replaceChildren(log);
       const S = MD.ai.session((e) => log.add(e));
@@ -115,6 +120,12 @@ Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "
     btn.disabled = false;
   }
 
+  // Portfolio health against the investor's risk band (MD.quant.healthScore), from a measurement.
+  function health(app, m) {
+    const n = m.corr.length, offs = []; for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) offs.push(m.corr[i][j]);
+    const risk = (app.settings.profile || {}).risk || "mid";
+    return Object.assign({ risk }, MD.quant.healthScore({ effective: m.effective, topWeightPct: m.top ? m.top.weight * 100 : null, volPct: m.volPct, maxDrawdownPct: m.stats.maxDrawdownPct, avgCorr: offs.length ? offs.reduce((a, x) => a + x, 0) / offs.length : null, risk }));
+  }
   function render(el, app, pv, R) {
     const rows = pv.rows.filter(r => r.p.qty.gt(0) && r.v.valueR);
     if (!rows.length) { el.replaceChildren(h("div", { class: "empty" }, "Add holdings to see how they behave together: volatility, drawdown, where the risk comes from and a projected value range.")); return; }
@@ -133,8 +144,7 @@ Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "
           tile("Volatility (1 year)", bare(m.volPct), "Max drawdown " + bare(m.stats.maxDrawdownPct)),
           tile("This mix, past year", pct(m.ret1y), "Beta vs SPY " + (m.beta ? m.beta.beta.toFixed(2) : "—") + " · Sharpe " + (isFinite(m.sharpe) ? m.sharpe.toFixed(2) : "—"), U.signCls(m.ret1y))),
         (() => {
-          const n = m.corr.length, offs = []; for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) offs.push(m.corr[i][j]);
-          const risk = (app.settings.profile || {}).risk || "mid", hs = MD.quant.healthScore({ effective: m.effective, topWeightPct: m.top ? m.top.weight * 100 : null, volPct: m.volPct, maxDrawdownPct: m.stats.maxDrawdownPct, avgCorr: offs.length ? offs.reduce((a, x) => a + x, 0) / offs.length : null, risk });
+          const hs = health(app, m), risk = hs.risk;
           if (hs.score == null) return null;
           const NAMES = { diversification: "Diversification", concentration: "Largest position", volatility: "Volatility", drawdown: "Worst drop", independence: "Independence" };
           const box = h("div", { class: "stack health", id: "portfolio-health" }, h("div", { class: "row", style: "gap:10px;align-items:baseline;flex-wrap:wrap" }, h("span", { class: "label" }, "Portfolio health"), h("b", { class: "v " + (hs.score >= 75 ? "up" : hs.score < 50 ? "down" : "") , style: "font-size:1.4em" }, hs.score + "/100"), h("span", { class: "small muted" }, "for your " + risk + " risk setting")),
@@ -165,5 +175,5 @@ Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "
     }, { loading: "Measuring how your holdings moved over the past year…" });
   }
 
-  MD.portfolioAnalysis = { render, measure };
+  MD.portfolioAnalysis = { render, measure, health };
 })(typeof window !== "undefined" ? window : globalThis);
