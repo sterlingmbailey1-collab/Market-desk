@@ -177,6 +177,8 @@
           { t: "Made money", v: (r) => r.winPct != null ? r.winPct.toFixed(0) + "%" : "—", n: true }, { t: "Avg return", v: (r) => r.avgPct != null ? h("span", { class: U.signCls(r.avgPct) }, U.pct(r.avgPct)) : "—", n: true },
           { t: "Avg vs S&P 500", v: (r) => r.vsPct != null ? h("span", { class: U.signCls(r.vsPct) }, (r.vsPct > 0 ? "+" : "") + r.vsPct.toFixed(1) + " pts") : "—", n: true }, { t: "P&L", v: (r) => usd(r.pnl), n: true }], bySource(L), { empty: "Closed trades are grouped here by where the idea came from." }),
           h("p", { class: "tiny muted" }, "A handful of trades says little; the comparison means more after 20 or more closed trades from one source."))),
+        L.closed.length ? (() => { const out = h("div", { class: "stack" }), b = h("button", { class: "btn ghost", type: "button", onclick: async () => { b.disabled = true; out.replaceChildren(h("div", { class: "skeleton" }, "The coach is reading your closed trades…")); try { out.replaceChildren(coachView(await coach(app, S))); } catch (e) { out.replaceChildren(U.errorBox({ message: MD.ai.errText ? MD.ai.errText(e) : U.errorText(e) })); } b.disabled = false; } }, "What's working? Ask the AI coach");
+          return U.section("AI coach", h("div", { class: "stack" }, h("div", { class: "row" }, b), out)); })() : null,
         h("details", {}, h("summary", { class: "label", style: "cursor:pointer" }, "Order history (" + orders(app).length + ")"),
           U.table([{ t: "Time", v: (o) => U.fmtTs(o.createdAt) }, { t: "Order", v: (o) => o.side + " " + o.qty + " " + o.symbol }, { t: "Fill", v: (o) => U.money(o.price, "USD", { price: true }), n: true }, { t: "Price from", v: (o) => (o.priceSource || "—") + (o.priceStatus && o.priceStatus !== "Live" ? " (" + o.priceStatus + ")" : "") }, { t: "From", v: (o) => (SOURCES[o.source] || o.source) + (o.note ? " · " + o.note : "") }],
             orders(app).slice().sort((x, y) => y.createdAt - x.createdAt))),
@@ -203,6 +205,27 @@
       h("button", { class: "btn danger", type: "button", onclick: () => { app.saveSettings({ paper: { startCash: Math.max(1000, Number(cash.value) || START), startedAt: Date.now() } }); m.close(); app.go("paper"); } }, "Start over"))));
   }
 
+  /* AI coach: Claude reads the closed paper trades (returns, the S&P 500 over the same days, holding time, source of
+     the idea) and says what's working, what isn't and which habits show, from those measured numbers only. */
+  async function coach(app, S0) {
+    if (!app.caps.sample) throw Object.assign(new Error("Claude isn't available in this view."), { code: "no_sample" });
+    const st = S0 || await state(app), L = st.L, lbl = (ss) => (ss.length ? ss : ["manual"]).map(x => SOURCES[x] || x).join(", ");
+    if (!L.closed.length) throw new Error("Close at least one paper trade first: the coach reads finished trades.");
+    const facts = { closedTrades: L.closed.slice(-40).map(t => ({ symbol: t.symbol, from: lbl(t.sources), returnPct: +t.pnlPct.toFixed(2), sp500SameDaysPct: t.mirrorPct != null ? +t.mirrorPct.toFixed(2) : null, heldDays: Math.max(0, Math.round((t.closedAt - t.openedAt) / 864e5)) })),
+      bySource: bySource(L).map(r => ({ source: SOURCES[r.source] || r.source, closed: r.closed, madeMoneyPct: r.winPct != null ? Math.round(r.winPct) : null, avgReturnPct: r.avgPct != null ? +r.avgPct.toFixed(2) : null, avgVsSP500Pts: r.vsPct != null ? +r.vsPct.toFixed(2) : null })),
+      account: { returnPct: +st.v.returnPct.toFixed(2), sameTradesInSP500Pct: +st.v.mirrorReturnPct.toFixed(2), openPositions: L.positions.length } };
+    const r = await app.caps.sample.json(`You are the paper-trading coach. Using ONLY these measured results from the investor's virtual account (never invent a number), say what is working, what isn't, and which habits show (for example selling winners early, holding losers, sizing, which source of ideas beats the S&P 500). With fewer than 20 closed trades, say plainly that the sample is small and conclusions are tentative. Be specific and kind. Not advice to trade real money.
+${MD.ai.contextNote(app)}
+Results: ${JSON.stringify(facts)}
+Reply with ONLY JSON: {"headline": "one sentence", "working": ["..."], "notWorking": ["..."], "habits": ["..."], "nextSteps": ["concrete things to try in the paper account"], "sampleNote": "one sentence on how much these results can be trusted"}`, { modelTier: "default", cache: false });
+    const arr = (x) => (Array.isArray(x) ? x : []).slice(0, 4).map(v => String(v).slice(0, 300));
+    return { at: Date.now(), closed: L.closed.length, headline: String(r.headline || "").slice(0, 300), working: arr(r.working), notWorking: arr(r.notWorking), habits: arr(r.habits), nextSteps: arr(r.nextSteps), sampleNote: String(r.sampleNote || "").slice(0, 300) };
+  }
+  function coachView(c) {
+    const list = (t, xs, cls) => xs.length ? h("div", { class: "stack", style: "gap:2px" }, h("span", { class: "label" + (cls ? " " + cls : "") }, t), h("ul", { class: "small", style: "margin:0;padding-left:1.1em;display:grid;gap:2px" }, xs.map(x => h("li", {}, x)))) : null;
+    return h("div", { class: "stack aicoach" }, h("p", {}, h("strong", {}, c.headline)), h("div", { class: "grid g2", style: "align-items:start" }, list("Working", c.working, "up"), list("Not working", c.notWorking, "down")), list("Habits", c.habits), list("Try next", c.nextSteps),
+      c.sampleNote ? h("p", { class: "small muted" }, c.sampleNote) : null, h("p", { class: "tiny muted" }, "Claude's reading of " + c.closed + " closed paper trades, from the measured results above only. " + U.fmtTs(c.at) + "."));
+  }
   function dashCard(box, app) {
     if (!orders(app).length) { box.append(h("div", { class: "stack", style: "gap:6px" }, h("p", { class: "small" }, "Practise with virtual money and see how each source of ideas does against the S&P 500."), h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("paper") }, "Open paper trading")))); return; }
     const out = h("div", { class: "stack", style: "gap:6px" }, h("p", { class: "small muted" }, "Valuing at live prices…")); box.append(out);
@@ -213,5 +236,5 @@
         h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("paper") }, "Open paper trading")));
     }).catch(e => out.replaceChildren(h("p", { class: "small warn-t" }, U.errorText(e))));
   }
-  MD.paper = { dashCard, ticket, place, state, button, bySource, followSet, autoExit, followCfg, SOURCES };
+  MD.paper = { coach, dashCard, ticket, place, state, button, bySource, followSet, autoExit, followCfg, SOURCES };
 })(typeof window !== "undefined" ? window : globalThis);

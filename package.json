@@ -1,6 +1,6 @@
 {
   "name": "market-desk",
-  "version": "29.0.0",
+  "version": "30.0.0",
   "private": true,
   "description": "Market Desk: a single-page market analyzer published as a claude.ai artifact (stocks, ETFs, crypto, FX, metals, trading cards, prediction markets, sports betting).",
   "scripts": {

@@ -45,7 +45,14 @@ Reply with ONLY JSON: {"headlines": [{"id": "h0_0", "sentiment": 0, "materiality
       return { asset: MD.common.slim(g.a), symbol: g.a.symbol, source: g.source || null, error: g.err || null, score: sc.score, label: sc.label, headlines: items.length, relevant: rel.length, newest: items.reduce((m, x) => Math.max(m, x.ts || 0), 0) || null, summary: sums[String(g.a.symbol).toUpperCase()] || "", top, items };
     });
     const doc = { at: Date.now(), day: dayKey(), rows };
-    if (!app.demo) await app.store.put("sentiment", doc.day, JSON.parse(JSON.stringify(doc))).catch(() => {});
+    if (!app.demo) {
+      await app.store.put("sentiment", doc.day, JSON.parse(JSON.stringify(doc))).catch(() => {});
+      // A clearly negative reading on a holding (score −50 or lower from 2+ relevant headlines) goes to the inbox once a day.
+      for (const r of rows.filter(r => r.score != null && r.score <= -50 && r.relevant >= 2)) {
+        if (app.store.cached("inbox").some(i => i.kind === "news" && i.day === doc.day && i.symbol === r.symbol)) continue;
+        await app.store.create("inbox", { kind: "news", day: doc.day, symbol: r.symbol, assetId: r.asset && r.asset.id, title: r.symbol + ": the news tone is clearly negative (" + r.score + ")", body: (r.summary ? r.summary + " " : "") + (r.top ? "Top headline: " + r.top.title + (r.top.publisher ? " (" + r.top.publisher + ")" : "") + ". " : "") + "Source: " + (r.source || "news") + " headlines read by Claude; score computed by the page.", materiality: 1.5, read: false, at: Date.now() }).catch(() => {});
+      }
+    }
     return doc;
   }
   const latest = (app) => app.store.cached("sentiment").slice().sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;

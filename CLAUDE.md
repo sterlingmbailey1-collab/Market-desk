@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 29; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 30; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading, Paper Trading, Today's Game Plan (with a daily inbox digest), a stock screener and a Sports Betting tab.
@@ -77,6 +77,7 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   proppicks, ailessons, marketdays, brain (the playbook doc), dayplans, daytrades, pickhide, marketcalls, pickchecks, decisions,
   callwatch (one doc per open-call notice, id `<forecastId>:<against|working>`), paper (v28, append-only), gameplans, sentiment, weekly (Market Brain weekly reviews,
   `MD.brain.weeklyReview`, keyed by the week's Monday; lessons reach every prompt through `MD.brain.note`).
+  `MD.ai.consensusCard(app, asset)` (v30) = desk consensus per horizon via `MD.quant.deskConsensus` + `MD.ai.sourceWeight` (Brier, 10+ graded). `MD.paper.coach` = paper-trading AI coach.
   `MD.ai.assetNote(app, asset)` = the desk's past calls on one asset (add it to any asset-specific prompt).
   `MD.ai.blendFor(app, source)` = learned Claude/history weights (inverse Brier, 10+ graded calls); `MD.ai.statusCard` is the
   dashboard's "What the AI is tracking" card (widget id `aistatus`); `MD.ai.openCalls/monitorCalls` price open calls

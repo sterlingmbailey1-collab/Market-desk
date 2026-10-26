@@ -132,6 +132,16 @@ Reply with ONLY JSON: {"headline": "one sentence", "summary": "3-4 sentences", "
           tile("Largest position", m.top.symbol + " · " + bare(m.top.weight * 100), "Top 3: " + bare(m.top3 * 100)),
           tile("Volatility (1 year)", bare(m.volPct), "Max drawdown " + bare(m.stats.maxDrawdownPct)),
           tile("This mix, past year", pct(m.ret1y), "Beta vs SPY " + (m.beta ? m.beta.beta.toFixed(2) : "—") + " · Sharpe " + (isFinite(m.sharpe) ? m.sharpe.toFixed(2) : "—"), U.signCls(m.ret1y))),
+        (() => {
+          const n = m.corr.length, offs = []; for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) offs.push(m.corr[i][j]);
+          const risk = (app.settings.profile || {}).risk || "mid", hs = MD.quant.healthScore({ effective: m.effective, topWeightPct: m.top ? m.top.weight * 100 : null, volPct: m.volPct, maxDrawdownPct: m.stats.maxDrawdownPct, avgCorr: offs.length ? offs.reduce((a, x) => a + x, 0) / offs.length : null, risk });
+          if (hs.score == null) return null;
+          const NAMES = { diversification: "Diversification", concentration: "Largest position", volatility: "Volatility", drawdown: "Worst drop", independence: "Independence" };
+          const box = h("div", { class: "stack health", id: "portfolio-health" }, h("div", { class: "row", style: "gap:10px;align-items:baseline;flex-wrap:wrap" }, h("span", { class: "label" }, "Portfolio health"), h("b", { class: "v " + (hs.score >= 75 ? "up" : hs.score < 50 ? "down" : "") , style: "font-size:1.4em" }, hs.score + "/100"), h("span", { class: "small muted" }, "for your " + risk + " risk setting")),
+            MD.ai.meters(hs.parts.map(p => ({ label: NAMES[p.key] || p.key, value: p.value, note: p.band }))),
+            h("p", { class: "tiny muted" }, "Measured from the past year of your current holdings against bands for your risk setting (Settings → AI & investor profile). A starting point for questions, not a grade on your decisions."));
+          return box;
+        })(),
         h("div", { class: "stack" }, h("span", { class: "label" }, "Today's holdings over the past year · " + R), chartBox,
           h("p", { class: "small muted" }, "What your current holdings would have been worth each day, at today's exchange rates, compared with the S&P 500 (SPY) scaled to the same start." + (m.constant.length ? " Held at today's value (no daily prices): " + m.constant.map(it => it.symbol).join(", ") + "." : ""))),
         h("div", { class: "grid g2" },

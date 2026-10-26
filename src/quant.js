@@ -284,6 +284,35 @@
   /* Where an open up/down call stands: the move since it was made, that move in daily-volatility units for the bars
      elapsed (positive = in the call's favour), and the chance it finishes beyond its flat band on the called side,
      from a driftless walk over the bars left. Geometry only: it knows nothing about the reasons behind the call. */
+  /* Portfolio health (0–100) from measured numbers against the investor's risk setting: diversification (effective
+     number of holdings, 8+ = full marks), the largest position against the single-position band, volatility and the
+     past year's worst drop against the risk band, and how independently the holdings move (average correlation). */
+  const HEALTH_BANDS = { low: { cap: 10, vol: 10, dd: 12 }, mid: { cap: 20, vol: 18, dd: 22 }, high: { cap: 30, vol: 28, dd: 35 } };
+  function healthScore({ effective, topWeightPct, volPct, maxDrawdownPct, avgCorr, risk }) {
+    const b = HEALTH_BANDS[risk] || HEALTH_BANDS.mid, cl = (x) => Math.max(0, Math.min(100, Math.round(x))), parts = [];
+    if (effective > 0) parts.push({ key: "diversification", value: cl(effective / 8 * 100), band: "8+ equal-sized holdings" });
+    if (topWeightPct != null) parts.push({ key: "concentration", value: topWeightPct <= b.cap ? 100 : cl(100 * (1 - (topWeightPct - b.cap) / (2 * b.cap))), band: "largest position ≤ " + b.cap + "%" });
+    if (volPct != null && isFinite(volPct)) parts.push({ key: "volatility", value: volPct <= b.vol ? 100 : cl(100 * (1 - (volPct - b.vol) / b.vol)), band: "≤ " + b.vol + "% a year" });
+    if (maxDrawdownPct != null && isFinite(maxDrawdownPct)) { const dd = Math.abs(maxDrawdownPct); parts.push({ key: "drawdown", value: dd <= b.dd ? 100 : cl(100 * (1 - (dd - b.dd) / b.dd)), band: "worst drop ≤ " + b.dd + "%" }); }
+    if (avgCorr != null && isFinite(avgCorr)) parts.push({ key: "independence", value: cl(100 * (1 - Math.max(0, avgCorr))), band: "low average correlation" });
+    return { score: parts.length ? Math.round(parts.reduce((a, p) => a + p.value, 0) / parts.length) : null, parts };
+  }
+  /* Desk consensus on one asset: the latest open call from each source (up/down with a probability), grouped by horizon
+     (days ≤14, months 15–120, a year >120), averaged with each source's weight (from its graded record). Returns per
+     horizon the consensus chance of a rise, how much of the weight agrees with it, and the spread between sources. */
+  function deskConsensus(calls, weightOf) {
+    const B = [["days", "Next two weeks", 0, 14], ["months", "1–4 months", 15, 120], ["year", "4–12 months", 121, 10000]], out = [];
+    for (const [key, label, lo, hi] of B) {
+      const latest = new Map();
+      for (const c of calls) if (c.horizonDays >= lo && c.horizonDays <= hi && c.upPct != null && (!latest.has(c.source) || (latest.get(c.source).at || 0) < (c.at || 0))) latest.set(c.source, c);
+      const cs = [...latest.values()]; if (!cs.length) continue;
+      const ws = cs.map(c => Math.max(0.25, Number(weightOf ? weightOf(c.source) : 1) || 1)), W = ws.reduce((a, x) => a + x, 0);
+      const up = cs.reduce((a, c, i) => a + c.upPct * ws[i], 0) / W, side = up >= 50;
+      const agree = cs.reduce((a, c, i) => a + ((c.upPct >= 50) === side ? ws[i] : 0), 0) / W * 100;
+      out.push({ key, label, upPct: up, n: cs.length, agreePct: agree, spread: Math.max(...cs.map(c => c.upPct)) - Math.min(...cs.map(c => c.upPct)), calls: cs.map((c, i) => Object.assign({}, c, { weight: ws[i] })) });
+    }
+    return out;
+  }
   /* Long-only portfolio weights from an annualised covariance matrix. minVarWeights: the mix with the least variance,
      no weight above `cap` (projected gradient onto the capped simplex). ercWeights: equal risk contribution, every
      holding adds the same share of the portfolio's variance (cyclical coordinate descent). riskShares: each one's share. */
@@ -484,6 +513,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { minVarWeights, ercWeights, riskShares, newsScore, TECH_ALERTS, techState, evaluateTechAlert, alertText, tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { healthScore, deskConsensus, minVarWeights, ercWeights, riskShares, newsScore, TECH_ALERTS, techState, evaluateTechAlert, alertText, tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

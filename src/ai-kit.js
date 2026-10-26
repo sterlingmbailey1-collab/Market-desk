@@ -421,6 +421,34 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
       (m.checks.length ? " Latest re-check of a pick: " + m.checks[0].status + " (" + m.checks[0].whatChanged.slice(0, 160) + ")." : "") +
       " Learn from the misses; don't repeat a thesis that failed without new evidence.").slice(0, 1400);
   }
+  /* Desk consensus card: every source's latest open call on this asset, one number per horizon. Sources with 10+
+     graded calls count by their record (Brier 0.25, a coin flip, = weight 1; better scores count more, up to 2×). */
+  function sourceWeight(app) {
+    const evals = app.store.cached("evals"), byId = new Map(app.store.cached("forecasts").map(f => [f.id, f])), agg = new Map();
+    for (const e of evals) { const f = byId.get(e.forecastId); if (!f || e.brier == null) continue; const k = f.source || "user", a = agg.get(k) || { n: 0, s: 0 }; a.n++; a.s += Number(e.brier); agg.set(k, a); }
+    return (src) => { const a = agg.get(src); return a && a.n >= 10 ? Math.max(0.5, Math.min(2, 0.25 / Math.max(0.05, a.s / a.n))) : 1; };
+  }
+  function consensusCard(app, asset) {
+    const body = h("div", { class: "stack" }), sec = U.section("Desk consensus", body); sec.id = "sec-consensus";
+    let off = null, ready = false;
+    off = app.store.watch("forecasts", () => { if (!ready) return; if (!document.body.contains(sec)) { if (off) off(); return; } paint(); });
+    ready = true; paint();
+    return sec;
+    function paint() {
+    body.replaceChildren();
+    const sym = String(asset.symbol || "").toUpperCase(), done = new Set(app.store.cached("evals").map(e => e.forecastId)), now = Date.now();
+    const calls = app.store.cached("forecasts").filter(f => (f.assetId === asset.id || String(f.symbol || "").toUpperCase() === sym) && !done.has(f.id) && f.dueAt > now && (f.direction === "up" || f.direction === "down") && f.probability != null)
+      .map(f => ({ source: f.source || "user", label: SOURCE_LABEL[f.source] || f.source || "Your own forecasts", upPct: f.direction === "up" ? f.probability * 100 : 100 - f.probability * 100, horizonDays: f.horizonDays || Math.round((f.dueAt - (f.createdAt || now)) / 864e5), at: f.createdAt, dueAt: f.dueAt }));
+    const W = sourceWeight(app), groups = MD.quant.deskConsensus(calls, W);
+    if (!groups.length) { body.append(h("p", { class: "small muted" }, "No open calls on " + (asset.symbol || asset.name) + " yet. Run the AI quick take, the AI decision or the machine-learning forecast above; each one's latest open call is combined here, one number per horizon.")); return; }
+    body.append(h("div", { class: "kpis k" + Math.min(3, groups.length) }, groups.map(g => h("div", { class: "kpi" }, h("span", { class: "label" }, g.label), h("b", { class: "v " + (g.upPct > 52 ? "up" : g.upPct < 48 ? "down" : "") }, Math.round(g.upPct) + "% up"),
+        h("span", { class: "s" }, g.n + " source" + (g.n > 1 ? "s" : "") + (g.n > 1 ? " · " + Math.round(g.agreePct) + "% of the weight agrees · spread " + Math.round(g.spread) + " pts" : ""))))),
+      groups.some(g => g.n > 1 && g.agreePct < 70) ? h("p", { class: "small warn-t" }, "The desk's models disagree on " + groups.filter(g => g.n > 1 && g.agreePct < 70).map(g => g.label.toLowerCase()).join(" and ") + ": treat the combined number as low conviction.") : null,
+      U.table([{ t: "Source", v: "label" }, { t: "Horizon", v: (c) => c.horizonDays + " days" }, { t: "Chance up", v: (c) => h("span", { class: c.upPct > 50 ? "up" : c.upPct < 50 ? "down" : "" }, Math.round(c.upPct) + "%"), n: true }, { t: "Weight", v: (c) => c.weight.toFixed(2) + "×", n: true }, { t: "Made", v: (c) => U.fmtDate(c.at) }, { t: "Due", v: (c) => U.fmtDate(c.dueAt) }],
+        groups.flatMap(g => g.calls)),
+      h("p", { class: "tiny muted" }, "Each source's latest open call, grouped by horizon and averaged. Sources with 10 or more graded calls count by their accuracy (Brier score); others count once. Calls on different horizons aren't mixed. A summary of the desk's own models, not advice."));
+    }
+  }
   function memoryCard(app, asset) {
     const m = assetMemory(app, asset), body = h("div", { class: "stack" });
     const sec = U.section("AI memory: what the desk has said about " + (asset.symbol || asset.name), body); sec.id = "sec-memory";
@@ -617,5 +645,5 @@ Reply with ONLY JSON: {"estimates": [{"id": "the item's id", "upProbabilityPct":
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { stackFor, panel, panelOn, teamUp, disagreementPenalty, followed, spyEach, openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { consensusCard, sourceWeight, stackFor, panel, panelOn, teamUp, disagreementPenalty, followed, spyEach, openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

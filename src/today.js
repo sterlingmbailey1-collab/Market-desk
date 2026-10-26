@@ -36,6 +36,8 @@
       syms.size ? Promise.all(weekdays(5).map(d => D.calendar.earnings(d).catch(() => []))).then(rs => { const seen = new Set(); return rs.flat().filter(x => syms.has(x.symbol) && !seen.has(x.symbol) && seen.add(x.symbol)); }).catch(e => { errs.push("earnings calendar: " + U.errorText(e)); return null; }) : Promise.resolve([]),
       Promise.all(names.slice(0, 25).map(async a => { try { const q = await app.quote(a, 60000); return { a, q }; } catch (e) { return { a, err: U.errorText(e) }; } })),
       MD.paper && app.store.cached("paper").length ? MD.paper.state(app).catch(() => null) : Promise.resolve(null)]);
+    // The options-implied move and the stock's typical two-day reaction for up to four of your names reporting soon.
+    if (earn && earn.length && MD.earnings) await Promise.all(earn.slice(0, 4).map(async (x) => { try { const m = await MD.earnings.measure(app, { id: "stock:" + x.symbol, cls: "stock", symbol: x.symbol, name: x.name || x.symbol }); x.impliedMovePct = m.implied && m.implied.movePct != null ? m.implied.movePct : null; x.typicalReactionPct = m.avgAbsReactionPct; } catch {} }));
     const done = new Set(app.store.cached("evals").map(e => e.forecastId));
     const due = app.store.cached("forecasts").filter(f => !done.has(f.id) && f.dueAt > now && f.dueAt - now < 7 * 864e5).sort((a, b) => a.dueAt - b.dueAt);
     const fById = new Map(app.store.cached("forecasts").map(f => [f.id, f]));
@@ -47,13 +49,24 @@
     return { sentiment: sent && sent.day === today ? sent : null, at: now, session: s, today, call, econ, earnings: earn, moves, priceErrors: quotes.filter(x => x.err).map(x => x.a.symbol), due, graded, unread, paper, names: names.length, errs };
   }
 
+  // Earnings for your names go on the catalyst calendar once (Calendar & Catalysts), from Nasdaq's earnings calendar.
+  async function syncCatalysts(app, g) {
+    if (app.demo || !g || !g.earnings) return 0;
+    let n = 0;
+    for (const x of g.earnings) {
+      const id = "stock:" + x.symbol;
+      if (app.store.cached("catalysts").some(c => (c.assetId === id || c.symbol === x.symbol) && c.date === x.date && /earnings/i.test(c.title || ""))) continue;
+      await app.store.create("catalysts", { assetId: id, symbol: x.symbol, title: "Earnings" + (x.time && !/not.?supplied/i.test(x.time) ? " (" + x.time + ")" : ""), date: x.date, impact: "High", note: "Added automatically from Nasdaq's earnings calendar" + (x.epsForecast ? "; EPS forecast " + x.epsForecast : "") + (x.impliedMovePct != null ? "; options imply ±" + x.impliedMovePct.toFixed(1) + "%" : "") + "." }).then(() => n++).catch(() => {});
+    }
+    return n;
+  }
   // Compact measured facts for the AI game plan (numbers from the page only).
   function facts(app, g) {
     const lbl = (f) => (MD.ai.SOURCE_LABEL || {})[f.source] || f.source;
     return { today: g.today, session: { phase: g.session.phase, tradingDay: g.session.tradingDay, clock: clockText(g.session) },
       desksSpyCall: g.call ? { session: g.call.target, upPct: g.call.upPct, summary: g.call.summary || "" } : "not made yet for this session",
       usEconomicReleasesToday: g.econ ? g.econ.slice(0, 12).map(x => ({ gmt: x.gmt, event: x.event, consensus: x.consensus || null, previous: x.previous || null, actual: x.actual || null })) : "unavailable",
-      earningsForYourNamesNext5Days: g.earnings ? g.earnings.map(x => ({ symbol: x.symbol, date: x.date, time: x.time, epsForecast: x.epsForecast || null })) : "unavailable",
+      earningsForYourNamesNext5Days: g.earnings ? g.earnings.map(x => ({ symbol: x.symbol, date: x.date, time: x.time, epsForecast: x.epsForecast || null, optionsImpliedMovePct: x.impliedMovePct != null ? +x.impliedMovePct.toFixed(1) : null, typicalTwoDayReactionPct: x.typicalReactionPct != null ? +x.typicalReactionPct.toFixed(1) : null })) : "unavailable",
       yourNamesMovingToday: g.moves.slice(0, 8).map(x => ({ symbol: x.a.symbol, held: !!x.a.held, todayPct: +x.q.changePct.toFixed(2) })),
       callsDueThisWeek: g.due.slice(0, 10).map(f => ({ symbol: f.symbol, by: lbl(f), call: f.direction + (f.probability ? " " + Math.round(f.probability * 100) + "%" : ""), due: nyYmd(f.dueAt) })),
       gradedSinceYesterday: g.graded.map(x => ({ symbol: x.f.symbol, by: lbl(x.f), hit: !!x.e.directionHit, returnPct: x.e.realizedReturnPct != null ? +Number(x.e.realizedReturnPct).toFixed(2) : null })),
@@ -84,7 +97,7 @@ Reply with ONLY JSON: {"headline": "one sentence", "priorities": [{"title": "sho
     if (g.call) parts.push("The desk's SPY call for " + g.call.target + ": " + g.call.upPct + "% chance of a higher close.");
     if (g.econ && g.econ.length) parts.push("US releases today: " + g.econ.slice(0, 5).map(x => x.event + (x.gmt ? " (" + x.gmt + " GMT)" : "")).join("; ") + (g.econ.length > 5 ? " and " + (g.econ.length - 5) + " more" : "") + ".");
     else if (g.econ) parts.push("No US economic releases today.");
-    if (g.earnings && g.earnings.length) parts.push("Earnings for your names: " + g.earnings.map(x => x.symbol + " " + x.date.slice(5) + (x.time && !/not.?supplied/i.test(x.time) ? " (" + x.time + ")" : "")).join(", ") + ".");
+    if (g.earnings && g.earnings.length) parts.push("Earnings for your names: " + g.earnings.map(x => x.symbol + " " + x.date.slice(5) + (x.time && !/not.?supplied/i.test(x.time) ? " (" + x.time + ")" : "") + (x.impliedMovePct != null ? ", options imply ±" + x.impliedMovePct.toFixed(1) + "%" : "")).join("; ") + ".");
     if (g.moves.length) parts.push("Biggest moves among your names: " + g.moves.slice(0, 3).map(x => x.a.symbol + " " + sgn(x.q.changePct)).join(", ") + ".");
     if (g.due.length) parts.push(g.due.length + " AI call" + (g.due.length > 1 ? "s" : "") + " come due this week" + " (" + g.due.slice(0, 4).map(f => f.symbol).join(", ") + (g.due.length > 4 ? ", …" : "") + ").");
     if (g.graded.length) parts.push("Graded since yesterday: " + g.graded.filter(x => x.e.directionHit).length + " of " + g.graded.length + " right.");
@@ -100,6 +113,7 @@ Reply with ONLY JSON: {"headline": "one sentence", "priorities": [{"title": "sho
     if (!opts.force && s.nyMinutes < 360) return null;
     if (app.store.cached("inbox").some(i => i.kind === "digest" && i.day === day)) return null;
     const g = await gather(app);
+    await syncCatalysts(app, g);
     if (app.store.cached("inbox").some(i => i.kind === "digest" && i.day === day)) return null;
     const title = "Daily digest · " + new Date(day + "T12:00:00Z").toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric", timeZone: "UTC" });
     return app.store.create("inbox", { kind: "digest", day, title, body: digestText(g), materiality: 0.5, read: false, at: Date.now() });
@@ -126,6 +140,7 @@ Reply with ONLY JSON: {"headline": "one sentence", "priorities": [{"title": "sho
     (async () => {
       let g;
       try { g = G0 = await gather(app); } catch (e) { body.replaceChildren(U.errorBox({ message: U.errorText(e) })); return; }
+      syncCatalysts(app, g).catch(() => {});
       const kpi = (l, v, sub, cls, onclick) => h("div", { class: "kpi" + (onclick ? " click" : ""), onclick, role: onclick ? "button" : null, tabindex: onclick ? 0 : null }, h("span", { class: "label" }, l), h("b", { class: "v " + (cls || "") }, v), h("span", { class: "s" }, sub));
       kpis.replaceChildren(
         kpi("SPY call", g.call ? g.call.upPct + "% up" : "Not made", g.call ? "for the " + g.call.target + " close" : "make it in the Market Brain", g.call ? (g.call.upPct > 50 ? "up" : g.call.upPct < 50 ? "down" : "") : "", () => app.go("brain")),
@@ -134,16 +149,18 @@ Reply with ONLY JSON: {"headline": "one sentence", "priorities": [{"title": "sho
         kpi("Paper account", g.paper ? U.pct(g.paper.v.returnPct) : "—", g.paper ? "S&P 500 mirror " + U.pct(g.paper.v.mirrorReturnPct) : "no paper trades yet", g.paper ? U.signCls(g.paper.v.returnPct - g.paper.v.mirrorReturnPct) : "", () => app.go("paper")));
       const lbl = (f) => (MD.ai.SOURCE_LABEL || {})[f.source] || f.source;
       body.replaceChildren(
-        h("div", { class: "grid g2", style: "align-items:start" },
+        h("div", { class: "stack" },
           U.section("US economic releases today", g.econ ? U.table([{ t: "Time (GMT)", v: "gmt" }, { t: "Release", v: "event" }, { t: "Consensus", v: (x) => x.consensus || "—", n: true }, { t: "Previous", v: (x) => x.previous || "—", n: true }, { t: "Actual", v: (x) => x.actual || "—", n: true }], g.econ.slice(0, 15), { empty: "No US releases today." }) : h("p", { class: "small warn-t" }, "Economic calendar unavailable.")),
-          U.section("Earnings for your names (next 5 trading days)", g.earnings ? U.table([{ t: "Stock", v: (x) => h("b", {}, x.symbol) }, { t: "Date", v: "date" }, { t: "When", v: (x) => /not.?supplied/i.test(x.time || "") ? "time not given" : x.time || "—" }, { t: "EPS forecast", v: (x) => x.epsForecast || "—", n: true }], g.earnings, { empty: g.names ? "None of your holdings or watchlist names report in the next five trading days." : "Add holdings or watchlist names to see their earnings here.", onRow: (x) => app.openAsset({ id: "stock:" + x.symbol, cls: "stock", symbol: x.symbol, name: x.name }) }) : h("p", { class: "small warn-t" }, "Earnings calendar unavailable."))),
+          U.section("Earnings for your names (next 5 trading days)", g.earnings ? U.table([{ t: "Stock", v: (x) => h("b", {}, x.symbol) }, { t: "Date", v: "date" }, { t: "When", v: (x) => /not.?supplied/i.test(x.time || "") ? "time not given" : x.time || "—" }, { t: "EPS forecast", v: (x) => x.epsForecast || "—", n: true }, { t: "Options imply", v: (x) => x.impliedMovePct != null ? "±" + x.impliedMovePct.toFixed(1) + "%" : "—", n: true }, { t: "Typical reaction", v: (x) => x.typicalReactionPct != null ? "±" + x.typicalReactionPct.toFixed(1) + "%" : "—", n: true }], g.earnings, { empty: g.names ? "None of your holdings or watchlist names report in the next five trading days." : "Add holdings or watchlist names to see their earnings here.", onRow: (x) => app.openAsset({ id: "stock:" + x.symbol, cls: "stock", symbol: x.symbol, name: x.name }) }) : h("p", { class: "small warn-t" }, "Earnings calendar unavailable."))),
         U.section("Your names today", h("div", { class: "stack" }, U.table([{ t: "Asset", v: (x) => h("span", { class: "who sym" }, h("b", {}, x.a.symbol), h("span", { class: "tiny muted" }, x.a.held ? "Holding" : "Watchlist")) },
           { t: "Price", v: (x) => U.money(x.q.price, x.q.currency || "USD", { price: true }), n: true }, { t: "Today", v: (x) => h("span", { class: U.signCls(x.q.changePct) }, sgn(x.q.changePct, 2)), n: true },
           { t: "Flags", v: (x) => h("span", { class: "small" }, [(g.earnings || []).some(e => e.symbol === x.a.symbol) ? "earnings this week" : "", g.due.some(f => f.assetId === x.a.id) ? "AI call due" : ""].filter(Boolean).join(" · ") || "—") }],
           g.moves.slice(0, 12), { empty: "Add holdings or watchlist names to see how they're moving.", onRow: (x) => app.openAsset(x.a) }),
           g.priceErrors.length ? h("p", { class: "tiny warn-t" }, "No live price for " + g.priceErrors.join(", ") + ".") : null)),
         U.section("AI calls coming due this week", U.table([{ t: "Asset", v: "symbol" }, { t: "By", v: (f) => lbl(f) }, { t: "Call", v: (f) => f.direction + (f.probability ? " · " + Math.round(f.probability * 100) + "%" : "") }, { t: "Due", v: (f) => U.fmtTs(f.dueAt) }], g.due.slice(0, 15), { empty: "Nothing comes due this week." })),
-        g.graded.length ? U.section("Graded since yesterday", U.table([{ t: "Asset", v: (x) => x.f.symbol }, { t: "By", v: (x) => lbl(x.f) }, { t: "Call", v: (x) => x.f.direction }, { t: "Result", v: (x) => h("span", { class: x.e.directionHit ? "up" : "down" }, (x.e.directionHit ? "Right" : "Wrong") + (x.e.realizedReturnPct != null ? " · " + sgn(Number(x.e.realizedReturnPct)) : "")) }], g.graded)) : null,
+        g.graded.length ? U.section("Graded since yesterday", h("div", { class: "stack" }, h("p", { class: "small" }, g.graded.filter(x => x.e.directionHit).length + " of " + g.graded.length + " right."),
+          U.table([{ t: "Asset", v: (x) => x.f.symbol }, { t: "By", v: (x) => lbl(x.f) }, { t: "Call", v: (x) => x.f.direction }, { t: "Result", v: (x) => h("span", { class: x.e.directionHit ? "up" : "down" }, (x.e.directionHit ? "Right" : "Wrong") + (x.e.realizedReturnPct != null ? " · " + sgn(Number(x.e.realizedReturnPct)) : "")) }], g.graded.slice(0, 8)),
+          g.graded.length > 8 ? h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("research") }, "All " + g.graded.length + " in the forecast journal") : null)) : null,
         h("p", { class: "tiny muted" }, "Calendars from Nasdaq, prices from each asset's live source, calls and grades from your forecast journal · gathered " + U.fmtTs(g.at) + "." + (g.errs.length ? " Unavailable: " + g.errs.join("; ") + "." : "")));
     })();
   };
@@ -169,5 +186,5 @@ Reply with ONLY JSON: {"headline": "one sentence", "priorities": [{"title": "sho
     D.calendar.economic(s.date).then(r => { const us = r.filter(x => /United States|^US$/i.test(x.country || "")); rel.textContent = us.length ? "US releases today: " + us.slice(0, 3).map(x => x.event + (x.gmt ? " (" + x.gmt + " GMT)" : "")).join("; ") + (us.length > 3 ? " and " + (us.length - 3) + " more" : "") + "." : "No US economic releases today."; }).catch(() => { rel.textContent = "Economic calendar unavailable."; });
   }
 
-  MD.today = { dashCard, gather, facts, aiPlan, digestText, autoDigest, clockText, myNames };
+  MD.today = { syncCatalysts, dashCard, gather, facts, aiPlan, digestText, autoDigest, clockText, myNames };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -7,6 +7,19 @@
   const near = (a, b, tol, msg) => { if (!(Math.abs(Number(a) - Number(b)) <= tol)) throw new Error((msg || "") + " expected ≈" + b + " got " + a); };
   const ok = (c, msg) => { if (!c) throw new Error(msg || "assertion failed"); };
 
+  test("portfolio health score against the risk band", () => {
+    const Q = MD.quant, good = Q.healthScore({ effective: 9, topWeightPct: 12, volPct: 14, maxDrawdownPct: -15, avgCorr: 0.3, risk: "mid" });
+    eq(good.parts.length, 5); eq(good.parts.find(p => p.key === "diversification").value, 100); eq(good.parts.find(p => p.key === "concentration").value, 100); eq(good.parts.find(p => p.key === "independence").value, 70);
+    eq(good.score, Math.round((100 + 100 + 100 + 100 + 70) / 5));
+    const bad = Q.healthScore({ effective: 2, topWeightPct: 60, volPct: 45, maxDrawdownPct: -40, avgCorr: null, risk: "low" });
+    eq(bad.parts.length, 4); eq(bad.parts.find(p => p.key === "diversification").value, 25); eq(bad.parts.find(p => p.key === "concentration").value, 0); eq(bad.parts.find(p => p.key === "volatility").value, 0); ok(bad.score < 20);
+  });
+  test("desk consensus: latest call per source per horizon, weighted, with agreement and spread", () => {
+    const Q = MD.quant, c = [{ source: "ml", upPct: 55, horizonDays: 30, at: 1 }, { source: "ml", upPct: 40, horizonDays: 30, at: 2 }, { source: "ai-decide", upPct: 70, horizonDays: 91, at: 3 }, { source: "ai-picks", upPct: 64, horizonDays: 75, at: 4 }, { source: "ai-day", upPct: 52, horizonDays: 1, at: 5 }];
+    const r = Q.deskConsensus(c, (s) => s === "ai-decide" ? 2 : 1);
+    eq(r.length, 2); eq(r[0].key, "days"); eq(r[0].n, 1); near(r[0].upPct, 52, 1e-9);
+    const m = r[1]; eq(m.n, 3, "ML's newer call replaces its older one"); near(m.upPct, (40 + 70 * 2 + 64) / 4, 1e-9); near(m.agreePct, 75, 1e-9, "ML leans the other way"); near(m.spread, 30, 1e-9);
+  });
   test("ML reliability table bins out-of-sample odds against outcomes", () => {
     const r = MD.ml.reliability([0.3, 0.35, 0.5, 0.65, 0.7, 0.62], [0, 1, 1, 1, 1, 0]);
     eq(r.length, 3); eq(r[0].n, 2); near(r[0].predictedPct, 32.5, 1e-9); near(r[0].actualPct, 50, 1e-9);

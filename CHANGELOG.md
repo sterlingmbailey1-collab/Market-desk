@@ -1,5 +1,38 @@
 # Changelog
 
+## Version 30 (2026-10-26)
+- **Desk consensus** on stock and crypto pages. Every model on the desk with an open call on the asset is combined
+  into one chance of a rise per horizon (next two weeks, 1–4 months, 4–12 months). That covers the quick take, the
+  AI decision, Recommendations, the ML model, day-trade plans and your own forecasts.
+  - Sources with 10 or more graded calls count by their accuracy (Brier score); the rest count once.
+  - The card shows how much of the weight agrees and the spread between sources, and warns when the models disagree.
+  - It updates as soon as a new call is logged.
+- **Earnings on the game plan.** Each upcoming report for your names shows the options-implied move and the stock's
+  typical two-day reaction. Both also go to the AI game plan and the daily digest.
+- **Paper-trading AI coach.** Claude reads your closed paper trades and says:
+  - what's working and what isn't
+  - which habits show
+  - what to try next.
+
+  It uses the return, the S&P 500 over the same days, the holding time and the source of each idea, and says
+  plainly when the sample is too small to mean much.
+- **Portfolio health score** (Portfolio analysis). A 0–100 score measured from the past year of your current
+  holdings against bands for your risk setting:
+  - diversification
+  - the largest position
+  - volatility
+  - the worst drop
+  - how independently your holdings move.
+
+  Each part is shown with its band.
+- **Automatic catalysts.** Earnings for your holdings and watchlist names go on the Calendar & Catalysts list once,
+  with the EPS forecast and the options-implied move.
+- **Negative-news notice.** When a news reading scores a holding at −50 or lower from two or more relevant
+  headlines, one inbox notice goes out that day.
+- **Ask AI knows the new pages.** It has starter questions and context for the paper account, the game plan and the
+  stock screener.
+- The game plan lists the calendars one under the other, and caps the graded calls at eight with a link to the rest.
+
 ## Version 29 (2026-10-26)
 - **Follow the AI automatically** (Paper Trading).
   - When it's on, every new recommendation that leans up is paper-bought with a set share of the account (5% by
