@@ -30,14 +30,21 @@
         S.done(e, "ok", " → correlation " + (fit.correlationWithPortfolio ?? "—") + ", volatility " + fit.portfolioVolPct.before + "% → " + fit.portfolioVolPct.after + "%");
       } catch (err) { S.done(e, "fail", " → " + U.errorText(err)); }
     }
+    // Machine learning on the asset's own history (3-month horizon, the longest the history supports), validated out of sample.
+    let ml = null;
+    if (MD.mlView) {
+      e = S.step("run", "Training the machine-learning model on " + asset.symbol + "'s history");
+      try { ml = MD.mlView.compact(await MD.mlView.run(app, asset, 91)); S.done(e, "ok", " → " + ml.upPct + "% up in 3 months, " + (ml.edgeOutOfSample ? "beat the base rate out of sample (Brier skill " + ml.outOfSample.brierSkillPct + "%)" : "no edge out of sample")); }
+      catch (err) { S.done(e, "fail", " → " + U.errorText(err)); }
+    }
     const measured = { symbol: asset.symbol, name: (q && q.name) || asset.name, class: asset.cls, price: q ? q.price : null, horizonDays: days, investor: { risk: prof.risk || "mid", horizon: prof.horizon || "mid", maxPositionPct: cap, income: !!prof.income },
       baseRates: br ? { modelUpPct: br.model.upPct, overallUpPct: r1(br.overall.upPct), independent: br.overall.independent, typicalIfUpPct: br.model.avgUpPct, typicalIfDownPct: br.model.avgDownPct, conditions: br.conditions.map(c => ({ condition: c.label, upPct: r1(c.upPct), windows: c.n })) } : null,
       risk: st ? { volPct: r1(st.volPct), maxDrawdown1yPct: r1(st.maxDrawdownPct), return1yPct: r1(st.changePct) } : null, trend: tech ? { trend: tech.trend, rsi14: r1(tech.rsi14), fromHighPct: r1(tech.fromHighPct) } : null,
-      yourPosition: position, portfolioValue: total ? Math.round(total) : null, portfolioFit: fit, nextEarnings: q && q.nextEarnings || null };
+      yourPosition: position, portfolioValue: total ? Math.round(total) : null, portfolioFit: fit, mlModel: ml, nextEarnings: q && q.nextEarnings || null };
     const lim = await s.limits().catch(() => null);
     const tools = lim && lim.tools ? MD.ai.tools(app, S, isStock ? ["search_news", "zacks_view", "earnings_info", "insider_activity", "smart_money", "options_move", "explain_move", "market_memory", "search_web"] : ["crypto_news", "search_news", "explain_move", "market_memory", "search_web"]) : undefined;
     e = S.step("run", "Claude is deciding (usually 1–2 minutes)");
-    const r = await s.json(`Decide what this investor should do with ${asset.symbol} (${measured.name}) over their horizon of about ${days} days: "buy", "accumulate" (add slowly), "hold", "trim", "sell", "avoid" or "wait" (for a specific level or event). Fit the decision to their risk appetite, holding period and current position (yourPosition is null if they don't own it). portfolioFit (when present) is what a position at their maximum size would have done to their portfolio over the past year: weigh diversification (low correlation) against concentration and added volatility when choosing the decision and size.
+    const r = await s.json(`Decide what this investor should do with ${asset.symbol} (${measured.name}) over their horizon of about ${days} days: "buy", "accumulate" (add slowly), "hold", "trim", "sell", "avoid" or "wait" (for a specific level or event). Fit the decision to their risk appetite, holding period and current position (yourPosition is null if they don't own it). portfolioFit (when present) is what a position at their maximum size would have done to their portfolio over the past year: weigh diversification (low correlation) against concentration and added volatility when choosing the decision and size. mlModel is a machine-learning model trained on the asset's history and tested out of sample: lean on its odds only when edgeOutOfSample is true, and say so.
 Start from the measured base rate (baseRates.modelUpPct: how often it was higher over this horizon in situations like today's) and move away only for evidence history can't know: valuation, earnings revisions, news, insiders, the market regime. ${tools ? "Use 3 to 8 tool calls; cite only URLs the tools returned." : ""} Give the chance it is higher at the horizon's end, the typical gain if it rises and loss if it falls (use the measured typical sizes unless you have a reason), an entry plan (now, in steps, or at a level), an exit plan (where you'd be wrong; where you'd take profit), and what would change the decision. Never tell them to put in an order; "wait" and "avoid" are valid.
 ${MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-decide"))}
 ${MD.ai.contextNote(app)}
@@ -45,7 +52,9 @@ ${MD.ai.assetNote(app, asset)}
 Measured: ${JSON.stringify(measured)}
 Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoid"|"wait", "headline": "one sentence", "upProbabilityPct": 5-95, "ifUpPct": number, "ifDownPct": number, "positionSizePct": number (suggested share of the portfolio, 0 if none), "entryPlan": "...", "exitPlan": {"wrongIf": "...", "stopPct": number (loss from here that means you're wrong), "takeProfitPct": number}, "reasons": ["3-5 reasons citing the measured numbers and news"], "risks": ["..."], "changeMyMind": "...", "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "complex", signal: opts.signal }, tools ? { tools } : { cache: false }));
     S.done(e, "ok");
-    const decision = DECISIONS[r.decision] ? r.decision : "hold", claudeUp = Math.max(5, Math.min(95, Number(r.upProbabilityPct) || 50)), modelUp = br ? br.model.upPct : null;
+    const decision = DECISIONS[r.decision] ? r.decision : "hold", claudeUp = Math.max(5, Math.min(95, Number(r.upProbabilityPct) || 50));
+    // The measured side: the base-rate model, averaged with the ML model when the ML beat the base rate out of sample.
+    const modelUp = br ? (ml && ml.edgeOutOfSample ? Math.round((br.model.upPct + ml.upPct) / 2 * 10) / 10 : br.model.upPct) : null;
     const bw = MD.ai.blendFor(app, "ai-decide");
     let up = modelUp != null ? bw.wClaude * claudeUp + (1 - bw.wClaude) * modelUp : claudeUp, conf = Math.max(0, Math.min(100, Number(r.confidence) || 0));
     const rv = await MD.ai.review(app, { task: "Should this investor " + decision + " " + asset.symbol + " over " + days + " days?", S, signal: opts.signal, facts: measured, items: [{ id: "decision", decision, upProbabilityPct: Math.round(up), reasons: r.reasons, confidence: conf }] }).catch(() => null);
@@ -57,7 +66,7 @@ Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoi
     up = Math.round(up);
     const ifUp = Math.abs(Number(r.ifUpPct)) || (br && br.model.avgUpPct) || 10, ifDown = Math.abs(Number(r.ifDownPct)) || Math.abs((br && br.model.avgDownPct) || 10);
     const math = Q.decisionMath({ upPct: up, upMovePct: ifUp, downMovePct: ifDown, capPct: cap });
-    const out = { fit, assetId: asset.id, symbol: asset.symbol, at: Date.now(), days, decision, headline: String(r.headline || ""), upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, reviewer: review && review.probabilityPct != null ? Math.round(review.probabilityPct) : null, final: up }, calibration: cal.applied ? cal : null,
+    const out = { fit, assetId: asset.id, symbol: asset.symbol, at: Date.now(), days, decision, headline: String(r.headline || ""), upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, ml: ml ? ml.upPct : null, mlEdge: ml ? ml.edgeOutOfSample : null, reviewer: review && review.probabilityPct != null ? Math.round(review.probabilityPct) : null, final: up }, calibration: cal.applied ? cal : null,
       ifUpPct: r1(ifUp), ifDownPct: r1(ifDown), math, aiSizePct: Math.max(0, Math.min(100, Number(r.positionSizePct) || 0)), cap, entryPlan: String(r.entryPlan || ""), exitPlan: r.exitPlan || null, reasons: (r.reasons || []).slice(0, 5).map(String), risks: (r.risks || []).slice(0, 4).map(String), changeMyMind: String(r.changeMyMind || ""), confidence: conf, review, sources: S.verify(r.sources), price: measured.price, position, toolCalls: S.calls };
     if (!app.demo && out.price > 0 && up !== 50) {
       const f = await app.store.create("forecasts", { assetId: asset.id, asset: MD.common.slim(asset), symbol: asset.symbol, source: "ai-decide", horizonDays: days, dueAt: Date.now() + days * 864e5, priceAtCreation: out.price, currency: "USD", priceSource: q ? q.source : "quote", direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: out.headline + " (" + decision + ")", flatBandPct: 1, claudeUpPct: out.probs.claude, modelUpPct: out.probs.model }).catch(() => null);

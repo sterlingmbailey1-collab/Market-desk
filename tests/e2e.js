@@ -174,6 +174,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
     const pr = (window.__mock.fullPrompts || []).filter(x => /LARGE price move/.test(x)).pop() || "";
     return { focus: set.focus, focusPicks: set.picks.filter(p => p.focus).map(p => p.symbol), all: set.picks.map(p => p.symbol), log: lines.filter(t => /focus/i.test(t)), prompt: /asked to focus on: "AI chips"/.test(pr) && /"fitsFocus":"AI chips"/.test(pr), fake: /"symbol":"ZZZZ"/.test(pr) };
   });
+  check("recommendations: every measured candidate carries the machine-learning model's odds and out-of-sample record", await page.evaluate(() => { const pr = (window.__mock.fullPrompts || []).filter(x => /LARGE price move/.test(x)).pop() || ""; return /"mlModel":\{"horizonDays":\d+,"upPct":[\d.]+,"edgeOutOfSample":(true|false)/.test(pr); }));
   check("recommendations focus: Claude names assets for the theme, the app verifies them (a fake ticker drops out) and the picks lead with them", foc.focus === "AI chips" && foc.focusPicks.length >= 1 && foc.focusPicks.every(s => ["AMD", "NVDA"].includes(s)) && foc.prompt && !foc.fake && foc.log.some(t => /2 of 3 focus names verified/.test(t)), JSON.stringify(foc));
   await page.evaluate(() => document.querySelectorAll("#content details").forEach(d => d.open = true));
   const pkTxt = await page.locator("#content").innerText();
@@ -247,6 +248,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const callTxt = await page.locator("#content").innerText();
   const callFc = await page.evaluate(() => MD.app.store.cached("forecasts").filter(f => f.source === "ai-market"));
   check("market call: SPY up/down odds anchored to its own history, reviewed, logged for the target session's close", /S&P 500 on \d{4}-\d{2}-\d{2}: ▲ 5\d% chance it closes up/.test(callTxt) && /SPY's own history/.test(callTxt) && /Review: holds up/i.test(callTxt) && callFc.length === 1 && callFc[0].dueAt === (await page.evaluate(() => MD.quant.closeTimeUTC(MD.quant.targetSession()))) && callFc[0].flatBandPct === 0, callTxt.slice(callTxt.search(/Market call/i), callTxt.search(/Market call/i) + 500) + JSON.stringify(callFc));
+  check("market call gets a machine-learning model of SPY's next session, counted only with a clear out-of-sample edge", /machine-learning model \d+(\.\d)?% \((clear edge, counted|no clear edge, not counted)\)/.test(callTxt) && await page.evaluate(() => /"mlModel":\{"horizonDays":1,"upPct":/.test((window.__mock.fullPrompts || []).filter(x => /market strategist/.test(x)).pop() || "")), callTxt.slice(0, 600));
   await page.click("button:has-text('Update the call')"); await page.waitForTimeout(4000);
   check("only the first call per session counts for the record", (await page.evaluate(() => MD.app.store.cached("marketcalls").length)) === 2 && (await page.evaluate(() => MD.app.store.cached("forecasts").filter(f => f.source === "ai-market").length)) === 1 && /the first call for this session already counts/i.test(await page.locator("#content").innerText()));
   check("the market call reaches every AI prompt", /market call for \d{4}-\d{2}-\d{2}: SPY up 5\d%/.test(await page.evaluate(() => MD.ai.contextNote(MD.app))));
@@ -326,6 +328,13 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const al0 = await page.evaluate(() => MD.app.store.cached("alerts").length);
   await page.click("#sec-decide button:has-text('Alerts at the stop and take-profit')"); await page.waitForTimeout(600);
   check("one click sets alerts at the decision's stop and take-profit", await page.evaluate((n) => { const a = MD.app.store.cached("alerts"); return a.length === n + 2 && a.some(x => /AI decision on AAPL: the level where it's wrong/.test(x.note) && x.kind === "below"); }, al0));
+  await page.click("#sec-ml button:has-text('Train and forecast')"); await page.waitForTimeout(5000);
+  const mlTxt = await page.locator("#sec-ml").innerText();
+  const mlFc = await page.evaluate(() => MD.app.store.cached("forecasts").filter(f => f.source === "ml"));
+  check("machine-learning forecast: odds from two models tested out of sample, drivers, similar past days, logged for grading", /Logistic model/i.test(mlTxt) && /Similar past setups/i.test(mlTxt) && /Out-of-sample tests/i.test(mlTxt) && /(Beat the base rate on data it hadn't seen|No clear edge on data it hadn't seen)/.test(mlTxt) && /What drives today's reading/i.test(mlTxt) && /Most similar past days/i.test(mlTxt) && /Trained on \d+ daily bars/.test(mlTxt) && mlFc.length === 1 && mlFc[0].horizonDays === 30, mlTxt.slice(0, 900));
+  await page.locator("#sec-ml").screenshot({ path: path.join(shots, "e2e-ml.png") });
+  const mlTool = await page.evaluate(async () => { const t = MD.ai.tools(MD.app, MD.ai.session(() => {}), ["ml_forecast"])[0]; return t.execute({ symbol: "AAPL", days: 30 }); });
+  check("ml_forecast tool gives the AI the model's odds and its out-of-sample record", mlTool && mlTool.upPct >= 20 && mlTool.upPct <= 80 && mlTool.outOfSample && mlTool.outOfSample.predictions > 0 && typeof mlTool.edgeOutOfSample === "boolean" && mlTool.topDrivers.length === 4, JSON.stringify(mlTool).slice(0, 600));
   await page.click("#sec-why button:has-text('Explain the move')"); await page.waitForTimeout(4000);
   const whyTxt = await page.locator("#sec-why").innerText();
   check("why it's moving: market, sector, rates, dollar, oil and the asset's own part", /Asset-specific/.test(whyTxt) && /S&P 500 \(β/.test(whyTxt) && /Technology \(β/.test(whyTxt) && /Last 5 days/i.test(whyTxt) && /Factor model fitted on/i.test(whyTxt), whyTxt.slice(0, 600));
@@ -560,9 +569,16 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.waitForTimeout(3000);
   const macroTxt = await page.locator("#sec-analysis").innerText();
   check("macro sensitivity: portfolio betas, scenario estimates in money, biggest contributors", /Macro sensitivity/i.test(macroTxt) && /S&P 500 β/i.test(macroTxt) && /Stocks fall 10%/.test(macroTxt) && /Long yields jump/.test(macroTxt) && /Asset-specific risk left/.test(macroTxt), macroTxt.slice(macroTxt.search(/Macro sensitivity/i), macroTxt.search(/Macro sensitivity/i) + 700));
-  await page.locator("#sec-analysis summary:has-text('Your own scenario')").click(); await page.locator("#sec-analysis input[aria-label='Shock to SPY']").fill("-20"); await page.waitForTimeout(300);
+  // Demo mode loads its sample ledger in the background, which redraws the analysis once; retry after it settles.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await page.waitForSelector("#sec-analysis summary:has-text('Your own scenario')", { timeout: 20000 }).catch(() => {});
+    await page.locator("#sec-analysis summary:has-text('Your own scenario')").click().catch(() => {}); await page.locator("#sec-analysis input[aria-label='Shock to BTC']").fill("-30").catch(() => {});
+    const okNow = await page.waitForFunction(() => /Estimated move: -\d/.test(document.querySelector("#sec-analysis").innerText), null, { timeout: 6000 }).then(() => true).catch(() => false);
+    if (okNow) break;
+  }
   const scnTxt = await page.locator("#sec-analysis").innerText();
-  check("your own scenario: a shock to the market gives an estimated loss", /Estimated move: -\d/.test(scnTxt), (scnTxt.match(/Your own scenario[\s\S]{0,600}/) || [scnTxt.slice(-600)])[0]);
+  // The demo portfolio holds bitcoin itself, so a bitcoin shock must show a loss whatever the (random) mock correlations are.
+  check("your own scenario: a bitcoin shock gives an estimated loss", /Estimated move: -\d/.test(scnTxt), (scnTxt.match(/Your own scenario[\s\S]{0,600}/i) || [scnTxt.slice(-600)])[0]);
   await page.screenshot({ path: path.join(shots, "e2e-analysis.png"), fullPage: true });
   check("demo mode shows banner and demo ledger", /Demo mode/.test(await page.locator("#content").innerText()) && await page.evaluate(() => MD.app.store.cached("tx").every(t => t.demo)));
   await page.screenshot({ path: path.join(shots, "e2e-demo.png"), fullPage: false });
@@ -699,8 +715,9 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const buyTxt = await page.locator("#sec-buy").innerText();
   check("if you buy: weight, portfolio volatility and drawdown before and after, correlation, and the AI decision's ceiling", /Weight after/i.test(buyTxt) && /Portfolio volatility/i.test(buyTxt) && /\d+\.\d% → \d+\.\d%/.test(buyTxt) && /Correlation/i.test(buyTxt) && /AI decision of .* size ceiling at/.test(buyTxt) && /read-only/.test(buyTxt) && Number(await page.locator("#sec-buy input[type=number]").inputValue()) > 0, buyTxt.slice(0, 900));
   await page.locator("#sec-buy").screenshot({ path: path.join(shots, "e2e-buy.png") });
-  const fitRes = await page.evaluate(async () => { const d = await MD.decide.decide(MD.app, { id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" }, {}); const pr = (window.__mock.fullPrompts || []).filter(x => /Decide what this investor should do/.test(x)).pop() || ""; return { fit: d.fit, inPrompt: /"portfolioFit":\{"testedPositionPctOfPortfolio":\d+/.test(pr) }; });
+  const fitRes = await page.evaluate(async () => { const d = await MD.decide.decide(MD.app, { id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" }, {}); const pr = (window.__mock.fullPrompts || []).filter(x => /Decide what this investor should do/.test(x)).pop() || ""; return { fit: d.fit, inPrompt: /"portfolioFit":\{"testedPositionPctOfPortfolio":\d+/.test(pr), ml: /"mlModel":\{"horizonDays":91,"upPct":[\d.]+/.test(pr), probs: d.probs }; });
   check("AI decision weighs portfolio fit: correlation, volatility and worst drop for a max-size position, measured and given to Claude", !!(fitRes.fit && fitRes.fit.correlationWithPortfolio != null && fitRes.fit.portfolioVolPct.before > 0 && fitRes.inPrompt), JSON.stringify(fitRes));
+  check("AI decision gets the machine-learning model's odds and record (3-month horizon)", fitRes.ml && fitRes.probs && fitRes.probs.ml != null && typeof fitRes.probs.mlEdge === "boolean", JSON.stringify(fitRes.probs));
 
   // ---- Opportunities AI: scan review, comparison scorecard, idea finder
   await page.evaluate(() => { MD.app.ls.set("oppTab", "scan"); MD.app.go("opportunities", null, { fromNav: true }); }); await page.waitForTimeout(800);

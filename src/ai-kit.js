@@ -87,6 +87,9 @@
         if (Number(i.target) > 0) { out.target = Number(i.target); out.chanceFinishAbovePct = p.probAbove(out.target) * 100; out.chanceTouchPct = p.probTouch(out.target) * 100; }
         return rnd(out);
       } },
+    ml_forecast: { description: "Machine-learning forecast for a stock, ETF or coin: logistic regression plus nearest-neighbour analogs trained on its daily history, walk-forward validated. Returns the chance it is higher after `days` (7, 30 or 91), the out-of-sample accuracy, Brier skill and AUC against the base rate, the top drivers and how similar past setups turned out. When edgeOutOfSample is false the odds are just the base rate.", props: { symbol: { type: "string" }, days: { type: "number" } }, req: ["symbol"],
+      label: (i) => "Machine-learning forecast: " + i.symbol,
+      async run(app, S, i) { const a = await findAsset(String(i.symbol || "")), d = [7, 30, 91].reduce((b, x) => Math.abs(x - (Number(i.days) || 30)) < Math.abs(b - (Number(i.days) || 30)) ? x : b, 30); return MD.mlView.compact(await MD.mlView.run(app, a, d)); } },
     portfolio_fit: { description: "What buying a stock, ETF or coin would have done to the user's portfolio over the past year: weight after, portfolio volatility and worst drop before and after, and correlation with the holdings. Give the position as a percent of the portfolio (default 5). Measured with today's holdings held constant; not a forecast.", props: { symbol: { type: "string" }, pct: { type: "number" } }, req: ["symbol"],
       label: (i) => "Portfolio fit: " + i.symbol + " at " + (i.pct || 5) + "% of the portfolio",
       async run(app, S, i) { const a = await findAsset(String(i.symbol || "")), pct = Math.max(0.5, Math.min(50, Number(i.pct) || 5)); const P = await MD.rebalance.previewBuy(app, a, { pct }), t = P.t; return rnd({ symbol: a.symbol, positionPctTested: pct, amount: P.A, currency: P.R, paidFromCash: P.fromCash, weightBeforePct: t.weightBefore, weightAfterPct: t.weightAfter, portfolioVolPct: { before: t.volBefore, after: t.volAfter }, worstDrop1yPct: { before: t.ddBefore, after: t.ddAfter }, correlationWithPortfolio: t.corr, assetVolPct: t.assetVol, tradingDays: t.days, priceSource: P.source }); } },
@@ -138,7 +141,7 @@
     ["intraday", /day ?trad|intraday|scalp|vwap|opening range|\bgaps?\b|gapp|pre-?market|after-?hours|support|resistance|\bstop\b|\bentry\b|\blevels?\b|\bmovers?\b/i, ["intraday_levels", "movers", "economic_calendar", "explain_move"]],
     ["market", /market|macro|\bfed\b|\brates?\b|yields?|inflation|\bcpi\b|jobs|economy|recession|sectors?|regime|why .*(fell|drop|rose|rall|moved?|down|up)|what moved|driving/i, ["market_pulse", "market_memory", "explain_move", "economic_calendar"]],
     ["pattern", /when .* (rise|rises|fall|falls|jump|jumps|drop|drops|spike|spikes)|tends? to|usually|historically|correlat|backtest|does .* (follow|lead)|pattern/i, ["backtest_rule", "base_rates", "market_memory"]],
-    ["odds", /chance|probab|likel|will .*(rise|fall|go|hit)|predict|forecast|upside|downside|expect|targets?/i, ["base_rates", "price_range", "project_price", "options_move", "track_record"]],
+    ["odds", /chance|probab|likel|will .*(rise|fall|go|hit)|predict|forecast|upside|downside|expect|targets?|machine learning|\bml\b|model/i, ["base_rates", "ml_forecast", "price_range", "project_price", "options_move", "track_record"]],
     ["earnings", /earnings?|\beps\b|guidance|quarter|results/i, ["earnings_info", "options_move"]],
     ["smart", /congress|politic|senator|pelosi|buffett|insiders?|13f|superinvestor|smart money|hedge fund/i, ["smart_money", "insider_activity"]],
     ["options", /options?|implied|straddle|volatil/i, ["options_move", "price_range"]],
@@ -288,7 +291,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     })().finally(() => { scoring = null; });
     return scoring;
   }
-  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", "ai-day": "Day-trade plans", "ai-market": "Market calls", "ai-decide": "AI decisions", ai: "Deep Research", user: "Your own forecasts" };
+  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", "ai-day": "Day-trade plans", "ai-market": "Market calls", "ai-decide": "AI decisions", ml: "Machine-learning model", ai: "Deep Research", user: "Your own forecasts" };
   /* Per-source accuracy and a calibration chart: for each stated-probability band, how often calls came true. */
   /* What following a source's up/down calls would have returned on average (a "down" call counts as a short), and
      the S&P 500 over the same windows for comparison. */
@@ -329,7 +332,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
   function howItDecides(app) {
     const days = MD.brain ? MD.brain.latestPerDay(app).length : 0, pb = MD.brain ? MD.brain.playbook(app) : { patterns: [] }, active = pb.patterns.filter(p => p.status === "active").length;
     const L = latestLessons(app), W = MD.brain && MD.brain.reviews ? MD.brain.reviews(app)[0] : null;
-    const rows = ["ai-picks", "ai-decide", "ai-market", "ai-day", "ai-take", "ai"].map(s => {
+    const rows = ["ai-picks", "ai-decide", "ai-market", "ai-day", "ai-take", "ml", "ai"].map(s => {
       const tr = trackRecord(app, s), bw = BLENDED.has(s) ? blendFor(app, s) : null, cal = CALIBRATED.has(s) ? calibrateUp(app, s, 60) : null;
       return { s, label: SOURCE_LABEL[s], tr, bw, cal };
     });
@@ -337,6 +340,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     return h("details", { class: "howai" }, h("summary", { class: "label", style: "cursor:pointer" }, "How the desk's AI decides"),
       h("ol", { class: "small", style: "margin:8px 0 0;padding-left:1.3em;display:grid;gap:6px" },
         step("Measure", "The page computes the numbers first: prices, the asset's own base rate (how often it was higher over the same horizon in situations like today's), options-implied moves, volatility, Zacks, insiders, smart money and what moved it (market, sector, rates, dollar, oil)."),
+        step("Machine learning", "A logistic-regression model and a nearest-neighbour model of similar past days are trained in the browser on the asset's history and tested walk-forward on years they hadn't seen. Their odds count only as far as they beat the base rate out of sample; the AI is told both the odds and that record."),
         step("Research", "Claude investigates with tools (news, web pages, earnings, options, filings) and reasons over what they return. Citations are checked against the pages actually retrieved; unverified ones are flagged."),
         step("Context", "Every prompt carries your investor profile, the Market Brain (" + days + " session" + (days === 1 ? "" : "s") + " studied, " + active + " active pattern" + (active === 1 ? "" : "s") + ")" + (W ? ", the weekly review of " + W.week : "") + ", the desk's past calls on the asset and the latest lessons" + (L ? " (" + U.fmtDate(L.createdAt) + ")" : " (none yet)") + "."),
         step("Review", "A second, sceptical reader checks each call against the measured data and sources, keeps, revises or drops it, and gives its own probability, which is averaged in."),

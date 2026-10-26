@@ -302,6 +302,28 @@
     const late = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 1, minutesLeft: 10 }); ok(late.pNeither > 0.9, "ten quiet minutes rarely reach either level");
     eq(Q.barrierOdds({ entry: 100, stop: 101, target: 102, dailyVolPct: 2, minutesLeft: 60 }), null);
   });
+  test("machine learning: logistic regression recovers a signal; AUC ranks correctly", () => {
+    const C = MD.core, M = MD.ml, r = C.rng(11), Z = [], y = [];
+    for (let i = 0; i < 600; i++) { const z = C.gauss(r); Z.push([z, C.gauss(r)]); y.push(z + 0.5 * C.gauss(r) > 0 ? 1 : 0); }
+    const m = M.logisticFit(Z, y, 1); ok(m.w[1] > 1 && Math.abs(m.w[2]) < 0.4, JSON.stringify(m.w)); ok(m.predict([2, 0]) > 0.9 && m.predict([-2, 0]) < 0.1);
+    near(M.auc([0.1, 0.4, 0.35, 0.8], [0, 0, 1, 1]), 0.75, 1e-12); near(M.auc([0.5, 0.5], [0, 1]), 0.5, 1e-12);
+  });
+  test("machine learning: features never look ahead", () => {
+    const C = MD.core, r = C.rng(5); let p = 100; const pts = Array.from({ length: 400 }, (_, i) => { p *= Math.exp(0.01 * C.gauss(r)); return { time: (19000 + i) * 86400, close: p }; });
+    const a = MD.ml.features(pts.slice(0, 300)).rows, changed = pts.map((x, i) => i >= 300 ? { time: x.time, close: x.close * 3 } : x), b = MD.ml.features(changed).rows.slice(0, a.length);
+    ok(a.length === 100 && a.every((row, i) => row.x.every((v, j) => v === b[i].x[j])), "rows before bar 300 are identical when later prices change");
+  });
+  test("machine learning: walk-forward finds a real pattern and reports no edge in pure noise", () => {
+    const C = MD.core, M = MD.ml, mk = (seed, revert) => { const r = C.rng(seed), rets = [], pts = []; let p = 100; for (let i = 0; i < 1300; i++) { const m5 = rets.slice(-5).reduce((s, x) => s + x, 0); const e = -revert * m5 + 0.01 * C.gauss(r); rets.push(e); p *= Math.exp(e); pts.push({ time: (18000 + i) * 86400, close: p }); } return pts; };
+    const sig = M.forecast(mk(3, 0.35), { horizonBars: 5 }), noise = M.forecast(mk(4, 0), { horizonBars: 5 });
+    ok(sig.edge && sig.oos.skillEnsemble > 0.02 && sig.oos.logistic.accuracy > 0.58 && sig.oos.logistic.auc > 0.6, JSON.stringify(sig.oos.logistic) + " skill " + sig.oos.skillEnsemble);
+    ok(sig.drivers[0].key === "mom5" || sig.drivers.slice(0, 3).some(d => d.key === "mom5" || d.key === "last1z"), "short-term momentum drives a mean-reverting series: " + sig.drivers.slice(0, 3).map(d => d.key));
+    ok(!noise.edge && noise.trust === 0 && Math.abs(noise.upPct - noise.models.baseRatePct) < 1e-9, "noise claims no edge and stays at the base rate: " + JSON.stringify({ trust: noise.trust, up: noise.upPct, base: noise.models.baseRatePct, skill: noise.oos.skillEnsemble, t: noise.oos.tStat }));
+    ok([21, 22, 23].every(s => !M.forecast(mk(s, 0), { horizonBars: 21 }).edge), "no false edge on random walks at a 1-month horizon");
+    ok(sig.oos.tStat > 1.64, "the real pattern's edge is clear across independent blocks: t = " + sig.oos.tStat);
+    ok(sig.oos.predictions > 500 && sig.analogs.length === 8 && sig.upPct >= 20 && sig.upPct <= 80);
+    ok(M.forecast(mk(3, 0).slice(0, 300), { horizonBars: 21 }).error, "too little history is refused");
+  });
   test("technical alerts: average crosses, RSI thresholds, 52-week high and low, each firing once", () => {
     const Q = MD.quant, now = 400 * 86400, pts = Array.from({ length: 300 }, (_, i) => ({ time: (i + 90) * 86400, close: 100 + Math.sin(i / 9) * 5 }));
     const ts = Q.techState(pts, 120, now); ok(ts.ma50 > 0 && ts.ma200 > 0 && ts.rsi14 > 50 && ts.high52 <= 105.0001 && ts.low52 >= 94.9999, JSON.stringify(ts));

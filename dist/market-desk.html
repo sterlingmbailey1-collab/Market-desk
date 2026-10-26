@@ -1927,6 +1927,161 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
 
 </script>
 <script>
+/* ---- ml.js ---- */
+/* Machine learning on measured price history, trained in the browser and judged only on data it hasn't seen.
+   - Features for each bar use that bar and earlier ones only: momentum over 5/20/60/120 bars, RSI(14), distance
+     from the 50- and 200-bar averages, short- vs long-run volatility, distance from the 1-year high and low, the last
+     bar's move in volatility units and, with a market series (SPY, or bitcoin for coins), the market's momentum and
+     the asset's strength against it.
+   - Logistic regression with an L2 penalty on standardized features, fitted by Newton's method.
+   - Nearest-neighbour analogs: the past days most like today (standardized features) and what followed them.
+   - Walk-forward validation: refit on everything known before each block and predict the block, leaving a gap of
+     one horizon so no training label overlaps a test day. Accuracy, Brier score, log loss and AUC are measured
+     against the base rate (how often the asset rose, as known at the time).
+   - The two models are averaged with fixed equal weights (choosing weights on the test data would flatter them).
+     Their edge counts only when it is clear across independent stretches of the test period (one-sided t ≥ 1.64 on
+     non-overlapping blocks); otherwise the odds stay at the base rate and the model says it has no edge.
+   - Overlapping labels (a 1-month outcome measured every day) carry far less information than their count suggests,
+     so the L2 penalty grows with the horizon. */
+(function (G) {
+  const MD = (G.MD = G.MD || {});
+  const C = MD.core;
+  const closeOf = (p) => p.close ?? p.value;
+  const dayKey = (t) => Math.floor(t / 86400);
+  const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+
+  const FEATURES = [
+    ["mom5", "5-bar momentum"], ["mom20", "20-bar momentum"], ["mom60", "60-bar momentum"], ["mom120", "120-bar momentum"],
+    ["rsi", "RSI(14)"], ["d50", "Distance from the 50-bar average"], ["d200", "Distance from the 200-bar average"],
+    ["volRatio", "Recent vs longer-run volatility"], ["fromHigh", "Distance from the 1-year high"], ["fromLow", "Distance from the 1-year low"],
+    ["last1z", "Last bar's move (volatility units)"], ["mkt20", "Market's 20-bar momentum"], ["rel20", "Strength vs the market (20 bars)"]];
+
+  // Market closes carried onto the asset's bars by day (last known value; never a later one).
+  function alignMarket(points, market) {
+    if (!market || !market.length) return null;
+    const ms = market.slice().sort((a, b) => a.time - b.time), out = new Array(points.length).fill(null);
+    let j = 0, last = null;
+    for (let i = 0; i < points.length; i++) { const d = dayKey(points[i].time); while (j < ms.length && dayKey(ms[j].time) <= d) { last = closeOf(ms[j]); j++; } out[i] = last; }
+    return out;
+  }
+  /* One feature row per bar from bar 200 on. Every value at bar i uses closes up to i only. */
+  function features(points, opts = {}) {
+    const v = points.map(closeOf), n = v.length, mk = alignMarket(points, opts.market), useMkt = !!mk;
+    const rs = MD.quant.rsiSeries(v), lr = v.map((x, i) => i ? Math.log(x / v[i - 1]) : 0);
+    const sd = (a, b) => { let s = 0, s2 = 0, k = 0; for (let t = a; t <= b; t++) { s += lr[t]; s2 += lr[t] * lr[t]; k++; } const m = s / k; return Math.sqrt(Math.max(1e-12, s2 / k - m * m)); };
+    const sum = (a, b) => { let s = 0; for (let t = a; t <= b; t++) s += v[t]; return s; };
+    const rows = [];
+    for (let i = 200; i < n; i++) {
+      const c = v[i], mom = (k) => Math.log(c / v[i - k]), v20 = sd(i - 19, i), v120 = sd(i - 119, i);
+      let hi = -Infinity, lo = Infinity; for (let t = Math.max(0, i - 251); t <= i; t++) { if (v[t] > hi) hi = v[t]; if (v[t] < lo) lo = v[t]; }
+      const x = [mom(5), mom(20), mom(60), mom(120), (rs[i] ?? 50) / 100 - 0.5, c / (sum(i - 49, i) / 50) - 1, c / (sum(i - 199, i) / 200) - 1, Math.log(v20 / v120), c / hi - 1, c / lo - 1, lr[i] / v20];
+      if (useMkt) { const m0 = mk[i], m20 = mk[i - 20]; const mm = m0 > 0 && m20 > 0 ? Math.log(m0 / m20) : 0; x.push(mm, mom(20) - mm); }
+      rows.push({ i, time: points[i].time, x });
+    }
+    return { rows, names: FEATURES.slice(0, useMkt ? 13 : 11), closes: v };
+  }
+  // y = 1 when the close `h` bars later is higher; null when that bar isn't known yet.
+  const label = (v, i, h) => i + h < v.length ? (v[i + h] > v[i] ? 1 : 0) : null;
+
+  function scaler(X) {
+    const k = X[0].length, mu = new Array(k).fill(0), sd = new Array(k).fill(0);
+    for (const x of X) for (let j = 0; j < k; j++) mu[j] += x[j] / X.length;
+    for (const x of X) for (let j = 0; j < k; j++) sd[j] += (x[j] - mu[j]) ** 2 / X.length;
+    for (let j = 0; j < k; j++) sd[j] = Math.sqrt(sd[j]) || 1;
+    return { mu, sd, z: (x) => x.map((v, j) => clamp((v - mu[j]) / sd[j], -6, 6)) };
+  }
+  function solve(A, b) {
+    const k = b.length, M = A.map((r, i) => r.concat([b[i]]));
+    for (let c = 0; c < k; c++) {
+      let p = c; for (let r = c + 1; r < k; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+      if (Math.abs(M[p][c]) < 1e-12) return null;
+      [M[c], M[p]] = [M[p], M[c]];
+      for (let r = 0; r < k; r++) if (r !== c) { const f = M[r][c] / M[c][c]; for (let q = c; q <= k; q++) M[r][q] -= f * M[c][q]; }
+    }
+    return M.map((r, i) => r[k] / r[i]);
+  }
+  const sig = (t) => 1 / (1 + Math.exp(-clamp(t, -30, 30)));
+  /* L2-penalized logistic regression on already-standardized rows Z, by Newton's method (the intercept isn't penalized). */
+  function logisticFit(Z, y, l2 = 2, iters = 12) {
+    const k = Z[0].length + 1; let w = new Array(k).fill(0);
+    for (let it = 0; it < iters; it++) {
+      const H = Array.from({ length: k }, () => new Array(k).fill(0)), g = new Array(k).fill(0);
+      for (let i = 0; i < Z.length; i++) {
+        const r = [1].concat(Z[i]); let t = 0; for (let j = 0; j < k; j++) t += w[j] * r[j];
+        const p = sig(t), s = Math.max(p * (1 - p), 1e-6);
+        for (let a = 0; a < k; a++) { g[a] += (y[i] - p) * r[a]; for (let b = a; b < k; b++) H[a][b] += s * r[a] * r[b]; }
+      }
+      for (let a = 1; a < k; a++) { g[a] -= l2 * w[a]; H[a][a] += l2; }
+      for (let a = 0; a < k; a++) for (let b = 0; b < a; b++) H[a][b] = H[b][a];
+      const step = solve(H, g); if (!step) break;
+      let big = 0; w = w.map((x, j) => { big = Math.max(big, Math.abs(step[j])); return x + step[j]; });
+      if (big < 1e-6) break;
+    }
+    return { w, predict: (z) => { let t = w[0]; for (let j = 0; j < z.length; j++) t += w[j + 1] * z[j]; return sig(t); } };
+  }
+  // The k past rows nearest to z (Euclidean on standardized features); the chance up is smoothed toward 50%.
+  function knn(Z, y, z, k = 40) {
+    const d = Z.map((r, i) => { let s = 0; for (let j = 0; j < z.length; j++) s += (r[j] - z[j]) ** 2; return [s, i]; }).sort((a, b) => a[0] - b[0]).slice(0, Math.min(k, Z.length));
+    const ups = d.reduce((s, [, i]) => s + y[i], 0);
+    return { p: (ups + 1) / (d.length + 2), idx: d.map(([, i]) => i) };
+  }
+  /* Ranking quality: the chance a random up-case gets a higher probability than a random down-case (0.5 = none). */
+  function auc(p, y) {
+    const pos = [], neg = []; p.forEach((x, i) => (y[i] ? pos : neg).push(x)); if (!pos.length || !neg.length) return null;
+    const all = p.map((x, i) => [x, y[i]]).sort((a, b) => a[0] - b[0]); let sumPos = 0;
+    // Tied probabilities share the average of their ranks.
+    for (let i = 0; i < all.length;) { let j = i; while (j < all.length && all[j][0] === all[i][0]) j++; const r = (i + 1 + j) / 2; for (let t = i; t < j; t++) if (all[t][1]) sumPos += r; i = j; }
+    return (sumPos - pos.length * (pos.length + 1) / 2) / (pos.length * neg.length);
+  }
+  function scores(p, y) {
+    const n = p.length; if (!n) return null;
+    let br = 0, ll = 0, hit = 0; for (let i = 0; i < n; i++) { br += (p[i] - y[i]) ** 2; const q = clamp(p[i], 1e-4, 1 - 1e-4); ll -= y[i] ? Math.log(q) : Math.log(1 - q); if ((p[i] > 0.5) === !!y[i] && p[i] !== 0.5) hit++; }
+    return { n, brier: br / n, logLoss: ll / n, accuracy: hit / n, auc: auc(p, y) };
+  }
+
+  /* Walk-forward evaluation and today's forecast for an `h`-bar horizon. */
+  function forecast(points, opts = {}) {
+    const h = Math.max(1, Math.round(opts.horizonBars || 21)), F = features(points, opts), v = F.closes;
+    const rows = F.rows.map(r => Object.assign(r, { y: label(v, r.i, h) }));
+    const labeled = rows.filter(r => r.y != null), minTrain = Math.max(opts.minTrain || 250, 120), step = Math.max(h, 21);
+    if (labeled.length < minTrain + step + h) return { error: "Not enough history: the model needs about " + (200 + minTrain + step + h) + " bars and has " + v.length + "." };
+    const oos = { logit: [], knn: [], base: [], y: [], at: [] }, l2 = opts.l2 ?? Math.max(2, 3 * h);
+    for (let t0 = minTrain + h; t0 < labeled.length; t0 += step) {
+      const train = labeled.slice(0, t0 - h), test = labeled.slice(t0, Math.min(labeled.length, t0 + step));
+      if (!test.length) break;
+      const S = scaler(train.map(r => r.x)), Z = train.map(r => S.z(r.x)), Y = train.map(r => r.y), m = logisticFit(Z, Y, l2), base = (Y.reduce((s, x) => s + x, 0) + 1) / (Y.length + 2);
+      for (const r of test) { const z = S.z(r.x); oos.logit.push(m.predict(z)); oos.knn.push(knn(Z, Y, z, opts.k || 40).p); oos.base.push(base); oos.y.push(r.y); oos.at.push(r.time); }
+    }
+    const sBase = scores(oos.base, oos.y), sLogit = scores(oos.logit, oos.y), sKnn = scores(oos.knn, oos.y);
+    const skill = (s) => sBase && s && sBase.brier > 0 ? 1 - s.brier / sBase.brier : 0;
+    const ens = oos.y.map((_, i) => (oos.logit[i] + oos.knn[i]) / 2);
+    const sEns = scores(ens, oos.y), skEns = skill(sEns);
+    // Is the improvement over the base rate clear? Brier differences averaged over non-overlapping blocks of h test days.
+    const blocks = []; for (let b = 0; b + h <= ens.length; b += h) { let d = 0; for (let i = b; i < b + h; i++) d += (oos.base[i] - oos.y[i]) ** 2 - (ens[i] - oos.y[i]) ** 2; blocks.push(d / h); }
+    const md = blocks.length ? blocks.reduce((s, x) => s + x, 0) / blocks.length : 0, sdd = blocks.length > 1 ? Math.sqrt(blocks.reduce((s, x) => s + (x - md) ** 2, 0) / (blocks.length - 1)) : Infinity;
+    const tStat = sdd > 0 && isFinite(sdd) ? md / (sdd / Math.sqrt(blocks.length)) : 0, clear = tStat >= 1.64 && skEns > 0;
+    // Trust in the models: none without a clear edge, full at 5% better Brier than the base rate.
+    const trust = clear ? clamp(skEns / 0.05, 0, 1) : 0;
+    // Final model on everything labeled, applied to today's (unlabeled) row.
+    const S = scaler(labeled.map(r => r.x)), Z = labeled.map(r => S.z(r.x)), Y = labeled.map(r => r.y), m = logisticFit(Z, Y, l2);
+    const last = rows[rows.length - 1], zNow = S.z(last.x), pL = m.predict(zNow), nn = knn(Z, Y, zNow, opts.k || 40), pK = nn.p;
+    const base = (Y.reduce((s, x) => s + x, 0) + 1) / (Y.length + 2), pEns = (pL + pK) / 2;
+    const finalP = clamp(base + (pEns - base) * trust, 0.2, 0.8);
+    const contrib = F.names.map(([key, name], j) => ({ key, name, value: last.x[j], z: zNow[j], weight: m.w[j + 1], push: m.w[j + 1] * zNow[j] })).sort((a, b) => Math.abs(b.push) - Math.abs(a.push));
+    const analogs = nn.idx.slice(0, 8).map(i => { const r = labeled[i]; return { date: new Date(r.time * 1000).toISOString().slice(0, 10), forwardPct: (v[r.i + h] / v[r.i] - 1) * 100, up: !!r.y }; });
+    // Reliability of confident out-of-sample calls: when the blended model said 60%+ one way, how often was it right.
+    const conf = ens.map((p, i) => ({ p, y: oos.y[i] })).filter(x => Math.abs(x.p - 0.5) >= 0.1), confRight = conf.filter(x => (x.p > 0.5) === !!x.y).length;
+    return { horizonBars: h, asOf: new Date(last.time * 1000).toISOString().slice(0, 10), from: new Date(points[0].time * 1000).toISOString().slice(0, 10), bars: v.length, trainedOn: labeled.length,
+      upPct: finalP * 100, models: { logisticPct: pL * 100, analogsPct: pK * 100, baseRatePct: base * 100, blendedPct: pEns * 100 }, trust,
+      oos: { predictions: oos.y.length, independent: Math.max(1, Math.floor(oos.y.length / h)), base: sBase, logistic: sLogit, analogs: sKnn, ensemble: sEns, skillLogistic: skill(sLogit), skillAnalogs: skill(sKnn), skillEnsemble: skEns, tStat, blocks: blocks.length, confident: { n: conf.length, right: confRight } },
+      edge: clear, l2, drivers: contrib, analogs, features: F.names.map(([, n]) => n), usedMarket: F.names.length > 11 };
+  }
+
+  MD.ml = { FEATURES, features, label, scaler, logisticFit, knn, auc, scores, forecast };
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
 /* ---- tests.js ---- */
 /* Unit tests for MD.core. Runs in Node (tests/run.js) and in the app (Settings → Self-test). */
 (function (G) {
@@ -2231,6 +2386,28 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     const short = Q.barrierOdds({ entry: 100, stop: 101, target: 98, side: "short", dailyVolPct: 6, minutesLeft: 1440, paths: 4000 }); near(short.pTarget, Math.log(101 / 100) / Math.log(101 / 98), 0.03);
     const late = Q.barrierOdds({ entry: 100, stop: 99, target: 102, dailyVolPct: 1, minutesLeft: 10 }); ok(late.pNeither > 0.9, "ten quiet minutes rarely reach either level");
     eq(Q.barrierOdds({ entry: 100, stop: 101, target: 102, dailyVolPct: 2, minutesLeft: 60 }), null);
+  });
+  test("machine learning: logistic regression recovers a signal; AUC ranks correctly", () => {
+    const C = MD.core, M = MD.ml, r = C.rng(11), Z = [], y = [];
+    for (let i = 0; i < 600; i++) { const z = C.gauss(r); Z.push([z, C.gauss(r)]); y.push(z + 0.5 * C.gauss(r) > 0 ? 1 : 0); }
+    const m = M.logisticFit(Z, y, 1); ok(m.w[1] > 1 && Math.abs(m.w[2]) < 0.4, JSON.stringify(m.w)); ok(m.predict([2, 0]) > 0.9 && m.predict([-2, 0]) < 0.1);
+    near(M.auc([0.1, 0.4, 0.35, 0.8], [0, 0, 1, 1]), 0.75, 1e-12); near(M.auc([0.5, 0.5], [0, 1]), 0.5, 1e-12);
+  });
+  test("machine learning: features never look ahead", () => {
+    const C = MD.core, r = C.rng(5); let p = 100; const pts = Array.from({ length: 400 }, (_, i) => { p *= Math.exp(0.01 * C.gauss(r)); return { time: (19000 + i) * 86400, close: p }; });
+    const a = MD.ml.features(pts.slice(0, 300)).rows, changed = pts.map((x, i) => i >= 300 ? { time: x.time, close: x.close * 3 } : x), b = MD.ml.features(changed).rows.slice(0, a.length);
+    ok(a.length === 100 && a.every((row, i) => row.x.every((v, j) => v === b[i].x[j])), "rows before bar 300 are identical when later prices change");
+  });
+  test("machine learning: walk-forward finds a real pattern and reports no edge in pure noise", () => {
+    const C = MD.core, M = MD.ml, mk = (seed, revert) => { const r = C.rng(seed), rets = [], pts = []; let p = 100; for (let i = 0; i < 1300; i++) { const m5 = rets.slice(-5).reduce((s, x) => s + x, 0); const e = -revert * m5 + 0.01 * C.gauss(r); rets.push(e); p *= Math.exp(e); pts.push({ time: (18000 + i) * 86400, close: p }); } return pts; };
+    const sig = M.forecast(mk(3, 0.35), { horizonBars: 5 }), noise = M.forecast(mk(4, 0), { horizonBars: 5 });
+    ok(sig.edge && sig.oos.skillEnsemble > 0.02 && sig.oos.logistic.accuracy > 0.58 && sig.oos.logistic.auc > 0.6, JSON.stringify(sig.oos.logistic) + " skill " + sig.oos.skillEnsemble);
+    ok(sig.drivers[0].key === "mom5" || sig.drivers.slice(0, 3).some(d => d.key === "mom5" || d.key === "last1z"), "short-term momentum drives a mean-reverting series: " + sig.drivers.slice(0, 3).map(d => d.key));
+    ok(!noise.edge && noise.trust === 0 && Math.abs(noise.upPct - noise.models.baseRatePct) < 1e-9, "noise claims no edge and stays at the base rate: " + JSON.stringify({ trust: noise.trust, up: noise.upPct, base: noise.models.baseRatePct, skill: noise.oos.skillEnsemble, t: noise.oos.tStat }));
+    ok([21, 22, 23].every(s => !M.forecast(mk(s, 0), { horizonBars: 21 }).edge), "no false edge on random walks at a 1-month horizon");
+    ok(sig.oos.tStat > 1.64, "the real pattern's edge is clear across independent blocks: t = " + sig.oos.tStat);
+    ok(sig.oos.predictions > 500 && sig.analogs.length === 8 && sig.upPct >= 20 && sig.upPct <= 80);
+    ok(M.forecast(mk(3, 0).slice(0, 300), { horizonBars: 21 }).error, "too little history is refused");
   });
   test("technical alerts: average crosses, RSI thresholds, 52-week high and low, each firing once", () => {
     const Q = MD.quant, now = 400 * 86400, pts = Array.from({ length: 300 }, (_, i) => ({ time: (i + 90) * 86400, close: 100 + Math.sin(i / 9) * 5 }));
@@ -6475,7 +6652,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       actions.replaceChildren(X.actionBar(asset, () => quote, () => panel && panel.series));
     });
     const priceSec = U.section("Price", panel.el); priceSec.id = "sec-price";
-    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-decide", "AI decision"], ["sec-buy", "If you buy"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, a), MD.decide.card(app, a), MD.rebalance.buyCard(app, a), MD.brain.whyCard(app, a), MD.ai.memoryCard(app, a), MD.insights.panel(a, { currency: "USD", analysts: true }));
+    root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-decide", "AI decision"], ["sec-ml", "ML forecast"], ["sec-buy", "If you buy"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-analysts", "Wall Street"], ["sec-company", "Company & news"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, a), MD.decide.card(app, a), MD.mlView.card(app, a), MD.rebalance.buyCard(app, a), MD.brain.whyCard(app, a), MD.ai.memoryCard(app, a), MD.insights.panel(a, { currency: "USD", analysts: true }));
     const tab = app.ls.get("stockTab", "summary");
     const renderTab = (k) => {
       app.ls.set("stockTab", k);
@@ -6524,7 +6701,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       });
       const news = h("div", {});
       const priceSec = U.section("Price (USD)", panel.el), newsSec = U.section("Latest news · CoinMarketCap", news); priceSec.id = "sec-price"; newsSec.id = "sec-news";
-      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-decide", "AI decision"], ["sec-buy", "If you buy"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, Object.assign({}, a, { cls: "crypto" })), MD.decide.card(app, Object.assign({}, a, { cls: "crypto" })), MD.rebalance.buyCard(app, Object.assign({}, a, { cls: "crypto" })), MD.brain.whyCard(app, Object.assign({}, a, { cls: "crypto" })), MD.ai.memoryCard(app, Object.assign({}, a, { cls: "crypto" })), U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
+      root.append(MD.insights.jumpBar([["sec-price", "Chart"], ["sec-ai", "AI take"], ["sec-decide", "AI decision"], ["sec-ml", "ML forecast"], ["sec-buy", "If you buy"], ["sec-why", "Why it's moving"], ["sec-memory", "AI memory"], ["sec-projection", "Projection"], ["sec-technicals", "Technicals"], ["sec-risk", "Risk"], ["sec-news", "News"], ["sec-position", "Your position"], ["sec-notes", "Notes"]]), priceSec, MD.aiTake.card(app, Object.assign({}, a, { cls: "crypto" })), MD.decide.card(app, Object.assign({}, a, { cls: "crypto" })), MD.mlView.card(app, Object.assign({}, a, { cls: "crypto" })), MD.rebalance.buyCard(app, Object.assign({}, a, { cls: "crypto" })), MD.brain.whyCard(app, Object.assign({}, a, { cls: "crypto" })), MD.ai.memoryCard(app, Object.assign({}, a, { cls: "crypto" })), U.section("Market data · CoinGecko", metrics), MD.insights.panel(Object.assign({}, a, { cls: "crypto" }), { currency: "USD" }), newsSec);
       U.async(news, () => D.cmc.news(a.symbol, 8), (r) => {
         news.append(X.newsList(r.items, { empty: "CoinMarketCap returned no recent news for " + a.symbol + "." }),
           r.upcoming.length ? h("details", {}, h("summary", { class: "small" }, r.upcoming.length + " event or prediction page" + (r.upcoming.length > 1 ? "s" : "") + " with future dates"), X.newsList(r.upcoming, { clip: 200 })) : null,
@@ -7822,6 +7999,9 @@ Reply with ONLY JSON: {"strongestCounter": "...", "pricedIn": "...", "fragileAss
         if (Number(i.target) > 0) { out.target = Number(i.target); out.chanceFinishAbovePct = p.probAbove(out.target) * 100; out.chanceTouchPct = p.probTouch(out.target) * 100; }
         return rnd(out);
       } },
+    ml_forecast: { description: "Machine-learning forecast for a stock, ETF or coin: logistic regression plus nearest-neighbour analogs trained on its daily history, walk-forward validated. Returns the chance it is higher after `days` (7, 30 or 91), the out-of-sample accuracy, Brier skill and AUC against the base rate, the top drivers and how similar past setups turned out. When edgeOutOfSample is false the odds are just the base rate.", props: { symbol: { type: "string" }, days: { type: "number" } }, req: ["symbol"],
+      label: (i) => "Machine-learning forecast: " + i.symbol,
+      async run(app, S, i) { const a = await findAsset(String(i.symbol || "")), d = [7, 30, 91].reduce((b, x) => Math.abs(x - (Number(i.days) || 30)) < Math.abs(b - (Number(i.days) || 30)) ? x : b, 30); return MD.mlView.compact(await MD.mlView.run(app, a, d)); } },
     portfolio_fit: { description: "What buying a stock, ETF or coin would have done to the user's portfolio over the past year: weight after, portfolio volatility and worst drop before and after, and correlation with the holdings. Give the position as a percent of the portfolio (default 5). Measured with today's holdings held constant; not a forecast.", props: { symbol: { type: "string" }, pct: { type: "number" } }, req: ["symbol"],
       label: (i) => "Portfolio fit: " + i.symbol + " at " + (i.pct || 5) + "% of the portfolio",
       async run(app, S, i) { const a = await findAsset(String(i.symbol || "")), pct = Math.max(0.5, Math.min(50, Number(i.pct) || 5)); const P = await MD.rebalance.previewBuy(app, a, { pct }), t = P.t; return rnd({ symbol: a.symbol, positionPctTested: pct, amount: P.A, currency: P.R, paidFromCash: P.fromCash, weightBeforePct: t.weightBefore, weightAfterPct: t.weightAfter, portfolioVolPct: { before: t.volBefore, after: t.volAfter }, worstDrop1yPct: { before: t.ddBefore, after: t.ddAfter }, correlationWithPortfolio: t.corr, assetVolPct: t.assetVol, tradingDays: t.days, priceSource: P.source }); } },
@@ -7873,7 +8053,7 @@ Reply with ONLY JSON: {"strongestCounter": "...", "pricedIn": "...", "fragileAss
     ["intraday", /day ?trad|intraday|scalp|vwap|opening range|\bgaps?\b|gapp|pre-?market|after-?hours|support|resistance|\bstop\b|\bentry\b|\blevels?\b|\bmovers?\b/i, ["intraday_levels", "movers", "economic_calendar", "explain_move"]],
     ["market", /market|macro|\bfed\b|\brates?\b|yields?|inflation|\bcpi\b|jobs|economy|recession|sectors?|regime|why .*(fell|drop|rose|rall|moved?|down|up)|what moved|driving/i, ["market_pulse", "market_memory", "explain_move", "economic_calendar"]],
     ["pattern", /when .* (rise|rises|fall|falls|jump|jumps|drop|drops|spike|spikes)|tends? to|usually|historically|correlat|backtest|does .* (follow|lead)|pattern/i, ["backtest_rule", "base_rates", "market_memory"]],
-    ["odds", /chance|probab|likel|will .*(rise|fall|go|hit)|predict|forecast|upside|downside|expect|targets?/i, ["base_rates", "price_range", "project_price", "options_move", "track_record"]],
+    ["odds", /chance|probab|likel|will .*(rise|fall|go|hit)|predict|forecast|upside|downside|expect|targets?|machine learning|\bml\b|model/i, ["base_rates", "ml_forecast", "price_range", "project_price", "options_move", "track_record"]],
     ["earnings", /earnings?|\beps\b|guidance|quarter|results/i, ["earnings_info", "options_move"]],
     ["smart", /congress|politic|senator|pelosi|buffett|insiders?|13f|superinvestor|smart money|hedge fund/i, ["smart_money", "insider_activity"]],
     ["options", /options?|implied|straddle|volatil/i, ["options_move", "price_range"]],
@@ -8023,7 +8203,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     })().finally(() => { scoring = null; });
     return scoring;
   }
-  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", "ai-day": "Day-trade plans", "ai-market": "Market calls", "ai-decide": "AI decisions", ai: "Deep Research", user: "Your own forecasts" };
+  const SOURCE_LABEL = { "ai-picks": "Recommendations", "ai-take": "AI quick takes", "ai-day": "Day-trade plans", "ai-market": "Market calls", "ai-decide": "AI decisions", ml: "Machine-learning model", ai: "Deep Research", user: "Your own forecasts" };
   /* Per-source accuracy and a calibration chart: for each stated-probability band, how often calls came true. */
   /* What following a source's up/down calls would have returned on average (a "down" call counts as a short), and
      the S&P 500 over the same windows for comparison. */
@@ -8064,7 +8244,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
   function howItDecides(app) {
     const days = MD.brain ? MD.brain.latestPerDay(app).length : 0, pb = MD.brain ? MD.brain.playbook(app) : { patterns: [] }, active = pb.patterns.filter(p => p.status === "active").length;
     const L = latestLessons(app), W = MD.brain && MD.brain.reviews ? MD.brain.reviews(app)[0] : null;
-    const rows = ["ai-picks", "ai-decide", "ai-market", "ai-day", "ai-take", "ai"].map(s => {
+    const rows = ["ai-picks", "ai-decide", "ai-market", "ai-day", "ai-take", "ml", "ai"].map(s => {
       const tr = trackRecord(app, s), bw = BLENDED.has(s) ? blendFor(app, s) : null, cal = CALIBRATED.has(s) ? calibrateUp(app, s, 60) : null;
       return { s, label: SOURCE_LABEL[s], tr, bw, cal };
     });
@@ -8072,6 +8252,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     return h("details", { class: "howai" }, h("summary", { class: "label", style: "cursor:pointer" }, "How the desk's AI decides"),
       h("ol", { class: "small", style: "margin:8px 0 0;padding-left:1.3em;display:grid;gap:6px" },
         step("Measure", "The page computes the numbers first: prices, the asset's own base rate (how often it was higher over the same horizon in situations like today's), options-implied moves, volatility, Zacks, insiders, smart money and what moved it (market, sector, rates, dollar, oil)."),
+        step("Machine learning", "A logistic-regression model and a nearest-neighbour model of similar past days are trained in the browser on the asset's history and tested walk-forward on years they hadn't seen. Their odds count only as far as they beat the base rate out of sample; the AI is told both the odds and that record."),
         step("Research", "Claude investigates with tools (news, web pages, earnings, options, filings) and reasons over what they return. Citations are checked against the pages actually retrieved; unverified ones are flagged."),
         step("Context", "Every prompt carries your investor profile, the Market Brain (" + days + " session" + (days === 1 ? "" : "s") + " studied, " + active + " active pattern" + (active === 1 ? "" : "s") + ")" + (W ? ", the weekly review of " + W.week : "") + ", the desk's past calls on the asset and the latest lessons" + (L ? " (" + U.fmtDate(L.createdAt) + ")" : " (none yet)") + "."),
         step("Review", "A second, sceptical reader checks each call against the measured data and sources, keeps, revises or drops it, and gives its own probability, which is averaged in."),
@@ -8562,18 +8743,21 @@ Reply with ONLY JSON: {"patterns": [{"id": "existing id", "action": "keep"|"rewr
     const pb = playbook(app), rules = pb.patterns.filter(p => p.status === "active" && p.rule && p.backtest && !p.backtest.error && p.backtest.occurrences >= 8).map(p => ({ pattern: p.pattern, rule: Q.ruleText(p.rule), backtest: { heldPct: p.backtest.heldPct, baselinePct: p.backtest.baselinePct, z: p.backtest.z } }));
     const lim = await s.limits().catch(() => null);
     const tools = lim && lim.tools ? MD.ai.tools(app, S, ["search_news", "search_web", "market_memory", "backtest_rule", "explain_move", "economic_calendar"]) : undefined;
-    const measured = { target, phase: sess.phase, live, referencePrice: ref, reference: refLabel, spyBaseRate: br ? { modelUpPct: br.model.upPct, overallUpPct: Math.round(br.overall.upPct), conditions: br.conditions.map(c => ({ condition: c.label, upPct: Math.round(c.upPct), days: c.n })), typicalUpDayPct: br.model.avgUpPct, typicalDownDayPct: br.model.avgDownPct } : null,
+    // Machine learning on SPY's daily history for the next session, judged out of sample.
+    let ml = null;
+    if (MD.mlView) { e = step("Training the machine-learning model on SPY's daily history"); try { ml = MD.mlView.compact(await MD.mlView.run(app, SPY, 1)); S.done(e, "ok", " → " + ml.upPct + "% up, " + (ml.edgeOutOfSample ? "clear edge out of sample" : "no clear edge out of sample")); } catch (err) { S.done(e, "fail", " → " + U.errorText(err)); } }
+    const measured = { mlModel: ml, target, phase: sess.phase, live, referencePrice: ref, reference: refLabel, spyBaseRate: br ? { modelUpPct: br.model.upPct, overallUpPct: Math.round(br.overall.upPct), conditions: br.conditions.map(c => ({ condition: c.label, upPct: Math.round(c.upPct), days: c.n })), typicalUpDayPct: br.model.avgUpPct, typicalDownDayPct: br.model.avgDownPct } : null,
       preMarket: it && it.pre && !live ? { high: it.pre.high, low: it.pre.low, last: it.pre.last, vsPreviousClosePct: it.previousClose ? Math.round((it.pre.last / it.previousClose - 1) * 1e4) / 100 : null } : null,
       now: P ? P.rows.map(r => ({ symbol: r.symbol, todayPct: r1(r.changePct), fiveDayPct: r1(r.ret5d) })) : null, regime: P && P.regime, economicReleases: events, largeCapEarnings: reports, backtestedPatterns: rules };
     e = step("Claude is making the call (usually under a minute)");
     const r = await s.json(`You are Market Desk's market strategist. Give the probability that the S&P 500 (SPY) closes the ${target} session ABOVE ${refLabel} (${ref ? ref.toFixed(2) : "n/a"}).
-Start from SPY's measured base rate (spyBaseRate.modelUpPct: how often it rose in a day in situations like today's) and move away from it only for evidence it can't know: ${live ? "how the session is trading so far," : "pre-market moves,"} scheduled releases and their consensus, large-cap earnings, news, and backtested patterns whose cause is in play. Daily direction is close to a coin flip: calls far from 50% need strong evidence. ${tools ? "Use 2 to 6 tool calls (search_news for overnight and macro news; economic_calendar or market_memory if useful). Cite only URLs the tools returned." : ""}
+Start from SPY's measured base rate (spyBaseRate.modelUpPct: how often it rose in a day in situations like today's; mlModel adds a machine-learning model tested out of sample, worth weight only when edgeOutOfSample is true) and move away from it only for evidence it can't know: ${live ? "how the session is trading so far," : "pre-market moves,"} scheduled releases and their consensus, large-cap earnings, news, and backtested patterns whose cause is in play. Daily direction is close to a coin flip: calls far from 50% need strong evidence. ${tools ? "Use 2 to 6 tool calls (search_news for overnight and macro news; economic_calendar or market_memory if useful). Cite only URLs the tools returned." : ""}
 ${MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-market"))}
 ${note(app)}
 Measured: ${JSON.stringify(measured)}
 Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "drivers": ["what matters most, with evidence"], "keyEvents": ["time ET: event"], "expectedRangePct": number (typical size of the day's move), "flipIf": "what would flip the call", "sectorTilt": {"leaders": ["sector funds likely to lead"], "laggards": ["..."]}, "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "complex", signal: opts.signal }, tools ? { tools } : { cache: false }));
     S.done(e, "ok");
-    const claudeUp = Math.max(25, Math.min(75, Number(r.upProbabilityPct) || 50)), modelUp = br ? br.model.upPct : null;
+    const claudeUp = Math.max(25, Math.min(75, Number(r.upProbabilityPct) || 50)), modelUp = br ? (ml && ml.edgeOutOfSample ? Math.round((br.model.upPct + ml.upPct) / 2 * 10) / 10 : br.model.upPct) : null;
     const bw = MD.ai.blendFor(app, "ai-market");
     let up = modelUp != null ? bw.wClaude * claudeUp + (1 - bw.wClaude) * modelUp : claudeUp, conf = Math.max(0, Math.min(100, Number(r.confidence) || 0));
     const rv = await MD.ai.review(app, { task: "Will SPY close the " + target + " session above " + refLabel + "?", S, signal: opts.signal, facts: measured, items: [{ id: "call", upProbabilityPct: Math.round(up), drivers: r.drivers, confidence: conf }] }).catch(() => null);
@@ -8584,7 +8768,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     if (review && review.adjustedConfidence != null && review.adjustedConfidence < conf) conf = review.adjustedConfidence;
     const cal = MD.ai.calibrateUp(app, "ai-market", up); if (cal.applied) up = cal.upPct;
     up = Math.round(up);
-    const call = { target, at: Date.now(), phase: sess.phase, live, refPrice: ref, refLabel, upPct: up, downPct: 100 - up, probs: { claude: Math.round(claudeUp), model: modelUp, reviewer: reviewerUp, final: up, weightClaude: Math.round(bw.wClaude * 100), learnedWeights: bw.learned }, calibration: cal.applied ? cal : null, summary: String(r.summary || ""), drivers: (r.drivers || []).slice(0, 5).map(String), keyEvents: (r.keyEvents || []).slice(0, 6).map(String), expectedRangePct: Number(r.expectedRangePct) || null, flipIf: String(r.flipIf || ""), sectorTilt: r.sectorTilt || null, confidence: conf, review, sources: S.verify(r.sources), toolCalls: S.calls, steps: S.log.map(x => ({ kind: x.kind, text: x.text })) };
+    const call = { target, at: Date.now(), phase: sess.phase, live, refPrice: ref, refLabel, upPct: up, downPct: 100 - up, probs: { claude: Math.round(claudeUp), model: modelUp, ml: ml ? ml.upPct : null, mlEdge: ml ? ml.edgeOutOfSample : null, reviewer: reviewerUp, final: up, weightClaude: Math.round(bw.wClaude * 100), learnedWeights: bw.learned }, calibration: cal.applied ? cal : null, summary: String(r.summary || ""), drivers: (r.drivers || []).slice(0, 5).map(String), keyEvents: (r.keyEvents || []).slice(0, 6).map(String), expectedRangePct: Number(r.expectedRangePct) || null, flipIf: String(r.flipIf || ""), sectorTilt: r.sectorTilt || null, confidence: conf, review, sources: S.verify(r.sources), toolCalls: S.calls, steps: S.log.map(x => ({ kind: x.kind, text: x.text })) };
     if (app.demo) return Object.assign({ id: "unsaved" }, call);
     // Only the first call per session counts for the record; later ones are shown but not logged.
     const first = !app.store.cached("marketcalls").some(c => c.target === target && c.forecastId);
@@ -8603,7 +8787,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
       h("p", {}, c.summary), MD.ai.list("Drivers", c.drivers), MD.ai.list("Key events", c.keyEvents),
       c.flipIf ? h("p", { class: "small" }, h("strong", {}, "Would flip the call: "), c.flipIf) : null,
       c.sectorTilt && (c.sectorTilt.leaders || []).length ? h("p", { class: "small muted" }, "Likely leaders: " + c.sectorTilt.leaders.join(", ") + (c.sectorTilt.laggards && c.sectorTilt.laggards.length ? " · laggards: " + c.sectorTilt.laggards.join(", ") : "")) : null,
-      h("p", { class: "tiny muted" }, "Claude " + c.probs.claude + "%" + (c.probs.model != null ? " · SPY's own history " + c.probs.model + "%" : "") + (c.probs.reviewer != null ? " · reviewer's own estimate " + c.probs.reviewer + "%" : "") + (c.calibration ? " · calibrated from " + c.calibration.scored + " graded calls" : "") + " · final " + c.probs.final + "%" + (c.expectedRangePct ? " · typical move ±" + c.expectedRangePct + "%" : "")),
+      h("p", { class: "tiny muted" }, "Claude " + c.probs.claude + "%" + (c.probs.model != null ? " · SPY's own history " + c.probs.model + "%" : "") + (c.probs.ml != null ? " · machine-learning model " + c.probs.ml + "% (" + (c.probs.mlEdge ? "clear edge, counted" : "no clear edge, not counted") + ")" : "") + (c.probs.reviewer != null ? " · reviewer's own estimate " + c.probs.reviewer + "%" : "") + (c.calibration ? " · calibrated from " + c.calibration.scored + " graded calls" : "") + " · final " + c.probs.final + "%" + (c.expectedRangePct ? " · typical move ±" + c.expectedRangePct + "%" : "")),
       MD.ai.reviewBadge(c.review), MD.ai.sources(c.sources),
       ev ? h("p", { class: ev.directionHit ? "up small" : "down small" }, (ev.directionHit ? "Right: " : "Wrong: ") + "SPY closed at " + Number(ev.priceAtDue).toFixed(2) + " (" + fmtP(ev.realizedReturnPct) + ")") : c.forecastId ? h("p", { class: "tiny muted" }, "Logged; graded from the " + c.target + " close.") : h("p", { class: "tiny muted" }, "Not logged: the first call for this session already counts."));
   }
@@ -9484,14 +9668,21 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
         S.done(e, "ok", " → correlation " + (fit.correlationWithPortfolio ?? "—") + ", volatility " + fit.portfolioVolPct.before + "% → " + fit.portfolioVolPct.after + "%");
       } catch (err) { S.done(e, "fail", " → " + U.errorText(err)); }
     }
+    // Machine learning on the asset's own history (3-month horizon, the longest the history supports), validated out of sample.
+    let ml = null;
+    if (MD.mlView) {
+      e = S.step("run", "Training the machine-learning model on " + asset.symbol + "'s history");
+      try { ml = MD.mlView.compact(await MD.mlView.run(app, asset, 91)); S.done(e, "ok", " → " + ml.upPct + "% up in 3 months, " + (ml.edgeOutOfSample ? "beat the base rate out of sample (Brier skill " + ml.outOfSample.brierSkillPct + "%)" : "no edge out of sample")); }
+      catch (err) { S.done(e, "fail", " → " + U.errorText(err)); }
+    }
     const measured = { symbol: asset.symbol, name: (q && q.name) || asset.name, class: asset.cls, price: q ? q.price : null, horizonDays: days, investor: { risk: prof.risk || "mid", horizon: prof.horizon || "mid", maxPositionPct: cap, income: !!prof.income },
       baseRates: br ? { modelUpPct: br.model.upPct, overallUpPct: r1(br.overall.upPct), independent: br.overall.independent, typicalIfUpPct: br.model.avgUpPct, typicalIfDownPct: br.model.avgDownPct, conditions: br.conditions.map(c => ({ condition: c.label, upPct: r1(c.upPct), windows: c.n })) } : null,
       risk: st ? { volPct: r1(st.volPct), maxDrawdown1yPct: r1(st.maxDrawdownPct), return1yPct: r1(st.changePct) } : null, trend: tech ? { trend: tech.trend, rsi14: r1(tech.rsi14), fromHighPct: r1(tech.fromHighPct) } : null,
-      yourPosition: position, portfolioValue: total ? Math.round(total) : null, portfolioFit: fit, nextEarnings: q && q.nextEarnings || null };
+      yourPosition: position, portfolioValue: total ? Math.round(total) : null, portfolioFit: fit, mlModel: ml, nextEarnings: q && q.nextEarnings || null };
     const lim = await s.limits().catch(() => null);
     const tools = lim && lim.tools ? MD.ai.tools(app, S, isStock ? ["search_news", "zacks_view", "earnings_info", "insider_activity", "smart_money", "options_move", "explain_move", "market_memory", "search_web"] : ["crypto_news", "search_news", "explain_move", "market_memory", "search_web"]) : undefined;
     e = S.step("run", "Claude is deciding (usually 1–2 minutes)");
-    const r = await s.json(`Decide what this investor should do with ${asset.symbol} (${measured.name}) over their horizon of about ${days} days: "buy", "accumulate" (add slowly), "hold", "trim", "sell", "avoid" or "wait" (for a specific level or event). Fit the decision to their risk appetite, holding period and current position (yourPosition is null if they don't own it). portfolioFit (when present) is what a position at their maximum size would have done to their portfolio over the past year: weigh diversification (low correlation) against concentration and added volatility when choosing the decision and size.
+    const r = await s.json(`Decide what this investor should do with ${asset.symbol} (${measured.name}) over their horizon of about ${days} days: "buy", "accumulate" (add slowly), "hold", "trim", "sell", "avoid" or "wait" (for a specific level or event). Fit the decision to their risk appetite, holding period and current position (yourPosition is null if they don't own it). portfolioFit (when present) is what a position at their maximum size would have done to their portfolio over the past year: weigh diversification (low correlation) against concentration and added volatility when choosing the decision and size. mlModel is a machine-learning model trained on the asset's history and tested out of sample: lean on its odds only when edgeOutOfSample is true, and say so.
 Start from the measured base rate (baseRates.modelUpPct: how often it was higher over this horizon in situations like today's) and move away only for evidence history can't know: valuation, earnings revisions, news, insiders, the market regime. ${tools ? "Use 3 to 8 tool calls; cite only URLs the tools returned." : ""} Give the chance it is higher at the horizon's end, the typical gain if it rises and loss if it falls (use the measured typical sizes unless you have a reason), an entry plan (now, in steps, or at a level), an exit plan (where you'd be wrong; where you'd take profit), and what would change the decision. Never tell them to put in an order; "wait" and "avoid" are valid.
 ${MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-decide"))}
 ${MD.ai.contextNote(app)}
@@ -9499,7 +9690,9 @@ ${MD.ai.assetNote(app, asset)}
 Measured: ${JSON.stringify(measured)}
 Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoid"|"wait", "headline": "one sentence", "upProbabilityPct": 5-95, "ifUpPct": number, "ifDownPct": number, "positionSizePct": number (suggested share of the portfolio, 0 if none), "entryPlan": "...", "exitPlan": {"wrongIf": "...", "stopPct": number (loss from here that means you're wrong), "takeProfitPct": number}, "reasons": ["3-5 reasons citing the measured numbers and news"], "risks": ["..."], "changeMyMind": "...", "confidence": 0-100, "sources": [{"title": "...", "url": "https://..."}]}`, Object.assign({ modelTier: "complex", signal: opts.signal }, tools ? { tools } : { cache: false }));
     S.done(e, "ok");
-    const decision = DECISIONS[r.decision] ? r.decision : "hold", claudeUp = Math.max(5, Math.min(95, Number(r.upProbabilityPct) || 50)), modelUp = br ? br.model.upPct : null;
+    const decision = DECISIONS[r.decision] ? r.decision : "hold", claudeUp = Math.max(5, Math.min(95, Number(r.upProbabilityPct) || 50));
+    // The measured side: the base-rate model, averaged with the ML model when the ML beat the base rate out of sample.
+    const modelUp = br ? (ml && ml.edgeOutOfSample ? Math.round((br.model.upPct + ml.upPct) / 2 * 10) / 10 : br.model.upPct) : null;
     const bw = MD.ai.blendFor(app, "ai-decide");
     let up = modelUp != null ? bw.wClaude * claudeUp + (1 - bw.wClaude) * modelUp : claudeUp, conf = Math.max(0, Math.min(100, Number(r.confidence) || 0));
     const rv = await MD.ai.review(app, { task: "Should this investor " + decision + " " + asset.symbol + " over " + days + " days?", S, signal: opts.signal, facts: measured, items: [{ id: "decision", decision, upProbabilityPct: Math.round(up), reasons: r.reasons, confidence: conf }] }).catch(() => null);
@@ -9511,7 +9704,7 @@ Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoi
     up = Math.round(up);
     const ifUp = Math.abs(Number(r.ifUpPct)) || (br && br.model.avgUpPct) || 10, ifDown = Math.abs(Number(r.ifDownPct)) || Math.abs((br && br.model.avgDownPct) || 10);
     const math = Q.decisionMath({ upPct: up, upMovePct: ifUp, downMovePct: ifDown, capPct: cap });
-    const out = { fit, assetId: asset.id, symbol: asset.symbol, at: Date.now(), days, decision, headline: String(r.headline || ""), upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, reviewer: review && review.probabilityPct != null ? Math.round(review.probabilityPct) : null, final: up }, calibration: cal.applied ? cal : null,
+    const out = { fit, assetId: asset.id, symbol: asset.symbol, at: Date.now(), days, decision, headline: String(r.headline || ""), upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, ml: ml ? ml.upPct : null, mlEdge: ml ? ml.edgeOutOfSample : null, reviewer: review && review.probabilityPct != null ? Math.round(review.probabilityPct) : null, final: up }, calibration: cal.applied ? cal : null,
       ifUpPct: r1(ifUp), ifDownPct: r1(ifDown), math, aiSizePct: Math.max(0, Math.min(100, Number(r.positionSizePct) || 0)), cap, entryPlan: String(r.entryPlan || ""), exitPlan: r.exitPlan || null, reasons: (r.reasons || []).slice(0, 5).map(String), risks: (r.risks || []).slice(0, 4).map(String), changeMyMind: String(r.changeMyMind || ""), confidence: conf, review, sources: S.verify(r.sources), price: measured.price, position, toolCalls: S.calls };
     if (!app.demo && out.price > 0 && up !== 50) {
       const f = await app.store.create("forecasts", { assetId: asset.id, asset: MD.common.slim(asset), symbol: asset.symbol, source: "ai-decide", horizonDays: days, dueAt: Date.now() + days * 864e5, priceAtCreation: out.price, currency: "USD", priceSource: q ? q.source : "quote", direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: out.headline + " (" + decision + ")", flatBandPct: 1, claudeUpPct: out.probs.claude, modelUpPct: out.probs.model }).catch(() => null);
@@ -9565,6 +9758,97 @@ Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoi
   }
 
   MD.decide = { decide, card, view, DECISIONS };
+})(typeof window !== "undefined" ? window : globalThis);
+
+</script>
+<script>
+/* ---- views-ml.js ---- */
+/* Machine-learning forecast on stock and crypto pages. MD.ml is trained on the asset's own daily history (with the
+   market as context: SPY, or bitcoin for coins), judged walk-forward on data it hadn't seen, and shows what drives
+   today's call and the most similar past setups. The first forecast per asset, horizon and day is logged (source
+   "ml") and graded like every other call, so the scorecard shows whether the model is any good. */
+(function (G) {
+  const MD = (G.MD = G.MD || {});
+  const U = MD.ui, D = MD.data, h = U.h;
+  const HZ = [["1 week", 7], ["1 month", 30], ["3 months", 91]];
+  const cache = new Map();
+  const pct = (x, dp = 0) => x == null || !isFinite(x) ? "—" : x.toFixed(dp) + "%";
+  const sgn = (x, dp = 1) => x == null || !isFinite(x) ? "—" : (x > 0 ? "+" : "") + x.toFixed(dp) + "%";
+
+  async function run(app, asset, days) {
+    const key = asset.id + ":" + days, hit = cache.get(key);
+    if (hit && Date.now() - hit.at < 30 * 60e3) return hit;
+    const cls = asset.cls || String(asset.id).split(":")[0], isCoin = cls === "crypto";
+    const mktSym = isCoin ? (asset.symbol === "BTC" ? null : "BTC") : (asset.symbol === "SPY" ? null : "SPY"), mkt = mktSym && MD.brain ? MD.brain.assetOf(mktSym) : null;
+    const [hs, ms] = await Promise.all([D.dailyLong(asset), mkt ? D.dailyLong(mkt).catch(() => null) : null]);
+    const ppy = hs.ppy || (isCoin ? 365 : 252), bars = MD.quant.barsFor(days, ppy);
+    const r = MD.ml.forecast(hs.points, { horizonBars: bars, market: ms ? ms.points : null });
+    if (r.error) throw new Error(r.error);
+    Object.assign(r, { at: Date.now(), days, symbol: asset.symbol, source: hs.source, marketSymbol: ms ? mktSym : null });
+    cache.set(key, r);
+    return r;
+  }
+  // The compact form given to Claude in prompts and tools.
+  function compact(r) {
+    if (!r) return null;
+    const o = r.oos;
+    return { horizonDays: r.days, upPct: +r.upPct.toFixed(1), edgeOutOfSample: r.edge, trustPct: Math.round(r.trust * 100), logisticPct: +r.models.logisticPct.toFixed(1), similarSetupsPct: +r.models.analogsPct.toFixed(1), baseRatePct: +r.models.baseRatePct.toFixed(1),
+      outOfSample: { predictions: o.predictions, independent: o.independent, accuracyPct: +(o.ensemble.accuracy * 100).toFixed(1), alwaysMajorityAccuracyPct: +(Math.max(r.models.baseRatePct, 100 - r.models.baseRatePct)).toFixed(1), brierSkillPct: +(o.skillEnsemble * 100).toFixed(1), tStatVsBaseRate: +(o.tStat || 0).toFixed(2), auc: o.ensemble.auc != null ? +o.ensemble.auc.toFixed(3) : null },
+      topDrivers: r.drivers.slice(0, 4).map(d => d.name + (d.push > 0 ? " (pushes up)" : " (pushes down)")), similarPastSetups: { n: r.analogs.length, roseAfter: r.analogs.filter(a => a.up).length },
+      trainedOn: r.from + " to " + r.asOf + " (" + r.bars + " daily bars)", note: "Logistic regression + nearest-neighbour analogs (equal weights), walk-forward validated; the odds stay at the base rate unless the models beat it clearly out of sample (t >= 1.64 over independent blocks)." };
+  }
+  async function log(app, asset, r) {
+    if (app.demo || Math.abs(r.upPct - 50) < 1) return null;
+    const today = new Date().toISOString().slice(0, 10);
+    if (app.store.cached("forecasts").some(f => f.source === "ml" && f.assetId === asset.id && f.horizonDays === r.days && new Date(f.createdAt).toISOString().slice(0, 10) === today)) return null;
+    const q = await app.quote(asset, 30000).catch(() => null); if (!q || !(q.price > 0)) return null;
+    return app.store.create("forecasts", { assetId: asset.id, asset: MD.common.slim(asset), symbol: asset.symbol, source: "ml", horizonDays: r.days, dueAt: Date.now() + r.days * 864e5, priceAtCreation: q.price, currency: q.currency || "USD", priceSource: q.source,
+      direction: r.upPct > 50 ? "up" : "down", probability: Math.max(r.upPct, 100 - r.upPct) / 100, thesis: "Machine-learning model (" + (r.edge ? "out-of-sample Brier skill " + sgn(r.oos.skillEnsemble * 100) : "no out-of-sample edge; base rate") + ")", flatBandPct: 0 }).catch(() => null);
+  }
+
+  function view(app, asset, r) {
+    const o = r.oos, hz = HZ.find(x => x[1] === r.days), label = hz ? hz[0] : r.days + " days", majority = Math.max(r.models.baseRatePct, 100 - r.models.baseRatePct);
+    const kpi = (l, v, s, cls) => h("div", { class: "kpi" }, h("span", { class: "label" }, l), h("b", { class: "v " + (cls || "") }, v), s ? h("span", { class: "s" }, s) : null);
+    const maxPush = Math.max(...r.drivers.map(d => Math.abs(d.push)), 1e-9);
+    return h("div", { class: "stack" },
+      MD.day ? MD.day.probBar(Math.round(r.upPct), "Higher in " + label, "Lower") : h("p", {}, pct(r.upPct) + " chance higher in " + label),
+      h("p", { class: "small " + (r.edge ? "" : "muted") }, r.edge
+        ? "Beat the base rate on data it hadn't seen, clearly across " + o.blocks + " independent stretches (t = " + o.tStat.toFixed(1) + "): Brier skill " + sgn(o.skillEnsemble * 100) + ", AUC " + (o.ensemble.auc != null ? o.ensemble.auc.toFixed(2) : "—") + ", right " + pct(o.ensemble.accuracy * 100) + " of the time against " + pct(majority) + " for always guessing the more common outcome. Its odds count with " + Math.round(r.trust * 100) + "% weight; the rest is the base rate."
+        : "No clear edge on data it hadn't seen (Brier skill " + sgn(o.skillEnsemble * 100) + " against the base rate, t = " + (isFinite(o.tStat) ? o.tStat.toFixed(1) : "—") + " across " + o.blocks + " independent stretches; 1.6 or more counts), so the odds stay at the base rate: how often " + r.symbol + " rose over " + label + " in its history. That's an honest answer, not a failure: most price patterns don't repeat reliably."),
+      h("div", { class: "kpis k4" },
+        kpi("Logistic model", pct(r.models.logisticPct), "Brier skill " + sgn(o.skillLogistic * 100) + " · L2 " + r.l2),
+        kpi("Similar past setups", pct(r.models.analogsPct), "40 nearest days · skill " + sgn(o.skillAnalogs * 100)),
+        kpi("Base rate", pct(r.models.baseRatePct), "how often it rose over " + label),
+        kpi("Out-of-sample tests", String(o.predictions), "about " + o.independent + " independent " + (o.independent === 1 ? "window" : "windows"))),
+      o.confident.n ? h("p", { class: "small" }, "When the models leaned 60% or more one way out of sample, they were right " + o.confident.right + " of " + o.confident.n + " times (" + pct(o.confident.right / o.confident.n * 100) + ").") : null,
+      h("div", { class: "grid g2", style: "align-items:start" },
+        h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, "What drives today's reading"),
+          U.table([{ t: "Feature", v: (d) => d.name }, { t: "Today", v: (d) => d.key === "rsi" ? (d.value * 100 + 50).toFixed(0) : d.key === "last1z" || d.key === "volRatio" ? d.value.toFixed(2) : sgn(d.value * 100), n: true },
+            { t: "Pushes", v: (d) => h("span", { class: d.push > 0 ? "up" : "down", style: "white-space:nowrap" }, (d.push > 0 ? "▲ " : "▼ ") + "█".repeat(Math.max(1, Math.round(Math.abs(d.push) / maxPush * 5)))) }], r.drivers.slice(0, 6))),
+        h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, "Most similar past days and what followed"),
+          U.table([{ t: "Date", v: (a) => a.date }, { t: "Next " + label, v: (a) => h("span", { class: a.up ? "up" : "down" }, sgn(a.forwardPct)), n: true }], r.analogs),
+          h("span", { class: "tiny muted" }, r.analogs.filter(a => a.up).length + " of " + r.analogs.length + " rose afterwards."))),
+      h("p", { class: "tiny muted" }, "Trained on " + r.bars + " daily bars (" + r.from + " to " + r.asOf + ", " + (r.source || "price history") + ")" + (r.marketSymbol ? " with " + r.marketSymbol + " as market context" : "") + ". Logistic regression and nearest-neighbour analogs over " + r.features.length + " measured features, refitted walk-forward so every score above comes from predictions on data the model hadn't seen yet. Past patterns can stop working; this is one input, not advice."));
+  }
+  function card(app, asset) {
+    const out = h("div", { class: "stack" }), phase = h("span", { class: "small muted" });
+    let days = app.ls.get("ml.days", 30);
+    const seg = h("div", {}), btn = h("button", { class: "btn ghost", type: "button" }, "Train and forecast");
+    const paintSeg = () => seg.replaceChildren(U.seg(HZ.map(x => x[0]), (HZ.find(x => x[1] === days) || HZ[1])[0], (v) => { days = HZ.find(x => x[0] === v)[1]; app.ls.set("ml.days", days); paintSeg(); go(); }));
+    const go = async () => {
+      btn.disabled = true; phase.textContent = "Training on " + asset.symbol + "'s history…";
+      try { const r = await run(app, asset, days); out.replaceChildren(view(app, asset, r)); const f = await log(app, asset, r); phase.textContent = f ? "Logged; graded in " + days + " days." : ""; }
+      catch (e) { out.replaceChildren(h("p", { class: "small warn-t" }, U.errorText(e))); phase.textContent = ""; }
+      btn.disabled = false;
+    };
+    btn.onclick = go; paintSeg();
+    out.append(h("p", { class: "small muted" }, "Trains two models in your browser on this asset's measured daily history, then tests them on stretches of history they hadn't seen before showing a number."));
+    const sec = U.section("Machine-learning forecast", h("div", { class: "stack" }, h("div", { class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center" }, seg, btn, phase), out));
+    sec.id = "sec-ml";
+    return sec;
+  }
+
+  MD.mlView = { run, compact, card, log, HZ };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -10551,6 +10835,7 @@ Reply with ONLY JSON: {"stocks": [{"symbol": "TICKER", "why": "a few words on th
     log("run", "Measuring each candidate's own odds of finishing higher over " + days + " days, and what drove its last week");
     const [P] = await Promise.all([MD.brain ? MD.brain.pulse(app, { history: true }).catch(() => null) : null, pool(cands, 4, async (c) => {
       try { const br = await MD.ai.baseRatesFor(c.asset, days); c.baseRates = { historyFrom: br.history && br.history.from, modelUpPct: br.model.upPct, overallUpPct: r1(br.overall.upPct), windows: br.overall.n, independent: br.overall.independent, typicalIfUpPct: br.model.avgUpPct, typicalIfDownPct: br.model.avgDownPct, conditions: br.conditions.map(x => ({ condition: x.label, upPct: r1(x.upPct), windows: x.n, independent: x.independent })), parts: br.model.parts, historyFrom: br.history.from, source: br.history.source }; } catch {}
+      try { c.ml = MD.mlView.compact(await MD.mlView.run(app, c.asset, days <= 10 ? 7 : days <= 45 ? 30 : 91)); } catch {}
       if (MD.brain) try { const ex = await MD.brain.explainMove(app, c.asset); c.moveExplained = { last5Days: ex.week, sectorEtf: ex.sectorEtf, factorFitR2: ex.model.r2 }; } catch {}
     })]);
     log("ok", cands.filter(c => c.baseRates).length + " with measured base rates, " + cands.filter(c => c.moveExplained).length + " with their last week explained" + (P && P.regime ? "; market regime: " + P.regime.label : ""));
@@ -10563,14 +10848,15 @@ Reply with ONLY JSON: {"stocks": [{"symbol": "TICKER", "why": "a few words on th
       earnings: c.earnings, shortInterestDaysToCover: c.shortDaysToCover != null ? +c.shortDaysToCover.toFixed(1) : null, return1mPct: c.ret1m != null ? +Number(c.ret1m).toFixed(1) : null, return3mPct: c.ret3m != null ? +c.ret3m.toFixed(1) : null, return7dPct: c.ret7d != null ? +Number(c.ret7d).toFixed(1) : null, fromYearHighPct: c.fromHighPct != null ? +c.fromHighPct.toFixed(1) : null,
       zacksRank: c.zacksRank ?? null, zacksTarget: c.zacksTarget ?? null, smartMoney: c.smartMoney.length ? c.smartMoney : null, insiders: c.insiders || null, movementScore: +c.score.toFixed(1),
       baseRates: c.baseRates ? { modelUpPct: c.baseRates.modelUpPct, overallUpPct: c.baseRates.overallUpPct, independentSamples: c.baseRates.independent, typicalIfUpPct: c.baseRates.typicalIfUpPct, typicalIfDownPct: c.baseRates.typicalIfDownPct, conditions: c.baseRates.conditions } : null,
-      last5DaysExplained: c.moveExplained ? c.moveExplained.last5Days : null, onYourWatchlistOrHeld: !!c.mine, fitsFocus: c.focus || null,
+      last5DaysExplained: c.moveExplained ? c.moveExplained.last5Days : null, onYourWatchlistOrHeld: !!c.mine, fitsFocus: c.focus || null, mlModel: c.ml ? { horizonDays: c.ml.horizonDays, upPct: c.ml.upPct, edgeOutOfSample: c.ml.edgeOutOfSample, brierSkillPct: c.ml.outOfSample.brierSkillPct, auc: c.ml.outOfSample.auc, topDrivers: c.ml.topDrivers } : null,
       deskPastAiCalls: (() => { const mm = MD.ai.assetMemory(app, c.asset); return mm.calls.length ? mm.calls.length + " logged, " + mm.graded + " graded, " + mm.right + " right; latest " + mm.calls.slice(0, 2).map(x => (x.direction || "") + " " + (x.probabilityPct || "") + "% → " + (x.result ? (x.result.hit ? "right" : "wrong") : "pending")).join(", ") : null; })() }));
     const calib = MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-picks"));
     log("run", "Asking Claude to choose and explain (usually 1–3 minutes)");
     const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. You are picking assets that could make a LARGE price move within the window "${wLabel}" (about ${days} days), for an investor who wants to watch them closely, and giving the odds of each one going UP or DOWN.
 Use ONLY the measured candidates below (measured by the app from exchange, options, Zacks, disclosure and 5-year price data). ${tools ? "Investigate the strongest candidates with 4 to 12 tool calls before deciding: search_news (Bigdata.com) for stocks, crypto_news for coins, earnings_info when a report falls in the window, explain_move or stock_snapshot for the price picture, options_move, zacks_view or insider_activity where they would change your view, market_memory for what has been driving this market, search_web if a news tool fails. Cite only URLs returned by the tools." : "Web search is unavailable; say so in each pick's risks."}
 Pick the ${opts.count} with the best case for a large move${opts.mine ? " (candidates marked onYourWatchlistOrHeld belong to the investor; include them when the evidence supports it)" : ""}. For EVERY pick give upProbabilityPct: the chance its price is HIGHER at the end of its window than now. Never answer "either way": a near coin-flip is still a number like 52 or 47. Start from the measured base rate (baseRates.modelUpPct, the asset's own history in situations like today's) and move away from it only for evidence history can't know: a dated catalyst, news, estimate revisions, the market regime. Give the typical size of the move if it rises and if it falls. Anchor the expected move size to the options-implied move when present (the market's own estimate) and to the volatility-implied move otherwise; if you expect more than the market prices, say why. Anchor the time window to a dated catalyst (earnings date, options expiry) when there is one. Give the strongest case on each side and what would change your mind. Do not invent prices, dates or figures.
-${opts.focus ? `The investor asked to focus on: "${opts.focus.replace(/"/g, "'")}". Candidates with fitsFocus were named for it; choose from them first, and include others only when fewer than ${opts.count} focus candidates have a real case (say so in the summary).\n` : ""}Market regime (measured): ${JSON.stringify(P && P.regime)}
+${opts.focus ? `The investor asked to focus on: "${opts.focus.replace(/"/g, "'")}". Candidates with fitsFocus were named for it; choose from them first, and include others only when fewer than ${opts.count} focus candidates have a real case (say so in the summary).\n` : ""}mlModel is a machine-learning model (logistic regression + similar past setups) trained on each candidate's history and tested out of sample; give it weight only when edgeOutOfSample is true.
+Market regime (measured): ${JSON.stringify(P && P.regime)}
 ${calib}
 ${MD.ai.contextNote(app)}
 Measured candidates: ${JSON.stringify(table)}
@@ -10590,10 +10876,10 @@ Reply with ONLY JSON:
     let picks = (Array.isArray(r.picks) ? r.picks : []).filter(p => bySym.has(p.symbol)).slice(0, opts.count).map(p => {
       const c = bySym.get(p.symbol);
       const lo = Math.max(0, Number(p.expectedMovePct && p.expectedMovePct.low) || 0), hi = Math.max(lo, Number(p.expectedMovePct && p.expectedMovePct.high) || lo);
-      const modelUp = c.baseRates ? c.baseRates.modelUpPct : null, claudeRaw = Number(p.upProbabilityPct), claudeUp = isFinite(claudeRaw) && claudeRaw > 0 ? Math.max(5, Math.min(95, claudeRaw)) : (modelUp ?? 50);
+      const modelUp = c.baseRates ? (c.ml && c.ml.edgeOutOfSample ? Math.round((c.baseRates.modelUpPct + c.ml.upPct) / 2 * 10) / 10 : c.baseRates.modelUpPct) : null, claudeRaw = Number(p.upProbabilityPct), claudeUp = isFinite(claudeRaw) && claudeRaw > 0 ? Math.max(5, Math.min(95, claudeRaw)) : (modelUp ?? 50);
       // Claude's judgement blended with the measured history; the review below can pull it toward 50%.
       const bw = MD.ai.blendFor(app, "ai-picks"), up = modelUp != null ? bw.wClaude * claudeUp + (1 - bw.wClaude) * modelUp : claudeUp;
-      return { symbol: p.symbol, asset: c.asset, upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, blended: Math.round(up), weightClaude: Math.round(bw.wClaude * 100), learnedWeights: bw.learned }, ifUpPct: Math.max(0, Number(p.ifUpPct) || hi || lo), ifDownPct: Math.max(0, Number(p.ifDownPct) || hi || lo), moveLow: lo, moveHigh: hi, mine: !!c.mine, focus: c.focus || null, baseRates: c.baseRates || null, moveExplained: c.moveExplained || null,
+      return { symbol: p.symbol, asset: c.asset, upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, ml: c.ml ? c.ml.upPct : null, mlEdge: c.ml ? c.ml.edgeOutOfSample : null, blended: Math.round(up), weightClaude: Math.round(bw.wClaude * 100), learnedWeights: bw.learned }, ifUpPct: Math.max(0, Number(p.ifUpPct) || hi || lo), ifDownPct: Math.max(0, Number(p.ifDownPct) || hi || lo), moveLow: lo, moveHigh: hi, mine: !!c.mine, focus: c.focus || null, baseRates: c.baseRates || null, moveExplained: c.moveExplained || null,
         timeframeDays: Math.max(1, Math.min(400, Math.round(Number(p.timeframe && p.timeframe.days) || days))), timeframeLabel: (p.timeframe && p.timeframe.label) || wLabel, anchor: (p.timeframe && p.timeframe.anchor) || "trend",
         why: Array.isArray(p.why) ? p.why.slice(0, 6).map(String) : [], catalyst: p.catalyst || null, invalidation: p.invalidation || "", risks: p.risks || "", confidence: Math.max(0, Math.min(100, Number(p.confidence) || 0)),
         bullCase: String(p.bullCase || ""), bearCase: String(p.bearCase || ""), changeMyMind: String(p.changeMyMind || ""),
@@ -10859,6 +11145,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"b
             h("p", { class: "small" }, "Claude: " + p.probs.claude + "%" + (p.probs.model != null ? " · the asset's own history: " + p.probs.model + "%" : " · no measured history") + " · blended " + p.probs.blended + "%" + (p.probs.learnedWeights ? " (weights learned from the record: Claude " + p.probs.weightClaude + "%)" : "") + (p.probs.reviewer != null ? " · the reviewer's own estimate: " + p.probs.reviewer + "%" : "") + ((p.probs.afterReview ?? p.probs.final) !== p.probs.blended ? " · after the review: " + (p.probs.afterReview ?? p.probs.final) + "%" : "") + (p.calibration ? " · calibrated from " + p.calibration.scored + " graded picks (calls like this came true " + p.calibration.observedPct + "% of the time): " + p.probs.final + "%" : "") + "."),
             p.baseRates ? h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:2px" }, h("li", {}, "Over every " + p.timeframeDays + "-day window " + (() => { const y = String(p.baseRates.historyFrom || "").slice(0, 4); return /^\d{4}$/.test(y) ? "since " + y : "in the measured history"; })() + ", it finished higher " + p.baseRates.overallUpPct + "% of the time (" + p.baseRates.windows + " windows, about " + p.baseRates.independent + " independent)."), p.baseRates.conditions.map(x => h("li", {}, "When " + x.condition + ": higher " + x.upPct + "% of the time (" + x.windows + " windows, ≈" + x.independent + " independent)."))) : null,
             p.moveExplained && p.moveExplained.last5Days ? h("p", { class: "tiny muted" }, "Last 5 days " + U.pct(p.moveExplained.last5Days.movePct) + ": " + U.pct(p.moveExplained.last5Days.explainedPct) + " explained by the market and its factors, " + U.pct(p.moveExplained.last5Days.unexplainedPct) + " its own.") : null,
+            p.probs.ml != null ? h("p", { class: "small" }, "Machine-learning model: " + p.probs.ml + "% up" + (p.probs.mlEdge ? " (beat the base rate out of sample, so it's averaged into the history side)" : " (no edge out of sample, so it isn't used)") + ".") : null,
             h("p", { class: "tiny muted" }, "History alone is capped at 25–75% and shrunk toward 50% when it has few independent windows.")) : null,
           p.confidenceParts ? h("details", { class: "small" }, h("summary", { class: "label", style: "cursor:pointer" }, "Confidence " + p.confidence + "/100: how it's built"), MD.ai.meters([{ label: "Claude", value: p.confidenceParts.claude, note: "Claude's own confidence" }, { label: "After review", value: p.confidenceParts.reviewed, note: "The second reader's adjusted confidence" }, { label: "Signals agree", value: p.confidenceParts.signals, note: "Momentum, Zacks Rank, 52-week position, options vs history" }, { label: "Evidence", value: p.confidenceParts.evidence, note: "Verified sources and a dated catalyst" }])) : null,
           p.sources.length ? h("div", { class: "small" }, h("span", { class: "label" }, "Sources "), p.sources.map((s, i) => h("span", {}, i ? " · " : "", h("a", { href: s.url, target: "_blank", rel: "noopener noreferrer" }, (s.title || s.url).slice(0, 60)), s.verified ? null : h("span", { class: "warn-t" }, " (unverified)")))) : h("p", { class: "small faint" }, "No sources cited."),
