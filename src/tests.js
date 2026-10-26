@@ -443,6 +443,13 @@
     ok(Q.evaluateTechAlert({ kind: "low52" }, Q.techState(pts, 80, now), null).triggered);
     const ra = { kind: "rsi_above", threshold: 70 }; ok(Q.evaluateTechAlert(ra, ts, null).triggered === (ts.rsi14 >= 70));
     eq(Q.evaluateTechAlert({ kind: "rsi_below", threshold: 30 }, Object.assign({}, ts, { rsi14: 25 }), null).triggered, true);
+    const vh = pts.map(x => ({ time: x.time, value: 1000 })), tv = Q.techState(pts, 100, now, { today: 2500, history: vh });
+    near(tv.volRatio, 2.5, 1e-9); eq(tv.avgVol20, 1000);
+    let vs = Q.evaluateTechAlert({ kind: "vol_spike", threshold: 2 }, tv, null); ok(vs.triggered, "a 2.5× volume day fires");
+    ok(!Q.evaluateTechAlert({ kind: "vol_spike", threshold: 2 }, tv, vs.state).triggered, "once per session");
+    ok(Q.evaluateTechAlert({ kind: "vol_spike", threshold: 2 }, Object.assign({}, tv, { day: tv.day + 1 }), vs.state).triggered, "again on a later session");
+    ok(!Q.evaluateTechAlert({ kind: "vol_spike", threshold: 3 }, tv, null).triggered); eq(Q.techState(pts, 100, now).volRatio, null, "no volume data, no ratio");
+    eq(Q.alertText({ kind: "vol_spike", threshold: 2 }), "Volume at least 2× its 20-day average");
     eq(Q.techState(pts.slice(0, 10), 100, now), null); eq(Q.alertText({ kind: "rsi_below", threshold: 30 }), "RSI(14) at or below 30"); eq(Q.alertText({ kind: "above", threshold: 5 }), "≥ 5");
   });
   test("trade preview: a diversifier lowers volatility, a copy of the portfolio doesn't, weights and cash handled", () => {

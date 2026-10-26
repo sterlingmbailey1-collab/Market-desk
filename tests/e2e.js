@@ -408,6 +408,14 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
     return { symbol: a.symbol, side, first, fired: fired.filter(t => /average|RSI/.test(t)), again: again.filter(t => /average|RSI/.test(t)).length, body: (app.store.cached("inbox").find(i => /50-day average/.test(i.title)) || {}).body };
   });
   check("technical alerts: average cross and RSI fire once each (the first check only records the side), with the measured level", techModal.options.some(o => /50-day average/.test(o)) && techModal.options.some(o => /52-week high/.test(o)) && techModal.thHidden && ta.first === 0 && ta.fired.some(t => t.startsWith(ta.symbol + " crossed " + ta.side + " its 50-day average")) && ta.fired.some(t => /RSI\(14\) reached \d+/.test(t)) && ta.again === 0 && /Crosses its 50-day average \(level [\d.,]+\)/.test(ta.body || ""), JSON.stringify({ techModal, ta }));
+  const vsT = await page.evaluate(async () => {
+    const app = MD.app, mine = app.store.cached("alerts").find(x => x.kind === "xma50"), a = { id: mine.assetId, cls: mine.cls, symbol: mine.symbol, name: mine.name };
+    const hs = await MD.data.historyCached(a, "1Y"), q = await app.quote(a, 0), ts = MD.quant.techState(hs.points, q.price, null, { today: MD.data.num(q.volume), history: hs.volume });
+    await app.store.create("alerts", { assetId: a.id, cls: a.cls, symbol: a.symbol, name: a.name, kind: "vol_spike", threshold: 0.01, state: { armed: true } });
+    const f1 = (await app.checkAlerts(true)).filter(t => /volume/i.test(t)), f2 = (await app.checkAlerts(true)).filter(t => /volume/i.test(t));
+    return { ratio: ts && ts.volRatio, histVol: (hs.volume || []).length, f1, f2: f2.length, opt: [...document.querySelectorAll("option")].some(o => /20-day average/.test(o.textContent)) || !!MD.quant.TECH_ALERTS.vol_spike };
+  });
+  check("volume-spike alert: today's volume against the 20-day average, at most once a session", vsT.ratio > 0 && vsT.f1.length === 1 && vsT.f2 === 0 && /20-day average volume/.test(vsT.f1[0]) && vsT.opt, JSON.stringify(vsT));
 
   // ---- Add transaction through the modal
   await page.click(".nav a[href='#portfolio']"); await page.waitForTimeout(1200);
@@ -1062,6 +1070,8 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
     return { logged: [...new Set(logged)], before, w: pw.weights, weighted: T.upPct, equal: E.upPct };
   });
   check("specialist panel learns: each analyst's odds are logged with picks, decisions and market calls, and the team weighs them by their graded record", ["ai-picks", "ai-decide", "ai-market"].every(s => pwT.logged.includes(s)) && pwT.before.quant === 1 && pwT.w.quant === 2 && pwT.w.news === 0.5 && pwT.weighted > pwT.equal + 5, JSON.stringify(pwT));
+  const lrn = await page.evaluate(async () => { await MD.ai.learn(MD.app).catch(e => e.message); const p = (window.__mock.fullPrompts || []).filter(x => /reviewing your own track record/.test(x)).pop() || ""; return { panel: /Specialist analysts' records[^\n]*"analyst":"quant","graded":2\d/.test(p), paper: /Paper account \(virtual trades sized like real ones\) by source of ideas: \[\{"source":"Asset page"/.test(p) }; });
+  check("the AI's lesson-learning step studies each analyst's record and the paper account by source of ideas", lrn.panel && lrn.paper, JSON.stringify(lrn));
   await page.evaluate(() => { MD.app.ls.set("resTab", "journal"); MD.app.go("research", {}); }); await page.waitForTimeout(2000);
   const anTxt2 = await page.locator("#content").innerText();
   check("scorecard shows how each analyst has done and its weight in the team", /How each analyst has done/i.test(anTxt2) && /Quant analyst/.test(anTxt2) && /2\.00×/.test(anTxt2), (anTxt2.match(/How each analyst has done[\s\S]{0,400}/i) || [""])[0]);

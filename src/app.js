@@ -497,7 +497,7 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
         let r, value;
         if (tech) {
           // Technical alerts measure the live price against the daily history (cached for six hours).
-          let ts = null; try { const hs = await D.historyCached(Object.assign({ id: a.assetId }, a), "1Y"); ts = MD.quant.techState(hs.points, q.price); } catch {}
+          let ts = null; try { const hs = await D.historyCached(Object.assign({ id: a.assetId }, a), "1Y"); ts = MD.quant.techState(hs.points, q.price, null, { today: D.num(q.volume), history: hs.volume }); } catch {}
           if (!ts) continue;
           r = MD.quant.evaluateTechAlert(a, ts, a.state); value = r.value != null ? r.value : q.price;
         } else {

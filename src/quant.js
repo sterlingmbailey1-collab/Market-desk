@@ -383,13 +383,16 @@
      or extends the series): 50/200-day averages, RSI(14), and the prior 52-week high and low. evaluateTechAlert
      fires once per event: on a cross of an average (the first check only records the side), when RSI reaches its
      threshold (re-arming 3 points back), or on a new 52-week high or low (re-arming once price is back inside). */
-  const TECH_ALERTS = { xma50: "Crosses its 50-day average", xma200: "Crosses its 200-day average", rsi_above: "RSI(14) at or above", rsi_below: "RSI(14) at or below", high52: "Makes a new 52-week high", low52: "Makes a new 52-week low" };
-  function techState(points, price, nowSec) {
+  const TECH_ALERTS = { xma50: "Crosses its 50-day average", xma200: "Crosses its 200-day average", rsi_above: "RSI(14) at or above", rsi_below: "RSI(14) at or below", high52: "Makes a new 52-week high", low52: "Makes a new 52-week low", vol_spike: "Volume at least N× its 20-day average" };
+  // vol (optional): { today: the session's volume so far, history: [{time, value}] daily volumes } → volRatio.
+  function techState(points, price, nowSec, vol) {
     const day = (t) => Math.floor(t / 86400), now = day(nowSec || Date.now() / 1000), p = Number(price);
     const past = (points || []).filter(x => (x.close ?? x.value) > 0 && day(x.time) < now).map(x => x.close ?? x.value);
     if (past.length < 30 || !(p > 0)) return null;
     const closes = past.concat([p]), avg = (n) => closes.length >= n ? closes.slice(-n).reduce((s, x) => s + x, 0) / n : null, prior = past.slice(-252);
-    return { price: p, ma50: avg(50), ma200: avg(200), rsi14: C.rsi(closes, 14), high52: Math.max(...prior), low52: Math.min(...prior) };
+    let avgVol20 = null, volRatio = null;
+    if (vol && vol.today > 0 && Array.isArray(vol.history)) { const pv = vol.history.filter(x => day(x.time) < now && x.value > 0).slice(-20).map(x => x.value); if (pv.length >= 10) { avgVol20 = pv.reduce((s, x) => s + x, 0) / pv.length; volRatio = vol.today / avgVol20; } }
+    return { price: p, ma50: avg(50), ma200: avg(200), rsi14: C.rsi(closes, 14), high52: Math.max(...prior), low52: Math.min(...prior), avgVol20, volRatio, day: now };
   }
   function evaluateTechAlert(alert, ts, state) {
     const st = Object.assign({ armed: true }, state || {}), k = alert.kind, th = Number(alert.threshold);
@@ -398,6 +401,12 @@
       const ma = k === "xma50" ? ts.ma50 : ts.ma200; if (ma == null) return { triggered: false, state: st };
       const side = ts.price >= ma ? "above" : "below", crossed = st.side && st.side !== side;
       return { triggered: !!crossed, value: ma, detail: "crossed " + side + " its " + (k === "xma50" ? "50" : "200") + "-day average", state: Object.assign({}, st, { side }, crossed ? { lastTriggeredAt: Date.now() } : {}) };
+    }
+    // Volume spike: at most once per session, judged on the volume so far today.
+    if (k === "vol_spike") {
+      if (ts.volRatio == null) return { triggered: false, state: st };
+      const fire = ts.volRatio >= th && st.lastDay !== ts.day;
+      return { triggered: fire, value: ts.volRatio, detail: "traded " + ts.volRatio.toFixed(1) + "× its 20-day average volume so far today", state: fire ? Object.assign({}, st, { lastDay: ts.day, lastTriggeredAt: Date.now() }) : st };
     }
     let cond, back, value, detail;
     if (k === "rsi_above" || k === "rsi_below") { if (ts.rsi14 == null) return { triggered: false, state: st }; value = ts.rsi14; cond = k === "rsi_above" ? value >= th : value <= th; back = k === "rsi_above" ? value < th - 3 : value > th + 3; detail = "RSI(14) reached " + value.toFixed(0); }
@@ -409,6 +418,7 @@
     return { triggered: false, value, detail, state: st };
   }
   function alertText(a) {
+    if (a.kind === "vol_spike") return "Volume at least " + a.threshold + "× its 20-day average";
     if (TECH_ALERTS[a.kind]) return TECH_ALERTS[a.kind] + (a.kind.startsWith("rsi") ? " " + a.threshold : "");
     return ({ above: "≥ ", below: "≤ ", move: "daily move ≥ ±" }[a.kind] || a.kind + " ") + a.threshold + (a.kind === "move" ? "%" : "");
   }

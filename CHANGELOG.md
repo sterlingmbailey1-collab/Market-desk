@@ -1,5 +1,15 @@
 # Changelog
 
+## Version 34 (2026-10-26)
+- **The AI learns from more of its own record.** When it studies its graded calls to write lessons, it now also sees:
+  - each specialist analyst's record
+  - the paper account's results by source of ideas.
+
+  So lessons like "the quant analyst has been more reliable" or "the screener's ideas have lagged the S&P 500" can
+  reach every future prompt.
+- **Volume-spike alert.** A new technical alert fires when today's volume so far reaches a set multiple of the
+  20-day average (2× by default). It fires at most once a session.
+
 ## Version 33 (2026-10-26)
 - **The specialist panel learns from its record.**
   - Every pick, AI decision and market call now logs each analyst's own odds: the lead analyst, fundamentals, quant
