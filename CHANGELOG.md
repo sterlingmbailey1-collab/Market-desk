@@ -1,5 +1,12 @@
 # Changelog
 
+## Version 41 (2026-10-26)
+- **Follow AI decisions in the paper account too.** A second switch under "Follow the AI automatically" paper-buys
+  every AI decision to buy or add.
+  - Each one is sized at the decision's own ceiling (at most 25% of the account) and sold when its horizon ends.
+  - "Hold", "wait", "trim" and "avoid" decisions are never bought, and there's one buy per asset per day.
+  - The AI decisions' sized forward record then appears next to the picks', by source of ideas.
+
 ## Version 40 (2026-10-26)
 - **Accuracy of what the desk says about its data.**
   - Settings → Data sources and the AI tool descriptions now say that Nasdaq's daily history covers about 3 years

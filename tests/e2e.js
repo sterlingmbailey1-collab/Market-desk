@@ -837,6 +837,18 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
     return { a: a.map(o => o.symbol + ":" + o.side + ":" + !!o.auto + ":" + (o.exitAt > Date.now())), amt: a[0] ? Math.round(a[0].qty * a[0].price) : null, again: again.length, early: early.length, late: late.map(o => o.symbol + ":" + o.side), open: L.positions.length, closedMSFT: L.closed.some(t => t.symbol === "MSFT") };
   });
   check("paper auto-follow: buys only the up-leaning picks, once, sized at 5% of the account, and sells each when its window ends", af.a.length === 1 && /^MSFT:buy:true:true$/.test(af.a[0]) && af.amt > 4000 && af.amt < 5100 && af.again === 0 && af.early === 0 && af.late.length === 1 && af.late[0] === "MSFT:sell" && af.open === 0 && af.closedMSFT, JSON.stringify(af));
+  const fd = await page.evaluate(async () => {
+    const app = MD.app, nv = { id: "stock:NVDA", cls: "stock", symbol: "NVDA", name: "NVIDIA" }, am = { id: "stock:AMZN", cls: "stock", symbol: "AMZN", name: "Amazon" };
+    const d = { decision: "accumulate", assetId: nv.id, symbol: "NVDA", upPct: 62, days: 91, math: { ceilingPct: 8 } };
+    app.saveSettings({ paperFollow: { on: true, pct: 5, decisions: true } });
+    const a = await MD.paper.followDecision(app, d, nv), b = await MD.paper.followDecision(app, d, nv), hold = await MD.paper.followDecision(app, Object.assign({}, d, { decision: "hold", assetId: am.id, symbol: "AMZN" }), am);
+    app.saveSettings({ paperFollow: { on: true, pct: 5, decisions: false } });
+    const off = await MD.paper.followDecision(app, Object.assign({}, d, { assetId: am.id, symbol: "AMZN" }), am);
+    const sold = await MD.paper.autoExit(app, { now: Date.now() + 92 * 864e5 });
+    app.saveSettings({ paperFollow: { on: false, pct: 5, decisions: false } });
+    return { a: a && { sym: a.symbol, auto: !!a.auto, src: a.source, amt: Math.round(a.qty * a.price) }, b: !!b, hold: !!hold, off: !!off, sold: sold.map(o => o.symbol) };
+  });
+  check("paper auto-follow of AI decisions: a buy/add decision is paper-bought at its size ceiling, once, and sold when its horizon ends; hold decisions and the off switch are respected", !!fd.a && fd.a.sym === "NVDA" && fd.a.auto && fd.a.src === "ai-decide" && fd.a.amt > 6000 && fd.a.amt < 8200 && !fd.b && !fd.hold && !fd.off && fd.sold.includes("NVDA"), JSON.stringify(fd));
   const kitT = await page.evaluate(async () => {
     const S = MD.ai.session(), T = MD.ai.tools(MD.app, S, ["paper_account", "screen_stocks", "holdings_news_sentiment"]), by = Object.fromEntries(T.map(t => [t.name, t]));
     const pa = await by.paper_account.execute({}), sc = await by.screen_stocks.execute({ exchange: "nyse", sector: "finance" }), hn = await by.holdings_news_sentiment.execute({});

@@ -113,6 +113,17 @@
     }
     return placed;
   }
+  // With paperFollow.decisions on too, an AI decision to buy or add is paper-bought at its size ceiling (at most 25% of
+  // the account) and sold when its horizon ends. One per asset per day.
+  async function followDecision(app, d, asset) {
+    const cfg = followCfg(app); if (!cfg.on || !cfg.decisions || app.demo || !d || !(d.decision === "buy" || d.decision === "accumulate")) return null;
+    const a = asset || { id: d.assetId, symbol: d.symbol, cls: String(d.assetId).split(":")[0] }, cls = clsOf(a), key = "decide:" + a.id + ":" + new Date().toISOString().slice(0, 10);
+    if (!CLASSES.includes(cls) || app.store.cached("paper").some(o => o.setId === key)) return null;
+    const st = await state(app), q = await app.quote(a, 30000), pct = Math.max(0.5, Math.min(25, Number(d.math && d.math.ceilingPct) || Number(cfg.pct) || 5));
+    const amount = Math.min(st.L.cash / (1 + feeRate(app, cls)), st.v.equity * pct / 100);
+    if (!(q.price > 0) || amount < 1) return null;
+    return place(app, a, "buy", amount / q.price, { source: "ai-decide", note: "Auto-follow · " + ((MD.decide && MD.decide.DECISIONS[d.decision]) || [d.decision])[0] + ", " + d.upPct + "% up over " + d.days + " days", extra: { auto: true, exitAt: Date.now() + (Number(d.days) || 91) * 864e5, setId: key } });
+  }
   // Sell auto-followed positions whose window has ended (all of the position's buys were automatic).
   async function autoExit(app, opts = {}) {
     if (app.demo) return [];
@@ -192,12 +203,13 @@
   };
 
   function followCard(app) {
-    const cfg = followCfg(app), on = h("input", { type: "checkbox", checked: cfg.on }), pct = h("input", { type: "number", min: 0.5, max: 25, step: 0.5, value: cfg.pct, style: "width:80px", "aria-label": "Percent of the account per pick" });
-    const save = () => app.saveSettings({ paperFollow: { on: on.checked, pct: Math.max(0.5, Math.min(25, Number(pct.value) || 5)) } });
-    on.onchange = save; pct.onchange = save;
+    const cfg = followCfg(app), on = h("input", { type: "checkbox", checked: cfg.on }), pct = h("input", { type: "number", min: 0.5, max: 25, step: 0.5, value: cfg.pct, style: "width:80px", "aria-label": "Percent of the account per pick" }), dec = h("input", { type: "checkbox", checked: !!cfg.decisions });
+    const save = () => app.saveSettings({ paperFollow: { on: on.checked, pct: Math.max(0.5, Math.min(25, Number(pct.value) || 5)), decisions: dec.checked } });
+    on.onchange = save; pct.onchange = save; dec.onchange = save;
     const auto = C.paperLedger(orders(app), acct(app).startCash).positions.map(p => ({ p, buys: orders(app).filter(o => o.assetId === p.assetId && o.side === "buy" && o.createdAt >= (p.openedAt || 0)) })).filter(x => x.buys.length && x.buys.every(o => o.auto && o.exitAt));
     return U.section("Follow the AI automatically", h("div", { class: "stack" },
       h("div", { class: "row", style: "gap:10px;flex-wrap:wrap;align-items:center" }, h("label", { class: "chk" }, on, "Paper-buy every new recommendation that leans up"), h("label", { class: "row", style: "gap:6px;align-items:center" }, pct, h("span", { class: "small" }, "% of the account each"))),
+      h("label", { class: "chk" }, dec, "Also paper-buy AI decisions to buy or add (sized at the decision's ceiling, sold when its horizon ends)"),
       h("p", { class: "tiny muted" }, "Each one is sold automatically when its window ends, so the account becomes a sized, forward test of the AI's picks against the S&P 500. Only automatic positions are auto-sold; anything you buy yourself stays until you sell it. Runs while the desk is open."),
       auto.length ? U.table([{ t: "Auto position", v: (x) => x.p.symbol }, { t: "Bought", v: (x) => U.fmtDate(x.buys[0].createdAt) }, { t: "Sells after", v: (x) => U.fmtDate(Math.max(...x.buys.map(o => o.exitAt))) }, { t: "Why", v: (x) => h("span", { class: "small" }, x.buys[0].note || "") }], auto) : null));
   }
@@ -257,5 +269,5 @@ Reply with ONLY JSON: {"headline": "one sentence", "working": ["..."], "notWorki
         h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("paper") }, "Open paper trading")));
     }).catch(e => out.replaceChildren(h("p", { class: "small warn-t" }, U.errorText(e))));
   }
-  MD.paper = { coach, dashCard, ticket, place, state, button, bySource, followSet, autoExit, followCfg, SOURCES };
+  MD.paper = { followDecision, coach, dashCard, ticket, place, state, button, bySource, followSet, autoExit, followCfg, SOURCES };
 })(typeof window !== "undefined" ? window : globalThis);

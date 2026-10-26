@@ -83,6 +83,7 @@ Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoi
     if (!app.demo && out.price > 0 && up !== 50) {
       const f = await app.store.create("forecasts", { assetId: asset.id, asset: MD.common.slim(asset), symbol: asset.symbol, source: "ai-decide", horizonDays: days, dueAt: Date.now() + days * 864e5, priceAtCreation: out.price, currency: "USD", priceSource: q ? q.source : "quote", direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: out.headline + " (" + decision + ")", flatBandPct: 1, claudeUpPct: out.probs.claude, modelUpPct: out.probs.model, reviewerUpPct: out.probs.reviewer ?? null, leadUpPct: out.panel ? out.panel.lead : null, panelUpPct: out.panel ? { fundamentals: out.panel.fundamentals ?? null, quant: out.panel.quant ?? null, news: out.panel.news ?? null } : null, mlUpPct: ml ? ml.upPct : null }).catch(() => null);
       out.forecastId = f && f.id;
+      if (MD.paper) MD.paper.followDecision(app, out, asset).then(o => { if (o) U.toast("Paper account followed the AI decision", "Bought " + o.qty + " " + o.symbol + " with virtual money; sold when the horizon ends."); }).catch(() => {});
       await app.store.put("decisions", idOf(asset), JSON.parse(JSON.stringify(out))).catch(() => {});
     }
     return out;
