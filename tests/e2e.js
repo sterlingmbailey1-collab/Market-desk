@@ -823,6 +823,9 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.click("button:has-text('Ask the AI coach')"); await page.waitForTimeout(2000);
   const coTxt = await page.locator("#content").innerText();
   check("paper AI coach: reads the closed trades against the S&P 500 and by source, from measured numbers only", /lagged the S&P 500/.test(coTxt) && /Try next/i.test(coTxt) && /sample is tiny|say almost nothing/.test(coTxt) && await page.evaluate(() => /"closedTrades":\[\{"symbol":"AAPL","from":"Asset page","returnPct":-?[\d.]+,"sp500SameDaysPct":-?[\d.]+/.test(window.__mock.coachPrompt || "") && /never invent a number/.test(window.__mock.coachPrompt || "")), coTxt.slice(-700));
+  await page.waitForTimeout(1500);
+  const cvTxt = await page.locator("#content").innerText();
+  check("paper account value over time: the account against the same trades in the S&P 500 (chart from the second day)", /Account value over time/i.test(cvTxt) && (await page.locator("svg[aria-label='Paper account value against the same trades in the S&P 500']").count() === 1 || /starts after the account's first full day/.test(cvTxt)), (cvTxt.match(/Account value over time[\s\S]{0,200}/i) || [""])[0]);
   check("paper page offers following the AI automatically", /Follow the AI automatically/i.test(ptTxt) && /Paper-buy every new recommendation that leans up/i.test(ptTxt));
   const af = await page.evaluate(async () => {
     MD.app.saveSettings({ paperFollow: { on: true, pct: 5 } });

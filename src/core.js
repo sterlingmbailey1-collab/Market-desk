@@ -352,6 +352,20 @@
     const equity = L.cash + held, mirrorEquity = L.mirrorCash + mirror, s = Number(startCash) || 0;
     return { equity, mirrorEquity, held, returnPct: s > 0 ? (equity / s - 1) * 100 : null, mirrorReturnPct: s > 0 ? (mirrorEquity / s - 1) * 100 : null, missing };
   }
+  /* The paper account's value at each day's close, and its S&P 500 mirror, rebuilt from the orders and daily closes.
+     days: ascending UTC day numbers; closes: {assetId: Map(day → close)}; spy: Map(day → close). Each price is the
+     last close on or before the day; a position with no price yet counts at cost. */
+  function paperCurve(orders, startCash, closes, spy, days) {
+    const sorted = [...orders].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)), lastPx = {}, out = [];
+    let spyPx = null;
+    for (const d of days) {
+      for (const id in closes) { const v = closes[id].get(d); if (v > 0) lastPx[id] = v; }
+      const sv = spy.get(d); if (sv > 0) spyPx = sv;
+      const L = paperLedger(sorted.filter(o => (o.createdAt || 0) < (d + 1) * 864e5), startCash), v = paperValue(L, lastPx, spyPx, startCash);
+      out.push({ day: d, equity: v.equity, mirror: v.mirrorEquity });
+    }
+    return out;
+  }
   function rewardRisk({ entry, target, stop, side = "long", feePct = 0, fxCostPct = 0, pUp = null }) {
     const e = dec(entry), t = dec(target), s = dec(stop);
     if (!e || e.lte(0)) return { ok: false, reason: "Entry price must be greater than zero." };
@@ -718,7 +732,7 @@
       maxDrawdownYrPct: maxDrawdown(yr.map(p => p.close ?? p.value)).mdd * 100, trend };
   }
 
-  MD.core = { taxYears, paperLedger, paperValue, D, dec, applyTick, straddleMove, expectedMoveFromVol, normCdf, normInv, projectPrice, impliedVolFromMove, ema, rsi, macd, betaTo, periodReturns, technicals, ZERO, ONE, sum, BASE_CURRENCIES, ECB_CODES, makeRegistry, PAIR_PRIORITY, marketPair, parsePair, quote, invert, cross, rateFromTable, convert, spreadBps,
+  MD.core = { paperCurve, taxYears, paperLedger, paperValue, D, dec, applyTick, straddleMove, expectedMoveFromVol, normCdf, normInv, projectPrice, impliedVolFromMove, ema, rsi, macd, betaTo, periodReturns, technicals, ZERO, ONE, sum, BASE_CURRENCIES, ECB_CODES, makeRegistry, PAIR_PRIORITY, marketPair, parsePair, quote, invert, cross, rateFromTable, convert, spreadBps,
     fmtNum, fmtMoney, fmtPct, GRAMS_PER, UNIT_NAMES, convertWeight, bullion, TX_TYPES, validDate, validateTx, activeTxs, buildPositions, valuePosition, realizedInReporting,
     netLiquidation, allocation, hhi, rewardRisk, returnsFrom, mean, stdev, annVol, maxDrawdown, cagr, sharpe, correlation, alignByTime, seriesStats, rng, gauss, percentile,
     touchProbability, goalSimulation, sma, backtest, fxStress, ripple, catalystImpact, evaluateForecast, calibration, evaluateAlert, materiality, inQuietHours,

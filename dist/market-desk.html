@@ -1005,6 +1005,20 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     const equity = L.cash + held, mirrorEquity = L.mirrorCash + mirror, s = Number(startCash) || 0;
     return { equity, mirrorEquity, held, returnPct: s > 0 ? (equity / s - 1) * 100 : null, mirrorReturnPct: s > 0 ? (mirrorEquity / s - 1) * 100 : null, missing };
   }
+  /* The paper account's value at each day's close, and its S&P 500 mirror, rebuilt from the orders and daily closes.
+     days: ascending UTC day numbers; closes: {assetId: Map(day → close)}; spy: Map(day → close). Each price is the
+     last close on or before the day; a position with no price yet counts at cost. */
+  function paperCurve(orders, startCash, closes, spy, days) {
+    const sorted = [...orders].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)), lastPx = {}, out = [];
+    let spyPx = null;
+    for (const d of days) {
+      for (const id in closes) { const v = closes[id].get(d); if (v > 0) lastPx[id] = v; }
+      const sv = spy.get(d); if (sv > 0) spyPx = sv;
+      const L = paperLedger(sorted.filter(o => (o.createdAt || 0) < (d + 1) * 864e5), startCash), v = paperValue(L, lastPx, spyPx, startCash);
+      out.push({ day: d, equity: v.equity, mirror: v.mirrorEquity });
+    }
+    return out;
+  }
   function rewardRisk({ entry, target, stop, side = "long", feePct = 0, fxCostPct = 0, pUp = null }) {
     const e = dec(entry), t = dec(target), s = dec(stop);
     if (!e || e.lte(0)) return { ok: false, reason: "Entry price must be greater than zero." };
@@ -1371,7 +1385,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
       maxDrawdownYrPct: maxDrawdown(yr.map(p => p.close ?? p.value)).mdd * 100, trend };
   }
 
-  MD.core = { taxYears, paperLedger, paperValue, D, dec, applyTick, straddleMove, expectedMoveFromVol, normCdf, normInv, projectPrice, impliedVolFromMove, ema, rsi, macd, betaTo, periodReturns, technicals, ZERO, ONE, sum, BASE_CURRENCIES, ECB_CODES, makeRegistry, PAIR_PRIORITY, marketPair, parsePair, quote, invert, cross, rateFromTable, convert, spreadBps,
+  MD.core = { paperCurve, taxYears, paperLedger, paperValue, D, dec, applyTick, straddleMove, expectedMoveFromVol, normCdf, normInv, projectPrice, impliedVolFromMove, ema, rsi, macd, betaTo, periodReturns, technicals, ZERO, ONE, sum, BASE_CURRENCIES, ECB_CODES, makeRegistry, PAIR_PRIORITY, marketPair, parsePair, quote, invert, cross, rateFromTable, convert, spreadBps,
     fmtNum, fmtMoney, fmtPct, GRAMS_PER, UNIT_NAMES, convertWeight, bullion, TX_TYPES, validDate, validateTx, activeTxs, buildPositions, valuePosition, realizedInReporting,
     netLiquidation, allocation, hhi, rewardRisk, returnsFrom, mean, stdev, annVol, maxDrawdown, cagr, sharpe, correlation, alignByTime, seriesStats, rng, gauss, percentile,
     touchProbability, goalSimulation, sma, backtest, fxStress, ripple, catalystImpact, evaluateForecast, calibration, evaluateAlert, materiality, inQuietHours,
@@ -2473,6 +2487,14 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     eq(Q.newsScore([{ s: -1, mat: 2, ts: d(1) }, { s: 1, mat: 2, ts: d(1) }], now).label, "mixed");
     eq(Q.newsScore([{ s: 0, mat: 1, ts: d(0) }], now).label, "neutral");
     eq(Q.newsScore([{ s: -2, mat: 3, ts: d(0) }], now).score, -100);
+  });
+  test("paper account curve: value at each close and the S&P 500 mirror", () => {
+    const C = MD.core, d0 = 20000, ms = (d) => d * 864e5 + 15 * 3600e3;
+    const orders = [{ id: "1", side: "buy", assetId: "stock:AAA", symbol: "AAA", qty: 10, price: 100, spyPrice: 500, createdAt: ms(d0 + 1) }];
+    const closes = { "stock:AAA": new Map([[d0 + 1, 100], [d0 + 2, 110], [d0 + 4, 120]]) }, spy = new Map([[d0, 500], [d0 + 1, 500], [d0 + 2, 505], [d0 + 4, 510]]);
+    const cv = C.paperCurve(orders, 10000, closes, spy, [d0, d0 + 1, d0 + 2, d0 + 3, d0 + 4]);
+    eq(cv.length, 5); eq(cv[0].equity, 10000, "before the first order"); eq(cv[1].equity, 10000); eq(cv[2].equity, 10100);
+    eq(cv[3].equity, 10100, "a day without a close keeps the last one"); eq(cv[4].equity, 10200); near(cv[4].mirror, 9000 + 2 * 510, 1e-9);
   });
   test("tax-year summary: FIFO lots split short- and long-term, dividends by year", () => {
     const C = MD.core, tx = (o) => Object.assign({ assetId: "stock:AAA", assetClass: "stock", symbol: "AAA", currency: "USD", fees: "0", createdAt: 1 }, o);
@@ -11459,7 +11481,9 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
         kpi("Against the S&P 500", (diff > 0 ? "+" : "") + diff.toFixed(2) + " pts", L.closed.length ? wins + " of " + L.closed.length + " closed trades made money" : "no closed trades yet", U.signCls(diff)));
       const posRows = L.positions.map(p => { const px = prices[p.assetId], val = px ? p.qty * px : null, mirror = spyQ && p.mirrorKnown ? p.mirror * spyQ.price : null; return { p, px, val, pnl: val != null ? val - p.cost : null, pnlPct: val != null ? (val / p.cost - 1) * 100 : null, mirror, mirrorPct: mirror != null ? (mirror / p.cost - 1) * 100 : null, q: quotes[p.assetId] }; });
       const srcLbl = (ss) => (ss.length ? ss : ["manual"]).map(s => SOURCES[s] || s).join(", ");
+      const curveBox = h("div", { class: "stack" });
       body.replaceChildren(
+        orders(app).length ? U.section("Account value over time", curveBox) : null,
         U.section("Open positions", h("div", { class: "stack" }, U.table([
           { t: "Asset", v: (r) => h("a", { href: "#", onclick: (e) => { e.preventDefault(); app.openAsset(r.p.asset || { id: r.p.assetId, symbol: r.p.symbol }); } }, r.p.symbol) },
           { t: "Quantity", v: (r) => String(+r.p.qty.toFixed(6)), n: true }, { t: "Avg cost", v: (r) => U.money(r.p.cost / r.p.qty, "USD", { price: true }), n: true },
@@ -11484,6 +11508,7 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
           U.table([{ t: "Time", v: (o) => U.fmtTs(o.createdAt) }, { t: "Order", v: (o) => o.side + " " + o.qty + " " + o.symbol }, { t: "Fill", v: (o) => U.money(o.price, "USD", { price: true }), n: true }, { t: "Price from", v: (o) => (o.priceSource || "—") + (o.priceStatus && o.priceStatus !== "Live" ? " (" + o.priceStatus + ")" : "") }, { t: "From", v: (o) => (SOURCES[o.source] || o.source) + (o.note ? " · " + o.note : "") }],
             orders(app).slice().sort((x, y) => y.createdAt - x.createdAt))),
         L.issues.length ? h("p", { class: "small warn-t" }, L.issues.map(i => i.msg).join(" ")) : null);
+      if (orders(app).length) drawCurve(app, S, curveBox).catch(e => curveBox.replaceChildren(h("p", { class: "small muted" }, "No chart: " + U.errorText(e))));
     };
     paint();
     const off = app.on("paper", () => { if (document.body.contains(root)) paint(); else off(); });
@@ -11498,6 +11523,24 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
       h("div", { class: "row", style: "gap:10px;flex-wrap:wrap;align-items:center" }, h("label", { class: "chk" }, on, "Paper-buy every new recommendation that leans up"), h("label", { class: "row", style: "gap:6px;align-items:center" }, pct, h("span", { class: "small" }, "% of the account each"))),
       h("p", { class: "tiny muted" }, "Each one is sold automatically when its window ends, so the account becomes a sized, forward test of the AI's picks against the S&P 500. Only automatic positions are auto-sold; anything you buy yourself stays until you sell it. Runs while the desk is open."),
       auto.length ? U.table([{ t: "Auto position", v: (x) => x.p.symbol }, { t: "Bought", v: (x) => U.fmtDate(x.buys[0].createdAt) }, { t: "Sells after", v: (x) => U.fmtDate(Math.max(...x.buys.map(o => o.exitAt))) }, { t: "Why", v: (x) => h("span", { class: "small" }, x.buys[0].note || "") }], auto) : null));
+  }
+  // The account and its S&P 500 mirror at each close since the first order (daily histories, cached six hours).
+  async function drawCurve(app, S, box) {
+    const os = orders(app), start = Math.floor(Math.min(...os.map(o => o.createdAt || Date.now())) / 864e5);
+    const ids = [...new Map(os.map(o => [o.assetId, o.asset || { id: o.assetId, symbol: o.symbol, cls: String(o.assetId).split(":")[0] }])).values()];
+    const [spyH, ...hs] = await Promise.all([D.historyCached(SPY, "1Y"), ...ids.map(a => D.historyCached(a, "1Y").catch(() => null))]);
+    const dayMap = (h) => new Map((h ? h.points : []).map(p => [Math.floor(p.time / 86400), p.close ?? p.value]));
+    const closes = {}; ids.forEach((a, i) => { closes[a.id] = dayMap(hs[i]); });
+    const spy = dayMap(spyH), today = Math.floor(Date.now() / 864e5), days = [...new Set([...spy.keys()].filter(d => d >= start).concat([today]))].sort((a, b) => a - b);
+    // Today's point uses the live prices the page already has.
+    if (S.spyQ) spy.set(today, S.spyQ.price); for (const id in S.prices) { if (closes[id]) closes[id].set(today, S.prices[id]); }
+    const cv = C.paperCurve(os, S.a.startCash, closes, spy, days);
+    if (cv.length < 2) { box.replaceChildren(h("p", { class: "small muted" }, "The chart starts after the account's first full day.")); return; }
+    const s0 = S.a.startCash, pts = cv.map(p => ({ a: (p.equity / s0 - 1) * 100, b: (p.mirror / s0 - 1) * 100 })), lo = Math.min(0, ...pts.map(p => Math.min(p.a, p.b))), hi = Math.max(0, ...pts.map(p => Math.max(p.a, p.b))), W = 600, H = 140;
+    const x = (i) => i / (pts.length - 1) * W, y = (v) => H - (v - lo) / ((hi - lo) || 1) * H, line = (k) => pts.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p[k]).toFixed(1)).join(" "), last = pts[pts.length - 1];
+    box.replaceChildren(h("div", { html: '<svg viewBox="0 0 ' + W + " " + H + '" width="100%" height="140" preserveAspectRatio="none" role="img" aria-label="Paper account value against the same trades in the S&P 500"><line x1="0" x2="' + W + '" y1="' + y(0).toFixed(1) + '" y2="' + y(0).toFixed(1) + '" stroke="var(--line)" stroke-dasharray="4 4"/><path d="' + line("b") + '" fill="none" stroke="var(--muted)" stroke-width="2"/><path d="' + line("a") + '" fill="none" stroke="var(--accent)" stroke-width="2.5"/></svg>' }),
+      h("p", { class: "small" }, h("strong", { style: "color:var(--accent)" }, "Account " + U.pct(last.a)), " · ", h("span", { class: "muted" }, "same trades in the S&P 500 " + U.pct(last.b)), " · " + cv.length + " days from " + new Date(cv[0].day * 864e5).toISOString().slice(0, 10)),
+      h("p", { class: "tiny muted" }, "Rebuilt from your orders and each asset's daily closes (the last point uses live prices). Costs are included as charged on each order."));
   }
   async function restart(app) {
     const box = h("div", { class: "stack" }), cash = h("input", { type: "number", min: 1000, step: 1000, value: acct(app).startCash, "aria-label": "Starting cash" });

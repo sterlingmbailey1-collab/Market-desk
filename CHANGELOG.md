@@ -1,5 +1,10 @@
 # Changelog
 
+## Version 39 (2026-10-26)
+- **Paper account value over time.**
+  - A chart of the paper account at each close since its first order, against the same trades in the S&P 500.
+  - Rebuilt from your orders and each asset's daily closes; the last point uses live prices.
+
 ## Version 38 (2026-10-26)
 - **The AI sees the portfolio health score.**
   - Claude's portfolio review and the AI Advisor's portfolio tool (also used by Ask AI) now get the 0–100 health

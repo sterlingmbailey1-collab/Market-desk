@@ -61,6 +61,14 @@
     eq(Q.newsScore([{ s: 0, mat: 1, ts: d(0) }], now).label, "neutral");
     eq(Q.newsScore([{ s: -2, mat: 3, ts: d(0) }], now).score, -100);
   });
+  test("paper account curve: value at each close and the S&P 500 mirror", () => {
+    const C = MD.core, d0 = 20000, ms = (d) => d * 864e5 + 15 * 3600e3;
+    const orders = [{ id: "1", side: "buy", assetId: "stock:AAA", symbol: "AAA", qty: 10, price: 100, spyPrice: 500, createdAt: ms(d0 + 1) }];
+    const closes = { "stock:AAA": new Map([[d0 + 1, 100], [d0 + 2, 110], [d0 + 4, 120]]) }, spy = new Map([[d0, 500], [d0 + 1, 500], [d0 + 2, 505], [d0 + 4, 510]]);
+    const cv = C.paperCurve(orders, 10000, closes, spy, [d0, d0 + 1, d0 + 2, d0 + 3, d0 + 4]);
+    eq(cv.length, 5); eq(cv[0].equity, 10000, "before the first order"); eq(cv[1].equity, 10000); eq(cv[2].equity, 10100);
+    eq(cv[3].equity, 10100, "a day without a close keeps the last one"); eq(cv[4].equity, 10200); near(cv[4].mirror, 9000 + 2 * 510, 1e-9);
+  });
   test("tax-year summary: FIFO lots split short- and long-term, dividends by year", () => {
     const C = MD.core, tx = (o) => Object.assign({ assetId: "stock:AAA", assetClass: "stock", symbol: "AAA", currency: "USD", fees: "0", createdAt: 1 }, o);
     const { positions } = C.buildPositions([tx({ id: "a", type: "buy", tradeDate: "2024-01-02", quantity: "10", price: "100" }), tx({ id: "b", type: "buy", tradeDate: "2025-06-01", quantity: "10", price: "120" }), tx({ id: "d", type: "dividend", tradeDate: "2025-03-01", amount: "20" }), tx({ id: "c", type: "sell", tradeDate: "2025-09-01", quantity: "15", price: "150" })]);
