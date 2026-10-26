@@ -166,6 +166,9 @@ Reply with ONLY JSON: {"summary": "1-2 sentences", "best": [{"symbol": "...", "s
     const lim = await s.limits().catch(() => null);
     const tools = lim && lim.tools ? MD.ai.tools(app, S, isStock ? ["search_news", "explain_move", "base_rates", "earnings_info", "economic_calendar", "market_memory", "search_web"] : ["crypto_news", "search_news", "base_rates", "explain_move", "market_memory", "search_web"]) : undefined;
     const calib = MD.ai.calibrationNote(MD.ai.trackRecord(app, "ai-day"));
+    // Machine learning on daily history for the next session (a daily-bar view; intraday setups still come from the levels).
+    let ml = null;
+    if (MD.mlView) { const e0 = S.step("run", "Training the machine-learning model on " + L.symbol + "'s daily history"); try { ml = MD.mlView.compact(await MD.mlView.run(app, L.asset, 1)); S.done(e0, "ok", " → " + ml.upPct + "% up next session, " + (ml.edgeOutOfSample ? "clear edge out of sample" : "no clear edge out of sample")); } catch (err) { S.done(e0, "fail", " → " + U.errorText(err)); } }
     const e = S.step("run", "Claude is building the plan (usually under a minute)");
     const prompt = `You are a disciplined intraday trading analyst. Build a plan for ${L.symbol} (${L.name}) for the rest of the current or next session. ${L.clock.phase === "open" ? "The market is open; " + L.clock.minutesToClose + " minutes to the close." : "The US market is " + L.clock.phase + "."}
 Use the measured levels below (computed by the app). ${tools ? "Use 2 to 6 tool calls: news for today's catalyst (search_news or crypto_news), explain_move to see whether the move is the market or the stock, earnings_info or economic_calendar when an event could hit today. Cite only URLs the tools returned." : "Tools are unavailable; rely on the measured data and say so."}
@@ -174,6 +177,7 @@ ${calib}
 ${MD.ai.contextNote(app)}
 ${MD.ai.assetNote(app, L.asset)}
 ${guardNote(app)}
+${ml ? "Machine-learning model for the next session (daily bars, tested out of sample; weigh it only if edgeOutOfSample is true): " + JSON.stringify({ mlModel: ml }) : ""}
 Measured: ${JSON.stringify(forAI(L))}
 Market right now: ${JSON.stringify(mkt)}
 Reply with ONLY JSON:
