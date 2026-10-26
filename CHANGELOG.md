@@ -1,5 +1,13 @@
 # Changelog
 
+## Version 35 (2026-10-26)
+- **Wall Street's 1-year target as a measured fact.**
+  - Every stock candidate in Recommendations and every AI decision gets the analysts' average 1-year price target
+    from Nasdaq's summary (NYSE and Nasdaq listings), with the upside or downside from today's price.
+  - Claude weighs it as one input, and the pick shows it under "how the chance was built".
+- **AI decisions see your holdings' news tone.** If you've read the news sentiment for your holdings in the last
+  three days, the AI decision on one of them gets its score, label and summary.
+
 ## Version 34 (2026-10-26)
 - **The AI learns from more of its own record.** When it studies its graded calls to write lessons, it now also sees:
   - each specialist analyst's record

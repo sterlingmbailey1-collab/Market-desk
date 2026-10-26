@@ -41,6 +41,9 @@
       baseRates: br ? { modelUpPct: br.model.upPct, overallUpPct: r1(br.overall.upPct), independent: br.overall.independent, typicalIfUpPct: br.model.avgUpPct, typicalIfDownPct: br.model.avgDownPct, conditions: br.conditions.map(c => ({ condition: c.label, upPct: r1(c.upPct), windows: c.n })) } : null,
       risk: st ? { volPct: r1(st.volPct), maxDrawdown1yPct: r1(st.maxDrawdownPct), return1yPct: r1(st.changePct) } : null, trend: tech ? { trend: tech.trend, rsi14: r1(tech.rsi14), fromHighPct: r1(tech.fromHighPct) } : null,
       yourPosition: position, portfolioValue: total ? Math.round(total) : null, portfolioFit: fit, mlModel: ml, nextEarnings: q && q.nextEarnings || null };
+    // Wall Street's average 1-year target (Nasdaq's summary) and, when the investor read their holdings' news lately, its tone.
+    if (asset.cls === "stock") try { const pr = await D.stocks.profile(asset.symbol, "stock"); if (pr && pr.target1y > 0 && q && q.price > 0) measured.analystsOneYearTarget = { price: pr.target1y, upsidePct: r1((pr.target1y / q.price - 1) * 100) }; } catch {}
+    { const sd = MD.sentiment && MD.sentiment.latest(app), row = sd && Date.now() - sd.at < 3 * 864e5 ? sd.rows.find(r => r.symbol === asset.symbol && r.score != null) : null; if (row) measured.newsSentiment = { score: row.score, label: row.label, relevantHeadlines: row.relevant, readOn: new Date(sd.at).toISOString().slice(0, 10), summary: row.summary }; }
     const lim = await s.limits().catch(() => null);
     const tools = lim && lim.tools ? MD.ai.tools(app, S, isStock ? ["search_news", "zacks_view", "earnings_info", "insider_activity", "smart_money", "options_move", "explain_move", "market_memory", "search_web", "ml_forecast", "portfolio_fit", "open_calls"] : ["crypto_news", "search_news", "explain_move", "market_memory", "search_web", "ml_forecast", "portfolio_fit", "open_calls"]) : undefined;
     e = S.step("run", "Claude is deciding (usually 1–2 minutes)");
