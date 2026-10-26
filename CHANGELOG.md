@@ -1,5 +1,12 @@
 # Changelog
 
+## Version 21 (2026-10-26)
+- The dashboard's Market Brain card shows the latest weekly review and next week's top events.
+- "Where do the open calls stand?" stays on the dashboard card after a pricing, so the calls can be re-priced.
+- Checked at phone width (400 px) with the new panels open (Market Brain, Day Trading, open calls, If you buy, the AI
+  pipeline): no sideways scrolling.
+- Tests: the Smart Money "most bought" check no longer depends on today's date, and a unit test pins the 90-day window.
+
 ## Version 20 (2026-10-25)
 - **AI weekly review** (Market Brain). Claude looks back at the week: why the market moved (cause → effect, with
   evidence), what the desk's graded calls got right and wrong, lessons for next week, and next week's events

@@ -8953,6 +8953,7 @@ Reply with ONLY JSON: {"explanation": "3-4 sentences", "catalysts": [{"what": ".
       h("div", { class: "row", style: "gap:4px;flex-wrap:wrap" }, (last.drivers || []).slice(0, 3).map(d => h("span", { class: "chip sm" }, d.driver))),
       best ? h("p", { class: "small" }, "Most reliable pattern: \"" + best.pattern + "\" (held " + best.st.confirmed + " of " + best.st.tested + ")") : null,
       (() => { const c = latestCall(app); return c ? h("p", { class: "small" }, h("strong", {}, "Market call " + c.target + ": "), "SPY " + (c.upPct >= 50 ? "▲ " + c.upPct + "% up" : "▼ " + (100 - c.upPct) + "% down")) : null; })(),
+      (() => { const w = reviews(app)[0]; return w && Date.now() - w.at < 10 * 864e5 ? h("p", { class: "small" }, h("strong", {}, "Weekly review: "), w.headline + (w.nextWeek.length ? " Next week: " + w.nextWeek.slice(0, 2).map(x => x.date + " " + x.event).join("; ") + "." : "")) : null; })(),
       h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("brain") }, "Open Market Brain")));
   }
 

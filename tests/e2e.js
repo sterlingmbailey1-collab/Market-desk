@@ -663,6 +663,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.evaluate(() => MD.app.go("dashboard", null, { fromNav: true })); await page.waitForTimeout(1500);
   check("dashboard: Betting today card with open bets and AI record", /Betting today/i.test(await page.locator("#content").innerText()) && /AI record/i.test(await page.locator("#content").innerText()));
   const aiStat = await page.locator("#content").innerText();
+  check("dashboard Market Brain card shows the weekly review and next week's events", /Weekly review: Falling yields carried tech/.test(aiStat) && /Next week: 2026-10-28 FOMC decision/.test(aiStat), aiStat.slice(0, 600));
   await page.click("button:has-text('Where do the open calls stand?')"); await page.waitForTimeout(4000);
   const ocTxt = await page.locator("#content").innerText();
   check("open calls priced: move since the call and odds to finish on its side, per call", /Odds now/i.test(ocTxt) && /Since/i.test(ocTxt) && /60-day volatility alone/i.test(ocTxt) && /\d+%\s+\w{3} \d+, 20\d\d/.test(ocTxt), ocTxt.slice(0, 900));
