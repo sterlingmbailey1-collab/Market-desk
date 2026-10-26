@@ -366,10 +366,11 @@ Reply with ONLY JSON: {"summary": "2-3 sentences", "strengths": ["..."], "leaks"
     const calc = () => {
       app.ls.set("day.account", Number(f.account.value)); app.ls.set("day.risk", Number(f.risk.value)); app.ls.set("day.maxpos", Number(f.maxpos.value));
       const r = Q.positionSize({ account: f.account.value, riskPct: f.risk.value, entry: f.entry.value, stop: f.stop.value, target: f.target.value, side: f.side.value, maxPositionPct: f.maxpos.value });
-      if (!r) { out.replaceChildren(h("p", { class: "small muted" }, "Enter the account size, risk per trade, entry and stop.")); return; }
-      if (r.error) { out.replaceChildren(h("p", { class: "small warn-t" }, r.error)); return; }
+      const g = guardFor(app), stopNow = g.stop ? h("div", { class: "banner err" }, h("p", {}, "Your daily rules say stop for today (" + g.reasons.join(", ") + ").")) : "";
+      if (!r) { out.replaceChildren(stopNow, h("p", { class: "small muted" }, "Enter the account size, risk per trade, entry and stop.")); return; }
+      if (r.error) { out.replaceChildren(stopNow, h("p", { class: "small warn-t" }, r.error)); return; }
       const stopAtr = L.atr ? Math.abs(f.entry.value - f.stop.value) / L.atr * 100 : null;
-      const g = guardFor(app), guard = g.stop ? h("div", { class: "banner err" }, h("p", {}, "Your daily rules say stop for today (" + g.reasons.join(", ") + ")."))
+      const guard = g.stop ? stopNow
         : g.lossLeft != null && r.dollarsAtRisk > g.lossLeft ? h("div", { class: "banner warn" }, h("p", {}, "This trade risks " + U.money(r.dollarsAtRisk, "USD") + " but only " + U.money(g.lossLeft, "USD") + " is left before today's loss limit; " + Math.floor(g.lossLeft / r.perShareRisk) + " shares would keep you inside it.")) : null;
       const odds = f.target.value && L.dailyVolPct ? Q.barrierOdds({ entry: f.entry.value, stop: f.stop.value, target: f.target.value, side: f.side.value, dailyVolPct: L.dailyVolPct, minutesLeft: L.minutesLeft || 390 }) : null;
       out.replaceChildren(guard || "", h("div", { class: "kpis k4" }, kpi("Shares", String(r.shares), r.cappedBySize ? "capped by max position size" : "from risk per trade"), kpi("At risk", U.money(r.dollarsAtRisk, "USD"), C.fmtNum(r.perShareRisk, 2) + " a share"), kpi("Position", U.money(r.positionValue, "USD"), r.positionPct.toFixed(0) + "% of the account"), kpi("Reward : risk", r.rewardRisk == null ? "—" : r.rewardRisk.toFixed(2) + " R", r.targetOnWrongSide ? "target is on the wrong side" : r.dollarsAtTarget ? U.money(r.dollarsAtTarget, "USD") + " at target" : null)),

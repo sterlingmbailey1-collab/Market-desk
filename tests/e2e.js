@@ -4,6 +4,19 @@ const fs = require("fs"), path = require("path");
 const page_ = path.resolve(process.argv[2]), shots = path.resolve(process.argv[3] || ".");
 const V = path.join(__dirname, "..", "vendor");
 const results = [];
+// Visible text boxes (leaf elements, outside collapsed sections) that overlap each other by more than 3px both ways.
+const overlaps = (page) => page.evaluate(() => {
+  const hidden = (e) => { for (let x = e; x; x = x.parentElement) { if (x.tagName === "DETAILS" && !x.open && !(x.firstElementChild && x.firstElementChild.contains(e))) return true; const cs = getComputedStyle(x); if (cs.display === "none" || cs.visibility === "hidden") return true; } return false; };
+  // One box per rendered line (getClientRects), so a link that wraps onto two lines isn't read as one big rectangle.
+  const boxes = [...document.querySelectorAll("#content *")].filter(e => e.children.length === 0 && e.textContent.trim() && e.offsetParent && !hidden(e)).flatMap(e => [...e.getClientRects()].map(r => ({ e, r }))).filter(x => x.r.width > 0 && x.r.height > 0);
+  const hits = [];
+  for (let i = 0; i < boxes.length && hits.length < 20; i++) for (let j = i + 1; j < boxes.length; j++) {
+    if (boxes[i].e === boxes[j].e) continue;
+    const a = boxes[i].r, b = boxes[j].r, ix = Math.min(a.right, b.right) - Math.max(a.left, b.left), iy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+    if (ix > 3 && iy > 3) hits.push([boxes[i].e.textContent.trim().slice(0, 30), boxes[j].e.textContent.trim().slice(0, 30), Math.round(ix), Math.round(iy)]);
+  }
+  return hits;
+});
 const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); console.log((ok ? "PASS " : "FAIL ") + name + (ok ? "" : "  — " + (detail || ""))); };
 
 (async () => {
@@ -162,7 +175,9 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
     return { focus: set.focus, focusPicks: set.picks.filter(p => p.focus).map(p => p.symbol), all: set.picks.map(p => p.symbol), log: lines.filter(t => /focus/i.test(t)), prompt: /asked to focus on: "AI chips"/.test(pr) && /"fitsFocus":"AI chips"/.test(pr), fake: /"symbol":"ZZZZ"/.test(pr) };
   });
   check("recommendations focus: Claude names assets for the theme, the app verifies them (a fake ticker drops out) and the picks lead with them", foc.focus === "AI chips" && foc.focusPicks.length >= 1 && foc.focusPicks.every(s => ["AMD", "NVDA"].includes(s)) && foc.prompt && !foc.fake && foc.log.some(t => /2 of 3 focus names verified/.test(t)), JSON.stringify(foc));
+  await page.evaluate(() => document.querySelectorAll("#content details").forEach(d => d.open = true));
   const pkTxt = await page.locator("#content").innerText();
+  check("pick odds explanation names the year its history starts (never 'since NaN')", /window since 20\d\d/.test(pkTxt) && !/NaN/.test(pkTxt), (pkTxt.match(/Over every[^\n]{0,80}/) || [""])[0]);
   check("pick explains why, up/down odds and time window (no 'either way')", /Why it could move/i.test(pkTxt) && /Time window/i.test(pkTxt) && /% chance up/i.test(pkTxt) && /Chance up \/ down/i.test(pkTxt) && !/either way/i.test(pkTxt) && await page.locator(".probbar").count() >= 2, pkTxt.slice(0, 400));
   check("pick sources: retrieved news verified, invented URL flagged", picks[0] && picks[0].picks[0].sources.find(x => /bigdata/.test(x.url)).verified === true && picks[0].picks[0].sources.find(x => /invented/.test(x.url)).verified === false);
   check("every pick has up and down odds and is journaled up or down", picks[0].picks.every(p => p.upPct >= 5 && p.upPct <= 95 && p.downPct === 100 - p.upPct && (p.lean === "up") === (p.upPct >= 50)) && pickFc.every(f => (f.direction === "up" || f.direction === "down") && f.probability >= 0.5), JSON.stringify(picks[0].picks.map(p => [p.symbol, p.upPct, p.lean])) + JSON.stringify(pickFc.map(f => [f.direction, f.probability])));
@@ -299,7 +314,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.evaluate(() => MD.app.rerender()); await page.waitForTimeout(3000);
   const gTxt = await page.locator("#content").innerText();
   await page.screenshot({ path: path.join(shots, "e2e-daytrade-guard.png"), fullPage: true });
-  check("risk guard: three losses in a row past the daily limit say stop, in the journal, the sizer and the AI plan's prompt", guard.g.stop && guard.g.streak === 3 && guard.g.reasons.includes("3 losses in a row") && /STOP for today/.test(guard.note) && /Your rules say stop for today/i.test(gTxt) && (/Your daily rules say stop for today/i.test(gTxt) || !(await page.locator("#sec-sizer, h2.sec:has-text('Position size')").count())), JSON.stringify(guard));
+  check("risk guard: three losses in a row past the daily limit say stop, in the journal, the sizer and the AI plan's prompt", guard.g.stop && guard.g.streak === 3 && guard.g.reasons.includes("3 losses in a row") && /STOP for today/.test(guard.note) && /Your rules say stop for today/i.test(gTxt) && /Your daily rules say stop for today/i.test(gTxt), JSON.stringify(guard));
 
   // ---- Why it's moving (asset page)
   await page.evaluate(() => MD.app.openAsset({ id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" })); await page.waitForTimeout(2500);
@@ -562,6 +577,8 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
     if (r === "stock-detail") await page.screenshot({ path: path.join(shots, "e2e-mobile-stock.png"), fullPage: true });
     const sw = await page.evaluate(() => document.documentElement.scrollWidth);
     check("no horizontal scroll at 400px: " + r, sw <= 401, "scrollWidth " + sw);
+    const ovl = await overlaps(page);
+    check("no overlapping text at 400px: " + r, ovl.length === 0, JSON.stringify(ovl.slice(0, 6)));
   }
   // The newer panels opened at phone width: open calls on the dashboard, If you buy on an asset page, the AI pipeline.
   await page.evaluate(() => MD.app.go("dashboard", null, { fromNav: true })); await page.waitForTimeout(1500);

@@ -446,6 +446,10 @@ body.reduce-motion .tape { overflow-x: auto; }
 .review { display: grid; gap: 10px; padding: 14px 16px; border-radius: 12px; background: linear-gradient(135deg, var(--accent-soft), var(--sheet-2)); border: 1px solid var(--grid); }
 .review-h { font: 700 1.05rem var(--font-display); }
 .verdict.sm { font-size: 0.66rem; padding: 2px 8px; white-space: nowrap; justify-self: start; }
+/* Inside table cells, stacked content keeps its own width, so a narrow column grows (the table scrolls) instead of
+   a pill or a no-wrap figure spilling into the next column. */
+.tbl td .stack > *, .tbl td .row > * { min-width: auto; }
+.tbl td .stack > .verdict, .tbl td .stack > .pill, .tbl td .stack > .chip, .tbl td .row > .verdict, .tbl td .row > .pill { min-width: max-content; }
 /* ---------- Sports Betting ---------- */
 .rg p { margin: 0; }
 .betbar { align-items: flex-end; gap: 14px; }
