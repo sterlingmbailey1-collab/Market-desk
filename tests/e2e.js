@@ -41,6 +41,9 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   // The daily digest is tested on its own below; keep the timed one out of the other inbox checks.
   await page.evaluate(() => MD.app.saveSettings({ digest: false }));
   await page.waitForTimeout(1500);
+  check("dashboard shows what's new, with links, until dismissed", /What's new/i.test(await page.locator("#content").innerText()) && await page.locator(".whatsnew a").count() === 6);
+  await page.click(".whatsnew button:has-text('Got it')"); await page.waitForTimeout(200);
+  check("what's new stays dismissed", await page.locator(".whatsnew").count() === 0 && await page.evaluate(() => MD.app.ls.get("whatsNew") === 35));
   check("ticker tape shows markets and opens them", await page.locator("#tape .tape-set").first().locator(".tk").count() >= 8, String(await page.locator("#tape .tk").count()));
   check("account storage selected", await page.locator("text=Saved to account").count() > 0);
 

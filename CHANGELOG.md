@@ -1,5 +1,10 @@
 # Changelog
 
+## Version 36 (2026-10-26)
+- **What's new card on the dashboard.** It lists the features added since Version 25, each linking to its page:
+  the game plan, paper trading, the screener, fresher recommendations, stronger AI and the portfolio additions. It
+  stays until you dismiss it.
+
 ## Version 35 (2026-10-26)
 - **Wall Street's 1-year target as a measured fact.**
   - Every stock candidate in Recommendations and every AI decision gets the analysts' average 1-year price target
