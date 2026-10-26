@@ -387,6 +387,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"b
     if (cur) body.append(setView(app, cur));
     else body.append(h("div", { class: "empty" }, allSets.length ? "All recommendations are cleared. Generate a fresh set when you're ready." : "No recommendations yet. Generate a set to see which assets could move sharply, the chance each goes up or down, and over what window."));
     root.append(predictionLog(app, sets));
+    root.append(pickHistory(app, allSets || sets));
     // track record
     const fcs = app.store.cached("forecasts").filter(x => x.source === "ai-picks"), evals = app.store.cached("evals");
     const scored = fcs.map(x => { const e = evals.find(v => v.forecastId === x.id); return e ? Object.assign({}, e, { probability: x.probability }) : null; }).filter(Boolean);
@@ -416,6 +417,42 @@ Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"b
     if (due) return { label: "Past its date · not reached", cls: "down" };
     const right = pj.kind === "up" ? ch > 0 : pj.kind === "down" ? ch < 0 : Math.abs(ch) >= r.p.moveLow / 2;
     return right ? { label: "On track", cls: "" } : { label: "Behind", cls: "warn-t" };
+  }
+  /* Every symbol ever recommended: how often, when, the last call, and how the graded calls turned out; plus what
+     following every graded pick would have returned against the S&P 500 over the same windows. */
+  function pickHistory(app, sets) {
+    const fcs = app.store.cached("forecasts").filter(f => f.source === "ai-picks"), evals = app.store.cached("evals"), by = new Map();
+    for (const s of sets) for (const p of s.picks || []) {
+      const e = by.get(p.symbol) || { symbol: p.symbol, asset: p.asset, exchange: p.exchange || null, times: 0, first: Infinity, last: 0, lastUp: null, graded: 0, right: 0, followed: [] };
+      e.times++; e.first = Math.min(e.first, s.createdAt); if (s.createdAt >= e.last) { e.last = s.createdAt; e.lastUp = p.upPct ?? null; e.exchange = p.exchange || e.exchange; }
+      const f = fcs.find(x => x.pickSetId === s.id && x.symbol === p.symbol), ev = f && evals.find(v => v.forecastId === f.id);
+      if (ev) { e.graded++; if (ev.directionHit) e.right++; if (ev.realizedReturnPct != null && (f.direction === "up" || f.direction === "down")) e.followed.push((f.direction === "up" ? 1 : -1) * Number(ev.realizedReturnPct)); }
+      by.set(p.symbol, e);
+    }
+    const rows = [...by.values()].sort((a, b) => b.last - a.last);
+    const box = h("div", { class: "stack" });
+    if (!rows.length) { box.append(h("div", { class: "empty" }, "Nothing recommended yet.")); return U.section("Pick history", box); }
+    const avg = (xs) => xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null, pc = (x) => x == null ? "—" : (x > 0 ? "+" : "") + x.toFixed(1) + "%";
+    box.append(h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, h("span", { class: "pill" }, rows.length + " different names"), h("span", { class: "pill" }, sets.length + " sets"), h("span", { class: "pill" }, rows.filter(r => r.times > 1).length + " picked more than once"),
+      rows.some(r => r.exchange) ? h("span", { class: "pill" }, rows.filter(r => r.exchange === "NYSE").length + " NYSE · " + rows.filter(r => r.exchange === "Nasdaq").length + " Nasdaq") : null));
+    box.append(U.dataTable([{ t: "Asset", v: (r) => h("span", { class: "stack", style: "gap:0" }, h("strong", {}, r.symbol), h("span", { class: "tiny muted" }, r.exchange || (r.asset && r.asset.cls === "crypto" ? "Crypto" : "—"))), sort: (r) => r.symbol },
+      { t: "Times picked", v: (r) => String(r.times), sort: (r) => r.times, n: true }, { t: "Last picked", v: (r) => U.fmtDate(r.last), sort: (r) => r.last },
+      { t: "Last call", v: (r) => r.lastUp == null ? "—" : r.lastUp >= 50 ? "▲ " + r.lastUp + "%" : "▼ " + (100 - r.lastUp) + "%", n: true },
+      { t: "Graded right", v: (r) => r.graded ? r.right + " of " + r.graded : "not yet", sort: (r) => r.graded ? r.right / r.graded : -1, n: true },
+      { t: "If followed", v: (r) => r.followed.length ? h("span", { class: avg(r.followed) >= 0 ? "up" : "down" }, pc(avg(r.followed))) : "—", sort: (r) => avg(r.followed) ?? -1e9, n: true }], rows, { key: "picks.history", sort: [2, -1], noun: "names", placeholder: "Filter by symbol…", onRow: (r) => r.asset && app.openAsset(r.asset) }));
+    // Following every graded pick, in the order they came due, against the S&P 500 over the same windows.
+    const trades = MD.ai.followed(app, "ai-picks").sort((a, b) => a.to - b.to), chart = h("div", { class: "stack" });
+    box.append(chart);
+    if (trades.length < 2) chart.append(h("p", { class: "small muted" }, "The follow-every-pick chart appears once two or more picks have been graded (" + trades.length + " so far)."));
+    else MD.ai.spyEach(trades).then(spy => {
+      let a = 0, b = 0; const pts = trades.map((t, i) => { a += t.pct; b += spy[i] ?? 0; return { a, b }; }), lo = Math.min(0, ...pts.map(p => Math.min(p.a, p.b))), hi = Math.max(0, ...pts.map(p => Math.max(p.a, p.b))), W = 600, H = 140;
+      const x = (i) => i / (pts.length - 1) * W, y = (v) => H - (v - lo) / ((hi - lo) || 1) * H, line = (k) => pts.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p[k]).toFixed(1)).join(" ");
+      chart.replaceChildren(h("span", { class: "label" }, "If you'd followed every graded pick (equal size, a ‘down’ call as a short)"),
+        h("div", { html: '<svg viewBox="0 0 ' + W + " " + H + '" width="100%" height="140" preserveAspectRatio="none" role="img" aria-label="Cumulative return of following the picks against the S&P 500"><line x1="0" x2="' + W + '" y1="' + y(0).toFixed(1) + '" y2="' + y(0).toFixed(1) + '" stroke="var(--line)" stroke-dasharray="4 4"/><path d="' + line("b") + '" fill="none" stroke="var(--muted)" stroke-width="2"/><path d="' + line("a") + '" fill="none" stroke="var(--accent)" stroke-width="2.5"/></svg>' }),
+        h("p", { class: "small" }, h("strong", { style: "color:var(--accent)" }, "Picks " + pc(a)), " summed over " + trades.length + " graded picks · ", h("span", { class: "muted" }, "S&P 500 " + pc(b) + " over the same windows"), " · average per pick " + pc(a / trades.length) + " vs " + pc(b / trades.length) + "."),
+        h("p", { class: "tiny muted" }, "Each graded pick counts once, held from the day it was made to its due date; the S&P 500 line holds SPY over exactly the same windows. Past results, before costs and taxes; not a guarantee."));
+    }).catch(e => chart.replaceChildren(h("p", { class: "small muted" }, "S&P 500 comparison unavailable: " + U.errorText(e))));
+    return U.section("Pick history", box);
   }
   function predictionLog(app, sets) {
     const fcs = app.store.cached("forecasts").filter(x => x.source === "ai-picks"), evals = app.store.cached("evals");

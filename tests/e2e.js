@@ -188,6 +188,7 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   const nyseOnly = await page.evaluate(async () => { const set = await MD.picks.generate(MD.app, { stocks: true, crypto: false, mine: false, window: "3m", count: 3, exchange: "nyse" }, () => {}, new AbortController().signal, () => {}); return set.picks.map(p => p.exchange); });
   check("recommendations can be limited to NYSE-listed stocks", nyseOnly.length >= 1 && nyseOnly.every(x => x === "NYSE"), JSON.stringify(nyseOnly));
   const pkTxt = await page.locator("#content").innerText();
+  check("pick history: every name recommended, how often, exchange, and the graded record", /Pick history/i.test(pkTxt) && /\d+ different names/i.test(pkTxt) && /Times picked/i.test(pkTxt) && /Graded right/i.test(pkTxt) && /\d+ NYSE · \d+ Nasdaq/i.test(pkTxt) && /follow-every-pick chart appears once two or more picks have been graded/i.test(pkTxt), (pkTxt.match(/Pick history[\s\S]{0,500}/i) || [""])[0]);
   check("pick odds explanation names the year its history starts (never 'since NaN')", /window since 20\d\d/.test(pkTxt) && !/NaN/.test(pkTxt), (pkTxt.match(/Over every[^\n]{0,80}/) || [""])[0]);
   check("pick explains why, up/down odds and time window (no 'either way')", /Why it could move/i.test(pkTxt) && /Time window/i.test(pkTxt) && /% chance up/i.test(pkTxt) && /Chance up \/ down/i.test(pkTxt) && !/either way/i.test(pkTxt) && await page.locator(".probbar").count() >= 2, pkTxt.slice(0, 400));
   check("pick sources: retrieved news verified, invented URL flagged", picks[0] && picks[0].picks[0].sources.find(x => /bigdata/.test(x.url)).verified === true && picks[0].picks[0].sources.find(x => /invented/.test(x.url)).verified === false);
@@ -598,6 +599,12 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   await page.screenshot({ path: path.join(shots, "e2e-demo.png"), fullPage: false });
   await page.evaluate(() => MD.app.setDemo(false)); await page.waitForTimeout(800);
   check("demo data isolated from live ledger", await page.evaluate(() => MD.app.store.cached("tx").length) === liveCount && await page.evaluate(() => MD.app.store.cached("tx").every(t => !t.demo)));
+
+  // ---- Follow-every-pick chart once picks are graded
+  await page.evaluate(async () => { const fcs = MD.app.store.cached("forecasts").filter(f => f.source === "ai-picks").slice(0, 2); let i = 0; for (const f of fcs) await MD.app.store.create("evals", { forecastId: f.id, evaluatedAt: Date.now(), priceAtDue: f.priceAtCreation * (i ? 0.97 : 1.06), realizedReturnPct: i++ ? -3 : 6, actualDirection: "up", directionHit: f.direction === "up", brier: 0.2, probability: f.probability, source: "ai-picks" }); });
+  await page.evaluate(() => MD.app.go("picks", null, { fromNav: true })); await page.waitForTimeout(3500);
+  const fpTxt = await page.locator("#content").innerText();
+  check("pick history: following every graded pick charted against the S&P 500 over the same windows", /If you'd followed every graded pick/i.test(fpTxt) && /Picks [+-]\d/.test(fpTxt) && /S&P 500 [+-]?\d/.test(fpTxt) && await page.locator("svg[aria-label^='Cumulative return of following the picks']").count() === 1, (fpTxt.match(/If you'd followed[\s\S]{0,300}/i) || [fpTxt.slice(-400)])[0]);
 
   // ---- Mobile width and dark theme
   await page.setViewportSize({ width: 400, height: 860 });

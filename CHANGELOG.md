@@ -1,5 +1,26 @@
 # Changelog
 
+## Version 25 (2026-10-26)
+- **Fresher recommendations.**
+  - The desk remembers every name recommended in the last 30 days and ranks those lower in the candidate pool.
+  - Claude may pick one again only with a stated reason, which is shown on the card ("Picked again: why again …").
+    Repeats are capped at a third of the set.
+  - A repeat without a reason is set aside, and one of two fresh alternates takes its place.
+  - No more than two picks share a sector. What was set aside is listed with the reason.
+- **NYSE and Nasdaq.** Candidates come from the largest companies on each exchange (above $2B market cap and $5 a
+  share), mixed evenly, with a "Stocks from" choice (NYSE + Nasdaq, NYSE only, Nasdaq only). Each pick shows its
+  exchange.
+- **More angles.** Candidates come in through several angles: earnings in the window, today's movers, the biggest
+  moves, and a rotating sample of names not recommended lately that changes daily. Each pick shows its angles
+  (earnings in the window, oversold, near its 52-week high, heavy short interest, fresh name…).
+- **Pick history.** Every name ever recommended, with:
+  - how often and when it was picked
+  - the last call
+  - how its graded calls turned out
+  - what following it would have returned.
+
+  A chart shows following every graded pick against the S&P 500 over the same windows.
+
 ## Version 24 (2026-10-26)
 - The AI day-trade plan also gets the ML model's next-session odds and out-of-sample record. They count only with a
   clear edge.

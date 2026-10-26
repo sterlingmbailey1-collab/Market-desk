@@ -299,10 +299,14 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     const evals = app.store.cached("evals");
     return app.store.cached("forecasts").filter(f => (f.source || "user") === source && (f.direction === "up" || f.direction === "down")).map(f => { const e = evals.find(v => v.forecastId === f.id); return e && e.realizedReturnPct != null ? { from: f.createdAt, to: f.dueAt, pct: (f.direction === "up" ? 1 : -1) * Number(e.realizedReturnPct) } : null; }).filter(Boolean);
   }
-  async function spyOver(windows) {
+  // The S&P 500's return over each window {from, to} (ms), or null where the history doesn't cover it.
+  async function spyEach(windows) {
     const hs = await D.historyCached({ id: "etf:SPY", cls: "etf", symbol: "SPY", name: "SPY" }, "5Y"), pts = hs.points;
     const at = (ms) => { let v = null; for (const p of pts) { if (p.time * 1000 <= ms) v = p.close ?? p.value; else break; } return v; };
-    const rets = windows.map(w => { const a = at(w.from), b = at(w.to); return a && b ? (b / a - 1) * 100 : null; }).filter(x => x != null);
+    return windows.map(w => { const a = at(w.from), b = at(w.to); return a && b ? (b / a - 1) * 100 : null; });
+  }
+  async function spyOver(windows) {
+    const rets = (await spyEach(windows)).filter(x => x != null);
     return rets.length ? rets.reduce((s, x) => s + x, 0) / rets.length : null;
   }
   function scorecard(app) {
@@ -518,5 +522,5 @@ Reply with ONLY JSON: {"reviews": [{"id": "the item's id", "verdict": "keep"|"re
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { followed, spyEach, openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

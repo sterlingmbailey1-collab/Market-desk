@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 24; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 25; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading and a Sports Betting tab.
@@ -92,6 +92,9 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   economic_calendar. The runtime caps tools per request (limits().tools.maxCount, 20): use `MD.ai.selectTools(tools,
   questionText, cap, core)` whenever a request could carry more. `MD.ai.contextNote(app)` = investor profile + the
   Market Brain note; use it in every AI prompt (not profileNote alone).
+- **Recommendations variety:** `recentPicks(app)` (30 days) marks candidates `recent`; repeats need `repeatReason` and are capped at
+  count/3; max 2 picks per sector ETF; Claude returns 2 `alternates` that only replace set-aside picks. Stock pools come from
+  `D.stocks.screener(0, 150, "nyse"|"nasdaq")` (rows carry `exchange`); `opts.exchange` = both | nyse | nasdaq.
 - **Forecast sources:** ai-picks, ai-take, ai-day (day-trade plans, horizonDays 1, graded from that session's close),
   ai-market (daily SPY call, due at MD.quant.closeTimeUTC(target)), ai-decide (asset decisions over the profile horizon),
   ai (Deep Research), user. Recommendations picks carry upPct/downPct; lean is derived from upPct (no "either").
