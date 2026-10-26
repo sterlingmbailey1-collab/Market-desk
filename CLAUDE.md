@@ -1,7 +1,7 @@
 # Market Desk — notes for Claude
 
 Market Desk is one self-contained HTML page published as a claude.ai artifact:
-https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 21; see CHANGELOG.md).
+https://claude.ai/artifact/2xMeHkV6MPetc5mjHmTQiE (owner: the repo owner; currently Version 22; see CHANGELOG.md).
 It covers stocks/ETFs, crypto, FX, precious metals, trading cards, prediction markets, a portfolio
 with FX-aware cost basis, Deep Research, an AI Advisor, Recommendations, Opportunities (scanner, comparator,
 AI idea finder), Smart Money (Congress trades and 13F superinvestors), Market Brain, Day Trading and a Sports Betting tab.
@@ -112,6 +112,8 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
 | views-*.js | Pages (markets, cards, insights, decide, portfolio analysis, picks, betting, AI) |
 | research.js | Deep Research engine |
 | quant.js | Base rates + conditional odds and the shrunk direction model, OLS factor model and move attribution, VWAP, opening range, pivots, ATR, gap stats, RVOL, position sizing, trade stats, New York session clock + NYSE holidays |
+| ml.js | Machine learning (`MD.ml`): features (no look-ahead), L2 logistic regression (Newton), k-nearest-neighbour analogs, walk-forward validation with a purge gap, Brier/AUC/log loss, equal-weight ensemble, block t-test for a clear edge |
+| views-ml.js | ML forecast card on asset pages (`MD.mlView.run/compact/card`), logged as source `ml` |
 | ai-kit.js | Shared AI kit: tools, tool router, review pass, track-record calibration, lessons, confidence blending, UI helpers |
 | market-brain.js | Market Brain: pulse/regime/sensitivities, explainMove (factor attribution), session study, scored playbook, refine, note for prompts, auto-study, Why it's moving card |
 | ai-decide.js | AI decision card on asset pages (profile-fit decision, EV, quarter-Kelly ceiling, logged as ai-decide) |
@@ -147,6 +149,8 @@ node tests/upgrade.js dist/market-desk.html     # opens the page with settings s
   season); the ESPN id comes from one Exa web search per player, cached in localStorage `md.espn.nba.ids`. The ESPN
   search API is not readable through Exa. Ball Ranks answers "Too Many Requests" often. NFL anytime TD
   (`vegasinsider.com/nfl/odds/player-props/`) is not used yet.
+- Nasdaq daily history (`/api/quote/<SYM>/historical`) only goes back about three years (from late Oct 2023); earlier
+  windows return 0 rows. The "5Y" time frame is therefore ~3 years for stocks and ETFs. The e2e mock serves the same.
 - Nasdaq earnings: `api.nasdaq.com/api/company/<SYM>/earnings-surprise` and `/api/analyst/<SYM>/earnings-forecast`.
 - Nasdaq minute chart `api.nasdaq.com/api/quote/<SYM>/chart?assetclass=stocks` (4:00 a.m.–8:00 p.m. ET, prices only,
   previousClose and session volume). Its `x` is New York wall-clock time written as UTC: subtract tzOffsetSec(NY).

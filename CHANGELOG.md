@@ -1,5 +1,31 @@
 # Changelog
 
+## Version 22 (2026-10-26)
+- **Fix: overlapping text in the Recommendations prediction log.** The "▲ 61% up" pill no longer spills into the
+  "Price then" column; the column widens and the table scrolls instead. The same fix covers every table with pills or
+  no-wrap figures, including the Market Brain playbook's backtest column. Every page is now checked automatically for
+  overlapping text at phone width.
+- **Fix:** the odds explanation on picks said "since NaN"; it now names the year the history starts.
+- **Fix:** the position sizer shows "your rules say stop for today" even before entry and stop are filled in.
+- **Machine learning.** Two models are trained in your browser on each asset's daily history, with the market (SPY,
+  or bitcoin for coins) as context:
+  - logistic regression over 13 measured features (momentum, RSI, distance from averages and the 1-year range,
+    volatility regime, strength against the market)
+  - nearest-neighbour "similar past setups".
+  They're scored walk-forward, only on stretches of history they hadn't seen, against the base rate. Their odds count
+  only when the improvement is statistically clear across independent stretches (t ≥ 1.64). Otherwise the forecast
+  stays at the base rate and says it found no edge.
+  - Stock and crypto pages get a Machine-learning forecast (1 week, 1 month or 3 months) showing:
+    - the odds
+    - the out-of-sample record (Brier skill, AUC, accuracy against always guessing the more common outcome)
+    - what drives today's reading
+    - the most similar past days and what followed them.
+    The first forecast per asset, horizon and day is logged and graded like every other call.
+  - AI decisions, Recommendations and the daily market call get the model's odds and record; its odds join the
+    measured side of the blend only with a clear edge.
+  - New `ml_forecast` tool for Ask AI and the Advisor.
+  - The scorecard lists the Machine-learning model as its own source.
+
 ## Version 21 (2026-10-26)
 - The dashboard's Market Brain card shows the latest weekly review and next week's top events.
 - "Where do the open calls stand?" stays on the dashboard card after a pricing, so the calls can be re-priced.
