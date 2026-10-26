@@ -38,6 +38,7 @@
     const spyPrice = asset.symbol === "SPY" ? q.price : spy && spy.price > 0 ? spy.price : null;
     const doc = { side, assetId: asset.id, asset: X.slim(asset), symbol: asset.symbol, qty: +Number(qty).toFixed(6), price: q.price, currency: "USD", priceSource: q.source || "", priceAt: q.ts || Date.now(), priceStatus: q.status || "",
       feeRate: feeRate(app, cls), spyPrice, source: (opts && opts.source) || "manual", note: (opts && opts.note) || "" };
+    if (opts && opts.extra) Object.assign(doc, opts.extra);
     const L = C.paperLedger(orders(app).concat([Object.assign({ createdAt: Date.now() + 1 }, doc)]), acct(app).startCash);
     if (L.issues.length > C.paperLedger(orders(app), acct(app).startCash).issues.length) throw new Error(L.issues[L.issues.length - 1].msg.replace(/; skipped\.$/, "."));
     const saved = await app.store.create("paper", doc);
@@ -75,7 +76,8 @@
         const p = held();
         info.replaceChildren(h("div", { class: "row", style: "gap:14px;flex-wrap:wrap" }, h("span", {}, h("span", { class: "label" }, "Live price "), h("b", { class: "num" }, U.money(q.price, "USD", { price: true }))),
           h("span", {}, h("span", { class: "label" }, "Paper cash "), h("b", { class: "num" }, usd(st.L.cash))), p ? h("span", {}, h("span", { class: "label" }, "Held "), h("b", { class: "num" }, String(+p.qty.toFixed(6)))) : null),
-          h("p", { class: "tiny muted" }, (q.source || "price") + " · " + (q.ts ? U.fmtTs(q.ts) : "time unknown") + (q.status && q.status !== "Live" ? " · " + q.status + ": the order fills at this last price" : "")));
+          h("p", { class: "tiny muted" }, (q.source || "price") + " · " + (q.ts ? U.fmtTs(q.ts) : "time unknown") + (q.status && q.status !== "Live" ? " · " + q.status + ": the order fills at this last price" : "")),
+          q.nextEarnings ? h("p", { class: "tiny warn-t" }, "Next earnings: " + q.nextEarnings + ". Prices can gap on the report.") : null);
         if (opts.side === "sell" && p) qtyIn.value = +p.qty.toFixed(6);
         else { const pct = opts.pct > 0 ? opts.pct : 5; amt.value = opts.amount > 0 ? opts.amount : Math.max(0, Math.min(st.L.cash, Math.round(st.v.equity * pct / 100))); }
         sync(opts.side === "sell" && p ? "qty" : "amt");
@@ -91,6 +93,38 @@
     return m;
   }
   const button = (app, asset, opts, label) => CLASSES.includes(clsOf(asset)) ? h("button", { class: "btn ghost sm", type: "button", onclick: (e) => { e.stopPropagation(); ticket(app, asset, opts); } }, label || "Paper trade") : null;
+
+  /* Auto-follow: with settings.paperFollow.on, every new Recommendations pick that leans up is paper-bought with
+     `pct`% of the account (while cash lasts) and sold automatically once its window ends: a sized, forward test of the
+     AI. Positions bought by hand are never auto-sold. */
+  const followCfg = (app) => Object.assign({ on: false, pct: 5 }, app.settings.paperFollow || {});
+  async function followSet(app, set) {
+    const cfg = followCfg(app); if (!cfg.on || app.demo || !set || !Array.isArray(set.picks)) return [];
+    const placed = [];
+    for (const pk of set.picks) {
+      const a = pk.asset || {}, exitAt = (set.createdAt || Date.now()) + (Number(pk.timeframeDays) || 30) * 864e5;
+      if (!(pk.upPct > 50) || !CLASSES.includes(clsOf(a)) || exitAt <= Date.now()) continue;
+      if (app.store.cached("paper").some(o => o.setId === set.id && o.assetId === a.id)) continue;
+      try {
+        const st = await state(app), q = await app.quote(a, 30000), amount = Math.min(st.L.cash / (1 + feeRate(app, clsOf(a))), st.v.equity * Math.max(0.5, Math.min(25, Number(cfg.pct) || 5)) / 100);
+        if (!(q.price > 0) || amount < 1) continue;
+        placed.push(await place(app, a, "buy", amount / q.price, { source: "pick", note: "Auto-follow · " + pk.upPct + "% up over " + (pk.timeframeLabel || pk.timeframeDays + " days"), extra: { auto: true, exitAt, setId: set.id } }));
+      } catch {}
+    }
+    return placed;
+  }
+  // Sell auto-followed positions whose window has ended (all of the position's buys were automatic).
+  async function autoExit(app, opts = {}) {
+    if (app.demo) return [];
+    const now = opts.now || Date.now(), L = C.paperLedger(orders(app), acct(app).startCash), sold = [];
+    for (const p of L.positions) {
+      const buys = orders(app).filter(o => o.assetId === p.assetId && o.side === "buy" && o.createdAt >= (p.openedAt || 0));
+      if (!buys.length || !buys.every(o => o.auto && o.exitAt)) continue;
+      const exitAt = Math.max(...buys.map(o => o.exitAt)); if (exitAt > now) continue;
+      try { sold.push(await place(app, p.asset || { id: p.assetId, symbol: p.symbol, cls: String(p.assetId).split(":")[0] }, "sell", p.qty, { source: p.sources[0] || "pick", note: "Auto-exit: the pick's window ended", extra: { auto: true } })); } catch {}
+    }
+    return sold;
+  }
 
   // Closed trades grouped by where the idea came from.
   function bySource(L) {
@@ -112,7 +146,7 @@
     const kpis = h("div", { class: "kpis k4" }), body = h("div", { class: "stack" }, h("p", { class: "small muted" }, "Valuing the paper account at live prices…"));
     const picker = X.assetPicker((asset) => ticket(app, asset, { source: "manual" }), CLASSES);
     root.append(U.section("Paper account", h("div", { class: "stack" }, kpis, h("p", { class: "tiny muted" }, "Started " + (a.startedAt ? U.fmtDate(a.startedAt) : "with the first order") + " with " + usd(a.startCash) + ". Orders fill at the live quote; estimated commission/spread from Settings (stocks " + (app.settings.assumptions.stockExitPct) + "%, crypto " + app.settings.assumptions.cryptoExitPct + "% a side). No margin and no short selling. The S&P 500 comparison puts the same dollars into SPY at the same moments."))),
-      U.section("Place a paper order", h("div", { class: "stack" }, picker, h("p", { class: "tiny muted" }, "Or use “Paper trade” on any stock or crypto page, on a recommendation, or on an AI decision; the account then tracks how each source of ideas does."))), body);
+      U.section("Place a paper order", h("div", { class: "stack" }, picker, h("p", { class: "tiny muted" }, "Or use “Paper trade” on any stock or crypto page, on a recommendation, or on an AI decision; the account then tracks how each source of ideas does."))), followCard(app), body);
     const paint = async () => {
       let S;
       try { S = await state(app); } catch (e) { body.replaceChildren(U.errorBox({ message: U.errorText(e) })); return; }
@@ -152,6 +186,16 @@
     const off = app.on("paper", () => { if (document.body.contains(root)) paint(); else off(); });
   };
 
+  function followCard(app) {
+    const cfg = followCfg(app), on = h("input", { type: "checkbox", checked: cfg.on }), pct = h("input", { type: "number", min: 0.5, max: 25, step: 0.5, value: cfg.pct, style: "width:80px", "aria-label": "Percent of the account per pick" });
+    const save = () => app.saveSettings({ paperFollow: { on: on.checked, pct: Math.max(0.5, Math.min(25, Number(pct.value) || 5)) } });
+    on.onchange = save; pct.onchange = save;
+    const auto = C.paperLedger(orders(app), acct(app).startCash).positions.map(p => ({ p, buys: orders(app).filter(o => o.assetId === p.assetId && o.side === "buy" && o.createdAt >= (p.openedAt || 0)) })).filter(x => x.buys.length && x.buys.every(o => o.auto && o.exitAt));
+    return U.section("Follow the AI automatically", h("div", { class: "stack" },
+      h("div", { class: "row", style: "gap:10px;flex-wrap:wrap;align-items:center" }, h("label", { class: "chk" }, on, "Paper-buy every new recommendation that leans up"), h("label", { class: "row", style: "gap:6px;align-items:center" }, pct, h("span", { class: "small" }, "% of the account each"))),
+      h("p", { class: "tiny muted" }, "Each one is sold automatically when its window ends, so the account becomes a sized, forward test of the AI's picks against the S&P 500. Only automatic positions are auto-sold; anything you buy yourself stays until you sell it. Runs while the desk is open."),
+      auto.length ? U.table([{ t: "Auto position", v: (x) => x.p.symbol }, { t: "Bought", v: (x) => U.fmtDate(x.buys[0].createdAt) }, { t: "Sells after", v: (x) => U.fmtDate(Math.max(...x.buys.map(o => o.exitAt))) }, { t: "Why", v: (x) => h("span", { class: "small" }, x.buys[0].note || "") }], auto) : null));
+  }
   async function restart(app) {
     const box = h("div", { class: "stack" }), cash = h("input", { type: "number", min: 1000, step: 1000, value: acct(app).startCash, "aria-label": "Starting cash" });
     box.append(h("p", {}, "Start a new paper account? Open positions and the record so far are set aside (the orders stay in the history)."), U.field("Starting cash (USD)", cash));
@@ -159,5 +203,15 @@
       h("button", { class: "btn danger", type: "button", onclick: () => { app.saveSettings({ paper: { startCash: Math.max(1000, Number(cash.value) || START), startedAt: Date.now() } }); m.close(); app.go("paper"); } }, "Start over"))));
   }
 
-  MD.paper = { ticket, place, state, button, bySource, SOURCES };
+  function dashCard(box, app) {
+    if (!orders(app).length) { box.append(h("div", { class: "stack", style: "gap:6px" }, h("p", { class: "small" }, "Practise with virtual money and see how each source of ideas does against the S&P 500."), h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("paper") }, "Open paper trading")))); return; }
+    const out = h("div", { class: "stack", style: "gap:6px" }, h("p", { class: "small muted" }, "Valuing at live prices…")); box.append(out);
+    state(app).then(({ L, v }) => {
+      const wins = L.closed.filter(t => t.pnl > 0).length, diff = v.returnPct - v.mirrorReturnPct;
+      out.replaceChildren(h("div", { class: "row", style: "gap:14px;flex-wrap:wrap" }, h("span", {}, h("span", { class: "label" }, "Value "), h("b", { class: "num" }, usd(v.equity))), h("span", {}, h("span", { class: "label" }, "Return "), h("b", { class: "num " + U.signCls(v.returnPct) }, U.pct(v.returnPct))), h("span", {}, h("span", { class: "label" }, "vs S&P 500 "), h("b", { class: "num " + U.signCls(diff) }, (diff > 0 ? "+" : "") + diff.toFixed(2) + " pts"))),
+        h("p", { class: "small" }, L.positions.length + " open · " + (L.closed.length ? wins + " of " + L.closed.length + " closed trades made money" : "no closed trades yet") + (followCfg(app).on ? " · following the AI's picks" : "")),
+        h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("paper") }, "Open paper trading")));
+    }).catch(e => out.replaceChildren(h("p", { class: "small warn-t" }, U.errorText(e))));
+  }
+  MD.paper = { dashCard, ticket, place, state, button, bySource, followSet, autoExit, followCfg, SOURCES };
 })(typeof window !== "undefined" ? window : globalThis);

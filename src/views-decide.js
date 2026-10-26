@@ -147,7 +147,7 @@
   }
 
   /* ================= Dashboard ================= */
-  const WIDGETS = { brief: "AI morning brief", brain: "Market Brain", aistatus: "What the AI is tracking", aiscore: "AI scorecard", changes: "What changed today", portfolio: "Portfolio", fx: "Currency exposure", watch: "Watchlist", alerts: "Alerts & inbox", catalysts: "Upcoming catalysts", smart: "Smart Money", betting: "Betting today", data: "Data health" };
+  const WIDGETS = { today: "Today", paper: "Paper account", brief: "AI morning brief", brain: "Market Brain", aistatus: "What the AI is tracking", aiscore: "AI scorecard", changes: "What changed today", portfolio: "Portfolio", fx: "Currency exposure", watch: "Watchlist", alerts: "Alerts & inbox", catalysts: "Upcoming catalysts", smart: "Smart Money", betting: "Betting today", data: "Data health" };
   V.dashboard = function (root, app) {
     const R = app.settings.reportingCurrency;
     root.append(head("Dashboard", new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) + " · reporting in " + R, [h("button", { class: "btn ghost sm", type: "button", onclick: () => customize(app) }, "Customize")]));
@@ -161,7 +161,7 @@
       const sec = U.section(WIDGETS[w] || w, box);
       if (w === "changes") sec.style.gridColumn = "1 / -1";
       grid.append(sec);
-      ({ changes: wChanges, portfolio: wPortfolio, fx: wFx, watch: wWatch, alerts: wAlerts, catalysts: wCatalysts, smart: (b) => MD.smartView.dashboardCard(b, app), brain: (b) => MD.brain.dashboardCard(b, app), aistatus: (b) => MD.ai.statusCard(b, app), brief: (b) => MD.aiTake.brief(b, app), aiscore: (b) => b.append(MD.ai.scorecard(app)), betting: (b) => MD.betting.dashboardCard(b, app), data: wData }[w] || (() => {}))(box, app, pvP, R, sec);
+      ({ changes: wChanges, portfolio: wPortfolio, fx: wFx, watch: wWatch, alerts: wAlerts, catalysts: wCatalysts, smart: (b) => MD.smartView.dashboardCard(b, app), brain: (b) => MD.brain.dashboardCard(b, app), aistatus: (b) => MD.ai.statusCard(b, app), brief: (b) => MD.aiTake.brief(b, app), today: (b) => MD.today.dashCard(b, app), paper: (b) => MD.paper.dashCard(b, app), aiscore: (b) => b.append(MD.ai.scorecard(app)), betting: (b) => MD.betting.dashboardCard(b, app), data: wData }[w] || (() => {}))(box, app, pvP, R, sec);
     }
     return app.on("explainToday", () => { const b = root.querySelector("[data-explain]"); if (b) b.click(); });
   };

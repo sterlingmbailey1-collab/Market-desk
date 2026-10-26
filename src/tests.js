@@ -7,6 +7,11 @@
   const near = (a, b, tol, msg) => { if (!(Math.abs(Number(a) - Number(b)) <= tol)) throw new Error((msg || "") + " expected ≈" + b + " got " + a); };
   const ok = (c, msg) => { if (!c) throw new Error(msg || "assertion failed"); };
 
+  test("ML reliability table bins out-of-sample odds against outcomes", () => {
+    const r = MD.ml.reliability([0.3, 0.35, 0.5, 0.65, 0.7, 0.62], [0, 1, 1, 1, 1, 0]);
+    eq(r.length, 3); eq(r[0].n, 2); near(r[0].predictedPct, 32.5, 1e-9); near(r[0].actualPct, 50, 1e-9);
+    eq(r[1].n, 1); eq(r[2].n, 3); near(r[2].actualPct, 200 / 3, 1e-9); near(r[2].to, 1, 1e-12);
+  });
   test("rebalancing maths: minimum variance (with a cap) and equal risk contribution", () => {
     const Q = MD.quant, two = [[0.04, 0], [0, 0.01]];
     const mv = Q.minVarWeights(two); near(mv[0], 0.2, 1e-6, "inverse variance when uncorrelated"); near(mv[1], 0.8, 1e-6);

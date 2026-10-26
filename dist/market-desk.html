@@ -2193,8 +2193,20 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     const conf = ens.map((p, i) => ({ p, y: oos.y[i] })).filter(x => Math.abs(x.p - 0.5) >= 0.1), confRight = conf.filter(x => (x.p > 0.5) === !!x.y).length;
     return { horizonBars: h, asOf: new Date(last.time * 1000).toISOString().slice(0, 10), from: new Date(points[0].time * 1000).toISOString().slice(0, 10), bars: v.length, trainedOn: labeled.length,
       upPct: finalP * 100, models: { logisticPct: pL * 100, analogsPct: pK * 100, treesPct: pG * 100, baseRatePct: base * 100, blendedPct: pEns * 100 }, trust, treeSplits: F.names.map(([key, name], j) => ({ key, name, uses: gb.uses[j] })).filter(x => x.uses).sort((a, b) => b.uses - a.uses).slice(0, 5),
-      oos: { predictions: oos.y.length, independent: Math.max(1, Math.floor(oos.y.length / h)), base: sBase, logistic: sLogit, analogs: sKnn, ensemble: sEns, trees: sGbt, skillLogistic: skill(sLogit), skillAnalogs: skill(sKnn), skillTrees: skill(sGbt), skillEnsemble: skEns, tStat, blocks: blocks.length, confident: { n: conf.length, right: confRight } },
+      oos: { predictions: oos.y.length, independent: Math.max(1, Math.floor(oos.y.length / h)), base: sBase, logistic: sLogit, analogs: sKnn, ensemble: sEns, trees: sGbt, skillLogistic: skill(sLogit), skillAnalogs: skill(sKnn), skillTrees: skill(sGbt), skillEnsemble: skEns, tStat, blocks: blocks.length, confident: { n: conf.length, right: confRight }, reliability: reliability(ens, oos.y) },
       edge: clear, l2, drivers: contrib, analogs, features: F.names.map(([, n]) => n), usedMarket: F.names.length > 11 };
+  }
+
+  /* Reliability: out-of-sample predictions grouped by what they said, against how often the outcome actually came true.
+     A well-calibrated model's "60%" rows come true about 60% of the time. */
+  function reliability(ps, ys, edges = [0, 0.4, 0.47, 0.53, 0.6, 1.0001]) {
+    const out = [];
+    for (let b = 0; b < edges.length - 1; b++) {
+      const idx = []; for (let i = 0; i < ps.length; i++) if (ps[i] >= edges[b] && ps[i] < edges[b + 1]) idx.push(i);
+      if (!idx.length) continue;
+      out.push({ from: edges[b], to: Math.min(1, edges[b + 1]), n: idx.length, predictedPct: idx.reduce((s, i) => s + ps[i], 0) / idx.length * 100, actualPct: idx.reduce((s, i) => s + (ys[i] ? 1 : 0), 0) / idx.length * 100 });
+    }
+    return out;
   }
 
   /* k-means with k-means++ seeding (deterministic for a seed) on rows of numbers. Returns centroids and labels. */
@@ -2304,7 +2316,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     return { used: true, n: items.length, brierStack: bStack, brierLogged: bLogged, apply: (it) => clamp(fAll(it), 5, 95) };
   }
 
-  MD.ml = { pooled, gbtFit, stacker, kmeans, regimes, FEATURES, features, label, scaler, logisticFit, knn, auc, scores, forecast };
+  MD.ml = { reliability, pooled, gbtFit, stacker, kmeans, regimes, FEATURES, features, label, scaler, logisticFit, knn, auc, scores, forecast };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -2319,6 +2331,11 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
   const near = (a, b, tol, msg) => { if (!(Math.abs(Number(a) - Number(b)) <= tol)) throw new Error((msg || "") + " expected ≈" + b + " got " + a); };
   const ok = (c, msg) => { if (!c) throw new Error(msg || "assertion failed"); };
 
+  test("ML reliability table bins out-of-sample odds against outcomes", () => {
+    const r = MD.ml.reliability([0.3, 0.35, 0.5, 0.65, 0.7, 0.62], [0, 1, 1, 1, 1, 0]);
+    eq(r.length, 3); eq(r[0].n, 2); near(r[0].predictedPct, 32.5, 1e-9); near(r[0].actualPct, 50, 1e-9);
+    eq(r[1].n, 1); eq(r[2].n, 3); near(r[2].actualPct, 200 / 3, 1e-9); near(r[2].to, 1, 1e-12);
+  });
   test("rebalancing maths: minimum variance (with a cap) and equal risk contribution", () => {
     const Q = MD.quant, two = [[0.04, 0], [0, 0.01]];
     const mv = Q.minVarWeights(two); near(mv[0], 0.2, 1e-6, "inverse variance when uncorrelated"); near(mv[1], 0.8, 1e-6);
@@ -5351,7 +5368,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     assumptions: { stockExitPct: 0.05, cryptoExitPct: 0.5, metalSpreadPct: 3, cardFeePct: 13, cardShipping: 5, fxSpreadMajorPct: 0.1, fxSpreadOtherPct: 1, riskFreePct: 4, inflationPct: 2.5 },
     betting: { oddsFormat: "american", bankroll: 1000, unit: 10, kelly: 0.25, minEdge: 1 },
     profile: { risk: "mid", horizon: "mid", goals: "", avoid: "", income: false },
-    customCurrencies: [], dashboard: ["brief", "brain", "aistatus", "changes", "portfolio", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], brainAuto: true, universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
+    customCurrencies: [], dashboard: ["brief", "today", "brain", "aistatus", "changes", "portfolio", "paper", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], brainAuto: true, universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
   };
   const ls = { get(k, d) { try { const v = localStorage.getItem("mdp." + k); return v ? JSON.parse(v) : d; } catch { return d; } }, set(k, v) { try { localStorage.setItem("mdp." + k, JSON.stringify(v)); } catch {} } };
 
@@ -5370,9 +5387,9 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     app.settings = Object.assign(JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), s || {});
     for (const k of ["quiet", "notify", "assumptions", "betting", "profile"]) app.settings[k] = Object.assign({}, DEFAULT_SETTINGS[k], (s || {})[k] || {});
     // Dashboards saved before a card existed get it once, before Data health.
-    for (const card of ["betting", "smart", "brief", "brain", "aistatus"]) {
+    for (const card of ["betting", "smart", "brief", "brain", "aistatus", "today", "paper"]) {
       if (app.settings.dashSeen && app.settings.dashSeen.includes(card)) continue;
-      if (!app.settings.dashboard.includes(card)) { const i = card === "brief" ? 0 : card === "brain" ? Math.min(1, app.settings.dashboard.length) : card === "aistatus" ? Math.min(2, app.settings.dashboard.length) : app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
+      if (!app.settings.dashboard.includes(card)) { const i = card === "brief" ? 0 : card === "brain" || card === "today" ? Math.min(1, app.settings.dashboard.length) : card === "aistatus" ? Math.min(2, app.settings.dashboard.length) : app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
       app.settings.dashSeen = (app.settings.dashSeen || []).concat(card);
     }
     applySettings();
@@ -5891,6 +5908,9 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
     // Once a day after 6 a.m. New York time, the daily digest goes to the inbox (Today's Game Plan has the switch).
     const autoDigest = () => { if (MD.today) MD.today.autoDigest(app).then(d => { if (d) renderNav(); }).catch(() => {}); };
     setTimeout(autoDigest, 30000); setInterval(autoDigest, 30 * 60e3);
+    // Auto-followed paper positions are sold once their pick's window ends.
+    const autoPaper = () => { if (MD.paper && !document.hidden && D.available()) MD.paper.autoExit(app).then(s => { if (s.length && app.settings.notify.toasts) U.toast("Paper account: " + s.length + " auto-followed pick" + (s.length > 1 ? "s" : "") + " sold at the end of the window"); }).catch(() => {}); };
+    setTimeout(autoPaper, 40000); setInterval(autoPaper, 30 * 60e3);
     const autoBrain = () => { if (MD.brain) MD.brain.autoStudy(app).catch(() => {}); };
     setTimeout(autoBrain, 45000); setInterval(autoBrain, 30 * 60e3);
     try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderView()); } catch {}
@@ -7541,7 +7561,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
   }
 
   /* ================= Dashboard ================= */
-  const WIDGETS = { brief: "AI morning brief", brain: "Market Brain", aistatus: "What the AI is tracking", aiscore: "AI scorecard", changes: "What changed today", portfolio: "Portfolio", fx: "Currency exposure", watch: "Watchlist", alerts: "Alerts & inbox", catalysts: "Upcoming catalysts", smart: "Smart Money", betting: "Betting today", data: "Data health" };
+  const WIDGETS = { today: "Today", paper: "Paper account", brief: "AI morning brief", brain: "Market Brain", aistatus: "What the AI is tracking", aiscore: "AI scorecard", changes: "What changed today", portfolio: "Portfolio", fx: "Currency exposure", watch: "Watchlist", alerts: "Alerts & inbox", catalysts: "Upcoming catalysts", smart: "Smart Money", betting: "Betting today", data: "Data health" };
   V.dashboard = function (root, app) {
     const R = app.settings.reportingCurrency;
     root.append(head("Dashboard", new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) + " · reporting in " + R, [h("button", { class: "btn ghost sm", type: "button", onclick: () => customize(app) }, "Customize")]));
@@ -7555,7 +7575,7 @@ Reply ONLY with JSON: {"summary": "2-4 sentences", "drivers": [{"driver": "...",
       const sec = U.section(WIDGETS[w] || w, box);
       if (w === "changes") sec.style.gridColumn = "1 / -1";
       grid.append(sec);
-      ({ changes: wChanges, portfolio: wPortfolio, fx: wFx, watch: wWatch, alerts: wAlerts, catalysts: wCatalysts, smart: (b) => MD.smartView.dashboardCard(b, app), brain: (b) => MD.brain.dashboardCard(b, app), aistatus: (b) => MD.ai.statusCard(b, app), brief: (b) => MD.aiTake.brief(b, app), aiscore: (b) => b.append(MD.ai.scorecard(app)), betting: (b) => MD.betting.dashboardCard(b, app), data: wData }[w] || (() => {}))(box, app, pvP, R, sec);
+      ({ changes: wChanges, portfolio: wPortfolio, fx: wFx, watch: wWatch, alerts: wAlerts, catalysts: wCatalysts, smart: (b) => MD.smartView.dashboardCard(b, app), brain: (b) => MD.brain.dashboardCard(b, app), aistatus: (b) => MD.ai.statusCard(b, app), brief: (b) => MD.aiTake.brief(b, app), today: (b) => MD.today.dashCard(b, app), paper: (b) => MD.paper.dashCard(b, app), aiscore: (b) => b.append(MD.ai.scorecard(app)), betting: (b) => MD.betting.dashboardCard(b, app), data: wData }[w] || (() => {}))(box, app, pvP, R, sec);
     }
     return app.on("explainToday", () => { const b = root.querySelector("[data-explain]"); if (b) b.click(); });
   };
@@ -8361,7 +8381,32 @@ Reply with ONLY JSON: {"strongestCounter": "...", "pricedIn": "...", "fragileAss
       async run(app, S, i) { const d = i && /^\d{4}-\d{2}-\d{2}$/.test(i.date || "") ? i.date : new Date().toISOString().slice(0, 10); const rows = await D.calendar.economic(d); return { date: d, events: rows.filter(x => /United States|US/i.test(x.country || "")).slice(0, 25).map(x => ({ gmt: x.gmt, event: x.event, actual: x.actual || null, consensus: x.consensus || null, previous: x.previous || null })) }; } },
     compare_returns: { description: "Measured 1-year return, volatility, max drawdown and Sharpe ratio for up to 5 tickers or coins side by side (e.g. against SPY or SGOV as baselines).", props: { symbols: { type: "array", items: { type: "string" } } }, req: ["symbols"],
       label: (i) => "Compare " + (i.symbols || []).join(", "),
-      async run(app, S, i) { const syms = (Array.isArray(i.symbols) ? i.symbols : []).slice(0, 5).map(String); return Promise.all(syms.map(async (s) => { try { const a = await findAsset(s); const hs = await D.historyFor(a, "1Y"); const st = C.seriesStats(hs.points, hs.ppy || 252); return rnd({ symbol: a.symbol, returnPct: st.changePct, volPct: st.volPct, maxDrawdownPct: st.maxDrawdownPct, sharpe: st.sharpe }); } catch (e) { return { symbol: s, error: U.errorText(e) }; } })); } }
+      async run(app, S, i) { const syms = (Array.isArray(i.symbols) ? i.symbols : []).slice(0, 5).map(String); return Promise.all(syms.map(async (s) => { try { const a = await findAsset(s); const hs = await D.historyFor(a, "1Y"); const st = C.seriesStats(hs.points, hs.ppy || 252); return rnd({ symbol: a.symbol, returnPct: st.changePct, volPct: st.volPct, maxDrawdownPct: st.maxDrawdownPct, sharpe: st.sharpe }); } catch (e) { return { symbol: s, error: U.errorText(e) }; } })); } },
+    paper_account: { description: "The investor's paper-trading account (virtual money; nothing real is traded): cash, value and return against the same trades in the S&P 500, open positions, the latest closed trades, and closed trades grouped by where each idea came from (their own, Recommendations, AI decisions, the screener).", props: {}, req: [],
+      label: () => "Paper account",
+      async run(app) {
+        if (!MD.paper) return { error: "Paper trading isn't available." };
+        const st = await MD.paper.state(app), L = st.L, lbl = (ss) => (ss.length ? ss : ["manual"]).map(x => MD.paper.SOURCES[x] || x);
+        return rnd({ startCash: st.a.startCash, cash: L.cash, value: st.v.equity, returnPct: st.v.returnPct, sameTradesInSP500Pct: st.v.mirrorReturnPct,
+          open: L.positions.map(p => ({ symbol: p.symbol, quantity: p.qty, cost: p.cost, valueNow: st.prices[p.assetId] ? p.qty * st.prices[p.assetId] : null, from: lbl(p.sources) })),
+          recentClosed: L.closed.slice(-10).map(t => ({ symbol: t.symbol, returnPct: t.pnlPct, sp500SameDaysPct: t.mirrorPct, opened: new Date(t.openedAt).toISOString().slice(0, 10), closed: new Date(t.closedAt).toISOString().slice(0, 10), from: lbl(t.sources) })),
+          bySource: MD.paper.bySource(L).map(r => ({ source: MD.paper.SOURCES[r.source] || r.source, closed: r.closed, open: r.open, madeMoneyPct: r.winPct, avgReturnPct: r.avgPct, avgVsSP500Pts: r.vsPct })) });
+      } },
+    screen_stocks: { description: "Screen US-listed stocks on the NYSE and Nasdaq by exchange, sector and company size (Nasdaq's screener, largest first; it can lag a session), then by price and today's move. Returns how many matched and the largest matches with price, today's move and market cap.", props: { exchange: { type: "string", enum: ["both", "nyse", "nasdaq"] }, sector: { type: "string", enum: ["technology", "health_care", "finance", "consumer_discretionary", "consumer_staples", "industrials", "energy", "utilities", "real_estate", "basic_materials", "telecommunications"] }, size: { type: "string", enum: ["mega", "large", "mid", "small", "micro"] }, min_price: { type: "number" }, max_price: { type: "number" }, min_move_pct: { type: "number" }, max_move_pct: { type: "number" } }, req: [],
+      label: (i) => "Stock screen" + (i.sector ? " · " + i.sector : "") + (i.exchange && i.exchange !== "both" ? " · " + i.exchange.toUpperCase() : "") + (i.size ? " · " + i.size : ""),
+      async run(app, S, i) {
+        const n = (v) => v == null || v === "" || !isFinite(Number(v)) ? null : Number(v);
+        const r = await MD.screener.run({ exchange: i.exchange || "both", sector: i.sector || "", size: i.size || "", minPrice: n(i.min_price), maxPrice: n(i.max_price), minMove: n(i.min_move_pct), maxMove: n(i.max_move_pct), sort: "cap" });
+        return rnd({ asOf: r.asOf, checked: r.scanned, matches: r.rows.length, largest: r.rows.slice(0, 15).map(x => ({ symbol: x.symbol, name: x.name, exchange: x.exchange, price: x.price, todayPct: x.changePct, marketCapB: x.marketCap ? x.marketCap / 1e9 : null })) });
+      } },
+    holdings_news_sentiment: { description: "The latest news-sentiment reading for the investor's holdings, if one has been made (Portfolio → News sentiment): per holding a score from -100 to +100, a label, a one-line summary and the top retrieved headline with its URL.", props: {}, req: [],
+      label: () => "News sentiment for holdings",
+      async run(app, S) {
+        const d = MD.sentiment && MD.sentiment.latest(app);
+        if (!d) return { note: "No reading yet. The investor can run one in Portfolio → News sentiment for your holdings." };
+        for (const r of d.rows) if (r.top && r.top.url) S.add(r.top.url, r.top.title, "news");
+        return { readAt: new Date(d.at).toISOString(), holdings: d.rows.map(r => ({ symbol: r.symbol, score: r.score, label: r.label, relevantHeadlines: r.relevant, summary: r.summary, topHeadline: r.top ? { title: r.top.title, url: r.top.url, published: r.top.ts ? new Date(r.top.ts).toISOString().slice(0, 10) : null } : null })) };
+      } },
   };
   /* Tool router. The runtime caps how many tools one request may carry (limits().tools.maxCount), so each request
      gets the core tools, then the groups the question is about, then the rest in the caller's priority order.
@@ -8377,6 +8422,9 @@ Reply with ONLY JSON: {"strongestCounter": "...", "pricedIn": "...", "fragileAss
     ["options", /options?|implied|straddle|volatil/i, ["options_move", "price_range"]],
     ["portfolio", /portfolio|holdings?|diversif|allocat|rebalanc|my (stocks|positions)|concentrat/i, ["get_portfolio_context", "analyze_portfolio", "my_portfolio", "compare_alternatives", "compare_returns"]],
     ["buying", /should i (buy|add|get into)|buy more|add (to|more)|position size|how much (should|to) (buy|put|invest)|(fit|fits) (in|into|with) my/i, ["portfolio_fit", "base_rates"]],
+    ["paper", /paper|virtual|practi[cs]e|simulat|fake money|play money/i, ["paper_account"]],
+    ["screen", /screen|scanner|find (me )?(some )?(stocks|names|companies)|\bnyse\b|\bnasdaq\b|small[- ]caps?|mid[- ]caps?|large[- ]caps?|mega[- ]caps?|sector/i, ["screen_stocks"]],
+    ["news", /news|headlines?|sentiment|what('s| is) (happening|going on) with my/i, ["holdings_news_sentiment", "search_news"]],
     ["calls", /open calls|your (calls|picks|recommendations)|track record|how (are|is) (the|your) (calls|picks|recommendations)|still (right|on track)/i, ["open_calls", "track_record"]]];
   function selectTools(tools, text, max, core) {
     max = max || 20; text = String(text || "");
@@ -10272,6 +10320,9 @@ Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoi
         kpi("Base rate", pct(r.models.baseRatePct), "how often it rose over " + label)),
       h("p", { class: "small muted" }, "Tested on " + o.predictions + " out-of-sample predictions (about " + o.independent + " independent " + (o.independent === 1 ? "window" : "windows") + ")" + (r.treeSplits && r.treeSplits.length ? ". The trees split most on: " + r.treeSplits.map(x => x.name.toLowerCase()).join(", ") : "") + (r.calibration ? ". Calibrated from the model's own " + r.calibration.scored + " graded forecasts (" + pct(r.calibration.fromPct) + " → " + pct(r.upPct) + ")" : "") + "."),
       o.confident.n ? h("p", { class: "small" }, "When the models leaned 60% or more one way out of sample, they were right " + o.confident.right + " of " + o.confident.n + " times (" + pct(o.confident.right / o.confident.n * 100) + ").") : null,
+      o.reliability && o.reliability.length ? h("details", { class: "small" }, h("summary", { class: "label", style: "cursor:pointer" }, "Did its odds hold up? (out of sample)"),
+        U.table([{ t: "When it said", v: (b) => Math.round(b.from * 100) + "–" + Math.round(b.to * 100) + "%" }, { t: "Times", v: "n", n: true }, { t: "Average odds", v: (b) => pct(b.predictedPct), n: true }, { t: "Actually rose", v: (b) => h("span", { class: Math.abs(b.actualPct - b.predictedPct) > 10 && b.n >= 20 ? "warn-t" : "" }, pct(b.actualPct)), n: true }], o.reliability),
+        h("p", { class: "tiny muted" }, "Before trust and the base rate are applied: the raw ensemble's odds on data it hadn't seen. Rows with few cases say little; a gap of more than 10 points on 20+ cases is flagged.")) : null,
       h("div", { class: "grid g2", style: "align-items:start" },
         h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, "What drives today's reading"),
           U.table([{ t: "Feature", v: (d) => d.name }, { t: "Today", v: (d) => d.key === "rsi" ? (d.value * 100 + 50).toFixed(0) : d.key === "last1z" || d.key === "volRatio" ? d.value.toFixed(2) : sgn(d.value * 100), n: true },
@@ -10439,7 +10490,7 @@ Reply with ONLY JSON: {"summary": "3-4 sentences", "overallWinner": {"symbol": "
     const r = runner(app, "Find ideas", async (S, signal) => {
       const t = theme.value.trim(); if (t.length < 4) throw new Error("Describe a theme or goal first.");
       app.ls.set("idea.theme", t); app.ls.set("idea.hz", hz.value); app.ls.set("idea.risk", rk.value); app.ls.set("idea.n", n.value);
-      const tools = await limitsTools(app, S, ["search_web", "search_news", "stock_snapshot", "zacks_view", "compare_returns", "smart_money", "my_portfolio", "read_page"]);
+      const tools = await limitsTools(app, S, ["search_web", "search_news", "stock_snapshot", "zacks_view", "compare_returns", "smart_money", "my_portfolio", "read_page", "screen_stocks"]);
       const prompt = `Today is ${today()}. An investor asks for ${n.value} investment ideas for this theme or goal: "${t.replace(/"/g, "'")}". Holding period: ${HORIZONS[hz.value]}. Risk appetite: ${RISKS[rk.value]}.
 ${tools ? "Research before answering, with 5 to 12 tool calls: search_web and search_news to find companies or funds that genuinely fit (prefer primary sources and recent, dated reporting), stock_snapshot and zacks_view to check each candidate's measured price picture and ratings, my_portfolio once to avoid duplicating what they own. Cite only URLs the tools returned." : "Tools are unavailable: say ideas weren't checked against current news."}
 ${A().contextNote(app)} (The holding period and risk appetite chosen above override the profile for this search.)
@@ -11044,6 +11095,7 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
     const spyPrice = asset.symbol === "SPY" ? q.price : spy && spy.price > 0 ? spy.price : null;
     const doc = { side, assetId: asset.id, asset: X.slim(asset), symbol: asset.symbol, qty: +Number(qty).toFixed(6), price: q.price, currency: "USD", priceSource: q.source || "", priceAt: q.ts || Date.now(), priceStatus: q.status || "",
       feeRate: feeRate(app, cls), spyPrice, source: (opts && opts.source) || "manual", note: (opts && opts.note) || "" };
+    if (opts && opts.extra) Object.assign(doc, opts.extra);
     const L = C.paperLedger(orders(app).concat([Object.assign({ createdAt: Date.now() + 1 }, doc)]), acct(app).startCash);
     if (L.issues.length > C.paperLedger(orders(app), acct(app).startCash).issues.length) throw new Error(L.issues[L.issues.length - 1].msg.replace(/; skipped\.$/, "."));
     const saved = await app.store.create("paper", doc);
@@ -11081,7 +11133,8 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
         const p = held();
         info.replaceChildren(h("div", { class: "row", style: "gap:14px;flex-wrap:wrap" }, h("span", {}, h("span", { class: "label" }, "Live price "), h("b", { class: "num" }, U.money(q.price, "USD", { price: true }))),
           h("span", {}, h("span", { class: "label" }, "Paper cash "), h("b", { class: "num" }, usd(st.L.cash))), p ? h("span", {}, h("span", { class: "label" }, "Held "), h("b", { class: "num" }, String(+p.qty.toFixed(6)))) : null),
-          h("p", { class: "tiny muted" }, (q.source || "price") + " · " + (q.ts ? U.fmtTs(q.ts) : "time unknown") + (q.status && q.status !== "Live" ? " · " + q.status + ": the order fills at this last price" : "")));
+          h("p", { class: "tiny muted" }, (q.source || "price") + " · " + (q.ts ? U.fmtTs(q.ts) : "time unknown") + (q.status && q.status !== "Live" ? " · " + q.status + ": the order fills at this last price" : "")),
+          q.nextEarnings ? h("p", { class: "tiny warn-t" }, "Next earnings: " + q.nextEarnings + ". Prices can gap on the report.") : null);
         if (opts.side === "sell" && p) qtyIn.value = +p.qty.toFixed(6);
         else { const pct = opts.pct > 0 ? opts.pct : 5; amt.value = opts.amount > 0 ? opts.amount : Math.max(0, Math.min(st.L.cash, Math.round(st.v.equity * pct / 100))); }
         sync(opts.side === "sell" && p ? "qty" : "amt");
@@ -11097,6 +11150,38 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
     return m;
   }
   const button = (app, asset, opts, label) => CLASSES.includes(clsOf(asset)) ? h("button", { class: "btn ghost sm", type: "button", onclick: (e) => { e.stopPropagation(); ticket(app, asset, opts); } }, label || "Paper trade") : null;
+
+  /* Auto-follow: with settings.paperFollow.on, every new Recommendations pick that leans up is paper-bought with
+     `pct`% of the account (while cash lasts) and sold automatically once its window ends: a sized, forward test of the
+     AI. Positions bought by hand are never auto-sold. */
+  const followCfg = (app) => Object.assign({ on: false, pct: 5 }, app.settings.paperFollow || {});
+  async function followSet(app, set) {
+    const cfg = followCfg(app); if (!cfg.on || app.demo || !set || !Array.isArray(set.picks)) return [];
+    const placed = [];
+    for (const pk of set.picks) {
+      const a = pk.asset || {}, exitAt = (set.createdAt || Date.now()) + (Number(pk.timeframeDays) || 30) * 864e5;
+      if (!(pk.upPct > 50) || !CLASSES.includes(clsOf(a)) || exitAt <= Date.now()) continue;
+      if (app.store.cached("paper").some(o => o.setId === set.id && o.assetId === a.id)) continue;
+      try {
+        const st = await state(app), q = await app.quote(a, 30000), amount = Math.min(st.L.cash / (1 + feeRate(app, clsOf(a))), st.v.equity * Math.max(0.5, Math.min(25, Number(cfg.pct) || 5)) / 100);
+        if (!(q.price > 0) || amount < 1) continue;
+        placed.push(await place(app, a, "buy", amount / q.price, { source: "pick", note: "Auto-follow · " + pk.upPct + "% up over " + (pk.timeframeLabel || pk.timeframeDays + " days"), extra: { auto: true, exitAt, setId: set.id } }));
+      } catch {}
+    }
+    return placed;
+  }
+  // Sell auto-followed positions whose window has ended (all of the position's buys were automatic).
+  async function autoExit(app, opts = {}) {
+    if (app.demo) return [];
+    const now = opts.now || Date.now(), L = C.paperLedger(orders(app), acct(app).startCash), sold = [];
+    for (const p of L.positions) {
+      const buys = orders(app).filter(o => o.assetId === p.assetId && o.side === "buy" && o.createdAt >= (p.openedAt || 0));
+      if (!buys.length || !buys.every(o => o.auto && o.exitAt)) continue;
+      const exitAt = Math.max(...buys.map(o => o.exitAt)); if (exitAt > now) continue;
+      try { sold.push(await place(app, p.asset || { id: p.assetId, symbol: p.symbol, cls: String(p.assetId).split(":")[0] }, "sell", p.qty, { source: p.sources[0] || "pick", note: "Auto-exit: the pick's window ended", extra: { auto: true } })); } catch {}
+    }
+    return sold;
+  }
 
   // Closed trades grouped by where the idea came from.
   function bySource(L) {
@@ -11118,7 +11203,7 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
     const kpis = h("div", { class: "kpis k4" }), body = h("div", { class: "stack" }, h("p", { class: "small muted" }, "Valuing the paper account at live prices…"));
     const picker = X.assetPicker((asset) => ticket(app, asset, { source: "manual" }), CLASSES);
     root.append(U.section("Paper account", h("div", { class: "stack" }, kpis, h("p", { class: "tiny muted" }, "Started " + (a.startedAt ? U.fmtDate(a.startedAt) : "with the first order") + " with " + usd(a.startCash) + ". Orders fill at the live quote; estimated commission/spread from Settings (stocks " + (app.settings.assumptions.stockExitPct) + "%, crypto " + app.settings.assumptions.cryptoExitPct + "% a side). No margin and no short selling. The S&P 500 comparison puts the same dollars into SPY at the same moments."))),
-      U.section("Place a paper order", h("div", { class: "stack" }, picker, h("p", { class: "tiny muted" }, "Or use “Paper trade” on any stock or crypto page, on a recommendation, or on an AI decision; the account then tracks how each source of ideas does."))), body);
+      U.section("Place a paper order", h("div", { class: "stack" }, picker, h("p", { class: "tiny muted" }, "Or use “Paper trade” on any stock or crypto page, on a recommendation, or on an AI decision; the account then tracks how each source of ideas does."))), followCard(app), body);
     const paint = async () => {
       let S;
       try { S = await state(app); } catch (e) { body.replaceChildren(U.errorBox({ message: U.errorText(e) })); return; }
@@ -11158,6 +11243,16 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
     const off = app.on("paper", () => { if (document.body.contains(root)) paint(); else off(); });
   };
 
+  function followCard(app) {
+    const cfg = followCfg(app), on = h("input", { type: "checkbox", checked: cfg.on }), pct = h("input", { type: "number", min: 0.5, max: 25, step: 0.5, value: cfg.pct, style: "width:80px", "aria-label": "Percent of the account per pick" });
+    const save = () => app.saveSettings({ paperFollow: { on: on.checked, pct: Math.max(0.5, Math.min(25, Number(pct.value) || 5)) } });
+    on.onchange = save; pct.onchange = save;
+    const auto = C.paperLedger(orders(app), acct(app).startCash).positions.map(p => ({ p, buys: orders(app).filter(o => o.assetId === p.assetId && o.side === "buy" && o.createdAt >= (p.openedAt || 0)) })).filter(x => x.buys.length && x.buys.every(o => o.auto && o.exitAt));
+    return U.section("Follow the AI automatically", h("div", { class: "stack" },
+      h("div", { class: "row", style: "gap:10px;flex-wrap:wrap;align-items:center" }, h("label", { class: "chk" }, on, "Paper-buy every new recommendation that leans up"), h("label", { class: "row", style: "gap:6px;align-items:center" }, pct, h("span", { class: "small" }, "% of the account each"))),
+      h("p", { class: "tiny muted" }, "Each one is sold automatically when its window ends, so the account becomes a sized, forward test of the AI's picks against the S&P 500. Only automatic positions are auto-sold; anything you buy yourself stays until you sell it. Runs while the desk is open."),
+      auto.length ? U.table([{ t: "Auto position", v: (x) => x.p.symbol }, { t: "Bought", v: (x) => U.fmtDate(x.buys[0].createdAt) }, { t: "Sells after", v: (x) => U.fmtDate(Math.max(...x.buys.map(o => o.exitAt))) }, { t: "Why", v: (x) => h("span", { class: "small" }, x.buys[0].note || "") }], auto) : null));
+  }
   async function restart(app) {
     const box = h("div", { class: "stack" }), cash = h("input", { type: "number", min: 1000, step: 1000, value: acct(app).startCash, "aria-label": "Starting cash" });
     box.append(h("p", {}, "Start a new paper account? Open positions and the record so far are set aside (the orders stay in the history)."), U.field("Starting cash (USD)", cash));
@@ -11165,7 +11260,17 @@ Reply with ONLY JSON: {"verdict": "Sensible"|"Partly sensible"|"Not worth it now
       h("button", { class: "btn danger", type: "button", onclick: () => { app.saveSettings({ paper: { startCash: Math.max(1000, Number(cash.value) || START), startedAt: Date.now() } }); m.close(); app.go("paper"); } }, "Start over"))));
   }
 
-  MD.paper = { ticket, place, state, button, bySource, SOURCES };
+  function dashCard(box, app) {
+    if (!orders(app).length) { box.append(h("div", { class: "stack", style: "gap:6px" }, h("p", { class: "small" }, "Practise with virtual money and see how each source of ideas does against the S&P 500."), h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("paper") }, "Open paper trading")))); return; }
+    const out = h("div", { class: "stack", style: "gap:6px" }, h("p", { class: "small muted" }, "Valuing at live prices…")); box.append(out);
+    state(app).then(({ L, v }) => {
+      const wins = L.closed.filter(t => t.pnl > 0).length, diff = v.returnPct - v.mirrorReturnPct;
+      out.replaceChildren(h("div", { class: "row", style: "gap:14px;flex-wrap:wrap" }, h("span", {}, h("span", { class: "label" }, "Value "), h("b", { class: "num" }, usd(v.equity))), h("span", {}, h("span", { class: "label" }, "Return "), h("b", { class: "num " + U.signCls(v.returnPct) }, U.pct(v.returnPct))), h("span", {}, h("span", { class: "label" }, "vs S&P 500 "), h("b", { class: "num " + U.signCls(diff) }, (diff > 0 ? "+" : "") + diff.toFixed(2) + " pts"))),
+        h("p", { class: "small" }, L.positions.length + " open · " + (L.closed.length ? wins + " of " + L.closed.length + " closed trades made money" : "no closed trades yet") + (followCfg(app).on ? " · following the AI's picks" : "")),
+        h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("paper") }, "Open paper trading")));
+    }).catch(e => out.replaceChildren(h("p", { class: "small warn-t" }, U.errorText(e))));
+  }
+  MD.paper = { dashCard, ticket, place, state, button, bySource, followSet, autoExit, followCfg, SOURCES };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -11330,7 +11435,19 @@ Reply with ONLY JSON: {"headline": "one sentence", "priorities": [{"title": "sho
       h("p", { class: "tiny muted" }, "Made " + U.fmtTs(p.at) + " from the measured facts above."));
   }
 
-  MD.today = { gather, facts, aiPlan, digestText, autoDigest, clockText, myNames };
+  // Dashboard card: the clock, the SPY call, calls due, unread alerts and today's first US releases (store + one calendar read).
+  function dashCard(box, app) {
+    const s = Q().session(), call = MD.brain && MD.brain.latestCall ? MD.brain.latestCall(app) : null, now = Date.now();
+    const done = new Set(app.store.cached("evals").map(e => e.forecastId)), due = app.store.cached("forecasts").filter(f => !done.has(f.id) && f.dueAt > now && f.dueAt - now < 7 * 864e5).length;
+    const unread = app.store.cached("inbox").filter(i => !i.read && i.kind !== "digest").length, rel = h("p", { class: "small muted" }, "Checking today's US releases…");
+    box.append(h("div", { class: "stack", style: "gap:6px" }, h("p", { class: "small" }, clockText(s)),
+      h("p", { class: "small" }, call ? "SPY call for " + call.target + ": " + call.upPct + "% chance of a higher close." : "No SPY call yet for this session."),
+      h("p", { class: "small" }, due + " AI call" + (due === 1 ? "" : "s") + " due this week · " + unread + " unread alert" + (unread === 1 ? "" : "s") + "."), rel,
+      h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("today") }, "Open today's game plan"))));
+    D.calendar.economic(s.date).then(r => { const us = r.filter(x => /United States|^US$/i.test(x.country || "")); rel.textContent = us.length ? "US releases today: " + us.slice(0, 3).map(x => x.event + (x.gmt ? " (" + x.gmt + " GMT)" : "")).join("; ") + (us.length > 3 ? " and " + (us.length - 3) + " more" : "") + "." : "No US economic releases today."; }).catch(() => { rel.textContent = "Economic calendar unavailable."; });
+  }
+
+  MD.today = { dashCard, gather, facts, aiPlan, digestText, autoDigest, clockText, myNames };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -12119,7 +12236,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 5-95, "status": "holds"|"weakened"|"b
       try {
         const set = await generate(app, { stocks: f.stocks.checked, crypto: f.crypto.checked, mine: f.mine.checked, window: f.window.value, count: Number(f.count.value), focus: listFocus ? null : f.focus.value.trim().slice(0, 120) || null, symbols: listFocus ? listFocus.symbols : null, symbolsLabel: listFocus ? listFocus.label : null, exchange: f.exchange.value, signal: ctl.signal }, L, ctl.signal, (e) => log.add(e));
         if (app.demo) { phase.textContent = "Done (demo mode: not saved)"; body.replaceChildren(setView(app, Object.assign({ id: "unsaved", createdAt: Date.now() }, set))); }
-        else { const saved = await app.store.create("picks", set); await journal(app, saved); app.ls.set("picksOpen", saved.id); phase.textContent = "Done · saved and logged in your forecast journal"; app.rerender(); }
+        else { const saved = await app.store.create("picks", set); await journal(app, saved); if (MD.paper) MD.paper.followSet(app, saved).then(o => { if (o.length) U.toast("Paper account followed " + o.length + " pick" + (o.length > 1 ? "s" : ""), "Virtual money; sold automatically when each window ends."); }).catch(() => {}); app.ls.set("picksOpen", saved.id); phase.textContent = "Done · saved and logged in your forecast journal"; app.rerender(); }
       } catch (e) { phase.textContent = e && e.code === "cancelled" ? "Stopped." : ""; if (!(e && e.code === "cancelled")) L("fail", ({ no_sample: "Claude isn't available in this view.", not_granted: "Claude access was declined for this page.", rate_limited: "Usage limit reached; try again later.", invalid_json: "The answer came back unreadable; try again." })[e && e.code] || (e && e.message) || "Failed."); }
       go.disabled = false; stop.hidden = true; ctl = null;
     };
@@ -14491,7 +14608,7 @@ Plain text, short paragraphs, no markdown headings.${app.demo ? " The portfolio 
       const ctx = { app, asset: null, question: text, log: [], sources: [], stats: {}, onLog: (e) => log.append(h("div", { class: e.kind }, e.text)) };
       const base = RS.makeTools(ctx).filter(t => ["search_web", "read_page", "search_news", "crypto_news", "get_portfolio_context", "compare_alternatives", "calc_reward_risk"].includes(t.name));
       const kitS = MD.ai.session((e) => ctx.onLog(e)); kitS.sources = ctx.sources;
-      const kit = MD.ai.tools(app, kitS, ["smart_money", "options_move", "track_record", "base_rates", "explain_move", "market_pulse", "market_memory", "intraday_levels", "movers", "earnings_info", "economic_calendar", "insider_activity", "portfolio_fit", "open_calls"]);
+      const kit = MD.ai.tools(app, kitS, ["smart_money", "options_move", "track_record", "base_rates", "explain_move", "market_pulse", "market_memory", "intraday_levels", "movers", "earnings_info", "economic_calendar", "insider_activity", "portfolio_fit", "open_calls", "paper_account", "screen_stocks", "holdings_news_sentiment"]);
       try {
         // The recent conversation decides which tools this request carries (the runtime caps the count).
         const toolsNow = MD.ai.selectTools([...base, ...advisorTools(app, ctx), ...kit], turns.slice(-3).map(t => t.content).join(" "), await MD.ai.toolCap(app), ["search_news", "search_web", "lookup_asset", "get_technicals"]);

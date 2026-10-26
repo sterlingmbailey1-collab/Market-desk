@@ -181,8 +181,20 @@
     const conf = ens.map((p, i) => ({ p, y: oos.y[i] })).filter(x => Math.abs(x.p - 0.5) >= 0.1), confRight = conf.filter(x => (x.p > 0.5) === !!x.y).length;
     return { horizonBars: h, asOf: new Date(last.time * 1000).toISOString().slice(0, 10), from: new Date(points[0].time * 1000).toISOString().slice(0, 10), bars: v.length, trainedOn: labeled.length,
       upPct: finalP * 100, models: { logisticPct: pL * 100, analogsPct: pK * 100, treesPct: pG * 100, baseRatePct: base * 100, blendedPct: pEns * 100 }, trust, treeSplits: F.names.map(([key, name], j) => ({ key, name, uses: gb.uses[j] })).filter(x => x.uses).sort((a, b) => b.uses - a.uses).slice(0, 5),
-      oos: { predictions: oos.y.length, independent: Math.max(1, Math.floor(oos.y.length / h)), base: sBase, logistic: sLogit, analogs: sKnn, ensemble: sEns, trees: sGbt, skillLogistic: skill(sLogit), skillAnalogs: skill(sKnn), skillTrees: skill(sGbt), skillEnsemble: skEns, tStat, blocks: blocks.length, confident: { n: conf.length, right: confRight } },
+      oos: { predictions: oos.y.length, independent: Math.max(1, Math.floor(oos.y.length / h)), base: sBase, logistic: sLogit, analogs: sKnn, ensemble: sEns, trees: sGbt, skillLogistic: skill(sLogit), skillAnalogs: skill(sKnn), skillTrees: skill(sGbt), skillEnsemble: skEns, tStat, blocks: blocks.length, confident: { n: conf.length, right: confRight }, reliability: reliability(ens, oos.y) },
       edge: clear, l2, drivers: contrib, analogs, features: F.names.map(([, n]) => n), usedMarket: F.names.length > 11 };
+  }
+
+  /* Reliability: out-of-sample predictions grouped by what they said, against how often the outcome actually came true.
+     A well-calibrated model's "60%" rows come true about 60% of the time. */
+  function reliability(ps, ys, edges = [0, 0.4, 0.47, 0.53, 0.6, 1.0001]) {
+    const out = [];
+    for (let b = 0; b < edges.length - 1; b++) {
+      const idx = []; for (let i = 0; i < ps.length; i++) if (ps[i] >= edges[b] && ps[i] < edges[b + 1]) idx.push(i);
+      if (!idx.length) continue;
+      out.push({ from: edges[b], to: Math.min(1, edges[b + 1]), n: idx.length, predictedPct: idx.reduce((s, i) => s + ps[i], 0) / idx.length * 100, actualPct: idx.reduce((s, i) => s + (ys[i] ? 1 : 0), 0) / idx.length * 100 });
+    }
+    return out;
   }
 
   /* k-means with k-means++ seeding (deterministic for a seed) on rows of numbers. Returns centroids and labels. */
@@ -292,5 +304,5 @@
     return { used: true, n: items.length, brierStack: bStack, brierLogged: bLogged, apply: (it) => clamp(fAll(it), 5, 95) };
   }
 
-  MD.ml = { pooled, gbtFit, stacker, kmeans, regimes, FEATURES, features, label, scaler, logisticFit, knn, auc, scores, forecast };
+  MD.ml = { reliability, pooled, gbtFit, stacker, kmeans, regimes, FEATURES, features, label, scaler, logisticFit, knn, auc, scores, forecast };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -131,7 +131,32 @@
       async run(app, S, i) { const d = i && /^\d{4}-\d{2}-\d{2}$/.test(i.date || "") ? i.date : new Date().toISOString().slice(0, 10); const rows = await D.calendar.economic(d); return { date: d, events: rows.filter(x => /United States|US/i.test(x.country || "")).slice(0, 25).map(x => ({ gmt: x.gmt, event: x.event, actual: x.actual || null, consensus: x.consensus || null, previous: x.previous || null })) }; } },
     compare_returns: { description: "Measured 1-year return, volatility, max drawdown and Sharpe ratio for up to 5 tickers or coins side by side (e.g. against SPY or SGOV as baselines).", props: { symbols: { type: "array", items: { type: "string" } } }, req: ["symbols"],
       label: (i) => "Compare " + (i.symbols || []).join(", "),
-      async run(app, S, i) { const syms = (Array.isArray(i.symbols) ? i.symbols : []).slice(0, 5).map(String); return Promise.all(syms.map(async (s) => { try { const a = await findAsset(s); const hs = await D.historyFor(a, "1Y"); const st = C.seriesStats(hs.points, hs.ppy || 252); return rnd({ symbol: a.symbol, returnPct: st.changePct, volPct: st.volPct, maxDrawdownPct: st.maxDrawdownPct, sharpe: st.sharpe }); } catch (e) { return { symbol: s, error: U.errorText(e) }; } })); } }
+      async run(app, S, i) { const syms = (Array.isArray(i.symbols) ? i.symbols : []).slice(0, 5).map(String); return Promise.all(syms.map(async (s) => { try { const a = await findAsset(s); const hs = await D.historyFor(a, "1Y"); const st = C.seriesStats(hs.points, hs.ppy || 252); return rnd({ symbol: a.symbol, returnPct: st.changePct, volPct: st.volPct, maxDrawdownPct: st.maxDrawdownPct, sharpe: st.sharpe }); } catch (e) { return { symbol: s, error: U.errorText(e) }; } })); } },
+    paper_account: { description: "The investor's paper-trading account (virtual money; nothing real is traded): cash, value and return against the same trades in the S&P 500, open positions, the latest closed trades, and closed trades grouped by where each idea came from (their own, Recommendations, AI decisions, the screener).", props: {}, req: [],
+      label: () => "Paper account",
+      async run(app) {
+        if (!MD.paper) return { error: "Paper trading isn't available." };
+        const st = await MD.paper.state(app), L = st.L, lbl = (ss) => (ss.length ? ss : ["manual"]).map(x => MD.paper.SOURCES[x] || x);
+        return rnd({ startCash: st.a.startCash, cash: L.cash, value: st.v.equity, returnPct: st.v.returnPct, sameTradesInSP500Pct: st.v.mirrorReturnPct,
+          open: L.positions.map(p => ({ symbol: p.symbol, quantity: p.qty, cost: p.cost, valueNow: st.prices[p.assetId] ? p.qty * st.prices[p.assetId] : null, from: lbl(p.sources) })),
+          recentClosed: L.closed.slice(-10).map(t => ({ symbol: t.symbol, returnPct: t.pnlPct, sp500SameDaysPct: t.mirrorPct, opened: new Date(t.openedAt).toISOString().slice(0, 10), closed: new Date(t.closedAt).toISOString().slice(0, 10), from: lbl(t.sources) })),
+          bySource: MD.paper.bySource(L).map(r => ({ source: MD.paper.SOURCES[r.source] || r.source, closed: r.closed, open: r.open, madeMoneyPct: r.winPct, avgReturnPct: r.avgPct, avgVsSP500Pts: r.vsPct })) });
+      } },
+    screen_stocks: { description: "Screen US-listed stocks on the NYSE and Nasdaq by exchange, sector and company size (Nasdaq's screener, largest first; it can lag a session), then by price and today's move. Returns how many matched and the largest matches with price, today's move and market cap.", props: { exchange: { type: "string", enum: ["both", "nyse", "nasdaq"] }, sector: { type: "string", enum: ["technology", "health_care", "finance", "consumer_discretionary", "consumer_staples", "industrials", "energy", "utilities", "real_estate", "basic_materials", "telecommunications"] }, size: { type: "string", enum: ["mega", "large", "mid", "small", "micro"] }, min_price: { type: "number" }, max_price: { type: "number" }, min_move_pct: { type: "number" }, max_move_pct: { type: "number" } }, req: [],
+      label: (i) => "Stock screen" + (i.sector ? " · " + i.sector : "") + (i.exchange && i.exchange !== "both" ? " · " + i.exchange.toUpperCase() : "") + (i.size ? " · " + i.size : ""),
+      async run(app, S, i) {
+        const n = (v) => v == null || v === "" || !isFinite(Number(v)) ? null : Number(v);
+        const r = await MD.screener.run({ exchange: i.exchange || "both", sector: i.sector || "", size: i.size || "", minPrice: n(i.min_price), maxPrice: n(i.max_price), minMove: n(i.min_move_pct), maxMove: n(i.max_move_pct), sort: "cap" });
+        return rnd({ asOf: r.asOf, checked: r.scanned, matches: r.rows.length, largest: r.rows.slice(0, 15).map(x => ({ symbol: x.symbol, name: x.name, exchange: x.exchange, price: x.price, todayPct: x.changePct, marketCapB: x.marketCap ? x.marketCap / 1e9 : null })) });
+      } },
+    holdings_news_sentiment: { description: "The latest news-sentiment reading for the investor's holdings, if one has been made (Portfolio → News sentiment): per holding a score from -100 to +100, a label, a one-line summary and the top retrieved headline with its URL.", props: {}, req: [],
+      label: () => "News sentiment for holdings",
+      async run(app, S) {
+        const d = MD.sentiment && MD.sentiment.latest(app);
+        if (!d) return { note: "No reading yet. The investor can run one in Portfolio → News sentiment for your holdings." };
+        for (const r of d.rows) if (r.top && r.top.url) S.add(r.top.url, r.top.title, "news");
+        return { readAt: new Date(d.at).toISOString(), holdings: d.rows.map(r => ({ symbol: r.symbol, score: r.score, label: r.label, relevantHeadlines: r.relevant, summary: r.summary, topHeadline: r.top ? { title: r.top.title, url: r.top.url, published: r.top.ts ? new Date(r.top.ts).toISOString().slice(0, 10) : null } : null })) };
+      } },
   };
   /* Tool router. The runtime caps how many tools one request may carry (limits().tools.maxCount), so each request
      gets the core tools, then the groups the question is about, then the rest in the caller's priority order.
@@ -147,6 +172,9 @@
     ["options", /options?|implied|straddle|volatil/i, ["options_move", "price_range"]],
     ["portfolio", /portfolio|holdings?|diversif|allocat|rebalanc|my (stocks|positions)|concentrat/i, ["get_portfolio_context", "analyze_portfolio", "my_portfolio", "compare_alternatives", "compare_returns"]],
     ["buying", /should i (buy|add|get into)|buy more|add (to|more)|position size|how much (should|to) (buy|put|invest)|(fit|fits) (in|into|with) my/i, ["portfolio_fit", "base_rates"]],
+    ["paper", /paper|virtual|practi[cs]e|simulat|fake money|play money/i, ["paper_account"]],
+    ["screen", /screen|scanner|find (me )?(some )?(stocks|names|companies)|\bnyse\b|\bnasdaq\b|small[- ]caps?|mid[- ]caps?|large[- ]caps?|mega[- ]caps?|sector/i, ["screen_stocks"]],
+    ["news", /news|headlines?|sentiment|what('s| is) (happening|going on) with my/i, ["holdings_news_sentiment", "search_news"]],
     ["calls", /open calls|your (calls|picks|recommendations)|track record|how (are|is) (the|your) (calls|picks|recommendations)|still (right|on track)/i, ["open_calls", "track_record"]]];
   function selectTools(tools, text, max, core) {
     max = max || 20; text = String(text || "");

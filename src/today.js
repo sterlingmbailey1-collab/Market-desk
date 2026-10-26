@@ -157,5 +157,17 @@ Reply with ONLY JSON: {"headline": "one sentence", "priorities": [{"title": "sho
       h("p", { class: "tiny muted" }, "Made " + U.fmtTs(p.at) + " from the measured facts above."));
   }
 
-  MD.today = { gather, facts, aiPlan, digestText, autoDigest, clockText, myNames };
+  // Dashboard card: the clock, the SPY call, calls due, unread alerts and today's first US releases (store + one calendar read).
+  function dashCard(box, app) {
+    const s = Q().session(), call = MD.brain && MD.brain.latestCall ? MD.brain.latestCall(app) : null, now = Date.now();
+    const done = new Set(app.store.cached("evals").map(e => e.forecastId)), due = app.store.cached("forecasts").filter(f => !done.has(f.id) && f.dueAt > now && f.dueAt - now < 7 * 864e5).length;
+    const unread = app.store.cached("inbox").filter(i => !i.read && i.kind !== "digest").length, rel = h("p", { class: "small muted" }, "Checking today's US releases…");
+    box.append(h("div", { class: "stack", style: "gap:6px" }, h("p", { class: "small" }, clockText(s)),
+      h("p", { class: "small" }, call ? "SPY call for " + call.target + ": " + call.upPct + "% chance of a higher close." : "No SPY call yet for this session."),
+      h("p", { class: "small" }, due + " AI call" + (due === 1 ? "" : "s") + " due this week · " + unread + " unread alert" + (unread === 1 ? "" : "s") + "."), rel,
+      h("div", { class: "row" }, h("button", { class: "btn ghost sm", type: "button", onclick: () => app.go("today") }, "Open today's game plan"))));
+    D.calendar.economic(s.date).then(r => { const us = r.filter(x => /United States|^US$/i.test(x.country || "")); rel.textContent = us.length ? "US releases today: " + us.slice(0, 3).map(x => x.event + (x.gmt ? " (" + x.gmt + " GMT)" : "")).join("; ") + (us.length > 3 ? " and " + (us.length - 3) + " more" : "") + "." : "No US economic releases today."; }).catch(() => { rel.textContent = "Economic calendar unavailable."; });
+  }
+
+  MD.today = { dashCard, gather, facts, aiPlan, digestText, autoDigest, clockText, myNames };
 })(typeof window !== "undefined" ? window : globalThis);

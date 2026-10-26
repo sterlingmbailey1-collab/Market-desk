@@ -763,6 +763,8 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
     return { sent1: a.sent, sent2: b.sent.length, added: app.store.cached("inbox").length - before, title: (items.find(i => /AAPL/.test(i.title)) || {}).title, body: (items.find(i => /AAPL/.test(i.title)) || {}).body };
   });
   check("open-call monitor: a call far against it notifies the inbox once, with the odds now", mon.sent1.some(x => x.symbol === "AAPL" && x.kind === "against") && mon.sent2 === 0 && /AAPL \(Recommendations\) is going against the call/.test(mon.title || "") && /chance to finish higher/.test(mon.body || ""), JSON.stringify(mon));
+  const dashTxt = await page.locator("#content").innerText();
+  check("dashboard: Today card (clock, SPY call, calls due, US releases) and the paper account card", /Open today's game plan/i.test(dashTxt) && /(US releases today|No US economic releases today|Economic calendar unavailable)/i.test(dashTxt) && /Open paper trading/i.test(dashTxt) && /AI calls? due this week/i.test(dashTxt), dashTxt.slice(0, 900));
   check("dashboard: what the AI is tracking (open calls by source, next due, scorecard link)", /What the AI is tracking/i.test(aiStat) && /Open calls/i.test(aiStat) && /Next due/i.test(aiStat) && await page.locator("button:has-text('Open the AI scorecard')").count() === 1, aiStat.slice(0, 400));
 
   await page.evaluate(() => MD.app.openAsset({ id: "stock:AAPL", cls: "stock", symbol: "AAPL", name: "Apple" })); await page.waitForTimeout(2500);
@@ -791,6 +793,24 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   ptTxt = await page.locator("#content").innerText();
   check("paper sell closes the trade, judged against the S&P 500 over the same days and grouped by where the idea came from", /Closed trades[\s\S]*AAPL/i.test(ptTxt) && /S&P 500, same days/i.test(ptTxt) && /How each source of ideas has done[\s\S]*Asset page/i.test(ptTxt) && await page.evaluate(() => { const L = MD.core.paperLedger(MD.app.store.cached("paper"), 100000); return L.positions.length === 0 && L.closed.length === 1 && L.closed[0].mirrorPct != null; }), ptTxt.slice(0, 1200));
   await page.screenshot({ path: path.join(shots, "e2e-paper.png"), fullPage: true });
+  check("paper page offers following the AI automatically", /Follow the AI automatically/i.test(ptTxt) && /Paper-buy every new recommendation that leans up/i.test(ptTxt));
+  const af = await page.evaluate(async () => {
+    MD.app.saveSettings({ paperFollow: { on: true, pct: 5 } });
+    const mk = (s, up, days) => ({ symbol: s, asset: { id: "stock:" + s, cls: "stock", symbol: s, name: s }, upPct: up, timeframeDays: days, timeframeLabel: days + " days" });
+    const set = { id: "followtest", createdAt: Date.now(), picks: [mk("MSFT", 64, 30), mk("NVDA", 41, 30)] };
+    const a = await MD.paper.followSet(MD.app, set), again = await MD.paper.followSet(MD.app, set), early = await MD.paper.autoExit(MD.app), late = await MD.paper.autoExit(MD.app, { now: Date.now() + 31 * 864e5 });
+    MD.app.saveSettings({ paperFollow: { on: false, pct: 5 } });
+    const L = MD.core.paperLedger(MD.app.store.cached("paper"), 100000);
+    return { a: a.map(o => o.symbol + ":" + o.side + ":" + !!o.auto + ":" + (o.exitAt > Date.now())), amt: a[0] ? Math.round(a[0].qty * a[0].price) : null, again: again.length, early: early.length, late: late.map(o => o.symbol + ":" + o.side), open: L.positions.length, closedMSFT: L.closed.some(t => t.symbol === "MSFT") };
+  });
+  check("paper auto-follow: buys only the up-leaning picks, once, sized at 5% of the account, and sells each when its window ends", af.a.length === 1 && /^MSFT:buy:true:true$/.test(af.a[0]) && af.amt > 4000 && af.amt < 5100 && af.again === 0 && af.early === 0 && af.late.length === 1 && af.late[0] === "MSFT:sell" && af.open === 0 && af.closedMSFT, JSON.stringify(af));
+  const kitT = await page.evaluate(async () => {
+    const S = MD.ai.session(), T = MD.ai.tools(MD.app, S, ["paper_account", "screen_stocks", "holdings_news_sentiment"]), by = Object.fromEntries(T.map(t => [t.name, t]));
+    const pa = await by.paper_account.execute({}), sc = await by.screen_stocks.execute({ exchange: "nyse", sector: "finance" }), hn = await by.holdings_news_sentiment.execute({});
+    const all = MD.ai.tools(MD.app, MD.ai.session()), pick = (q) => MD.ai.selectTools(all, q, 6, []).map(t => t.name);
+    return { pa: { closed: pa.recentClosed.length, by: pa.bySource.map(r => r.source) }, sc: sc.largest.map(x => x.symbol), scAsOf: sc.asOf, hn: Object.keys(hn), r1: pick("how is my paper account doing"), r2: pick("find me mid cap energy stocks on the NYSE"), r3: pick("what's the news on my holdings") };
+  });
+  check("AI tools: the paper account, the stock screener and holdings news sentiment, routed by the question", kitT.pa.closed >= 2 && kitT.pa.by.includes("Asset page") && kitT.sc.join(",") === "JPM,V" && kitT.scAsOf === "Oct 24, 2026" && kitT.r1.includes("paper_account") && kitT.r2.includes("screen_stocks") && kitT.r3.includes("holdings_news_sentiment"), JSON.stringify(kitT));
   await page.setViewportSize({ width: 400, height: 860 }); await page.waitForTimeout(600);
   const swPaper = await page.evaluate(() => document.documentElement.scrollWidth), ovPaper = await overlaps(page);
   check("paper trading page at 400px: no horizontal scroll, no overlapping text", swPaper <= 401 && ovPaper.length === 0, JSON.stringify({ swPaper, ov: ovPaper.slice(0, 4) }));

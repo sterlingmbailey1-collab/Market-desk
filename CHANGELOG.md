@@ -1,5 +1,24 @@
 # Changelog
 
+## Version 29 (2026-10-26)
+- **Follow the AI automatically** (Paper Trading).
+  - When it's on, every new recommendation that leans up is paper-bought with a set share of the account (5% by
+    default) and sold automatically when its window ends.
+  - The paper account becomes a sized, forward test of the AI's picks against the S&P 500. Positions you buy yourself
+    are never auto-sold.
+- **New AI tools.** Ask AI, the AI Advisor and the idea finder can now:
+  - read the paper account: its record against the S&P 500 and by source of ideas
+  - run the stock screener: exchange, sector, size, price and today's move
+  - read the latest news sentiment for your holdings.
+
+  The tool router adds these only when the question is about them.
+- **Dashboard cards.** "Today" shows the clock, the SPY call, calls due, unread alerts and the day's first US
+  releases. "Paper account" shows its value and return against the S&P 500. Existing dashboards get both once.
+- **Did the ML's odds hold up?** The machine-learning card has a reliability table. It groups the model's
+  out-of-sample odds by what it said and shows how often the asset actually rose. Gaps of more than 10 points on 20+
+  cases are flagged.
+- **Earnings warning on paper orders.** The order ticket shows the next earnings date when one is known.
+
 ## Version 28 (2026-10-26)
 - **Paper trading** (new page under Decide). A virtual account with $100,000 to start; you can change the amount
   when you start over. Nothing is ever bought or sold for real.

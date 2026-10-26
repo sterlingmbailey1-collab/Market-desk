@@ -132,7 +132,7 @@ Reply with ONLY JSON: {"summary": "3-4 sentences", "overallWinner": {"symbol": "
     const r = runner(app, "Find ideas", async (S, signal) => {
       const t = theme.value.trim(); if (t.length < 4) throw new Error("Describe a theme or goal first.");
       app.ls.set("idea.theme", t); app.ls.set("idea.hz", hz.value); app.ls.set("idea.risk", rk.value); app.ls.set("idea.n", n.value);
-      const tools = await limitsTools(app, S, ["search_web", "search_news", "stock_snapshot", "zacks_view", "compare_returns", "smart_money", "my_portfolio", "read_page"]);
+      const tools = await limitsTools(app, S, ["search_web", "search_news", "stock_snapshot", "zacks_view", "compare_returns", "smart_money", "my_portfolio", "read_page", "screen_stocks"]);
       const prompt = `Today is ${today()}. An investor asks for ${n.value} investment ideas for this theme or goal: "${t.replace(/"/g, "'")}". Holding period: ${HORIZONS[hz.value]}. Risk appetite: ${RISKS[rk.value]}.
 ${tools ? "Research before answering, with 5 to 12 tool calls: search_web and search_news to find companies or funds that genuinely fit (prefer primary sources and recent, dated reporting), stock_snapshot and zacks_view to check each candidate's measured price picture and ratings, my_portfolio once to avoid duplicating what they own. Cite only URLs the tools returned." : "Tools are unavailable: say ideas weren't checked against current news."}
 ${A().contextNote(app)} (The holding period and risk appetite chosen above override the profile for this search.)

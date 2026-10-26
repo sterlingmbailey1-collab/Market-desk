@@ -215,7 +215,7 @@ Plain text, short paragraphs, no markdown headings.${app.demo ? " The portfolio 
       const ctx = { app, asset: null, question: text, log: [], sources: [], stats: {}, onLog: (e) => log.append(h("div", { class: e.kind }, e.text)) };
       const base = RS.makeTools(ctx).filter(t => ["search_web", "read_page", "search_news", "crypto_news", "get_portfolio_context", "compare_alternatives", "calc_reward_risk"].includes(t.name));
       const kitS = MD.ai.session((e) => ctx.onLog(e)); kitS.sources = ctx.sources;
-      const kit = MD.ai.tools(app, kitS, ["smart_money", "options_move", "track_record", "base_rates", "explain_move", "market_pulse", "market_memory", "intraday_levels", "movers", "earnings_info", "economic_calendar", "insider_activity", "portfolio_fit", "open_calls"]);
+      const kit = MD.ai.tools(app, kitS, ["smart_money", "options_move", "track_record", "base_rates", "explain_move", "market_pulse", "market_memory", "intraday_levels", "movers", "earnings_info", "economic_calendar", "insider_activity", "portfolio_fit", "open_calls", "paper_account", "screen_stocks", "holdings_news_sentiment"]);
       try {
         // The recent conversation decides which tools this request carries (the runtime caps the count).
         const toolsNow = MD.ai.selectTools([...base, ...advisorTools(app, ctx), ...kit], turns.slice(-3).map(t => t.content).join(" "), await MD.ai.toolCap(app), ["search_news", "search_web", "lookup_asset", "get_technicals"]);
