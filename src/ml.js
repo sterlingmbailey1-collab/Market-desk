@@ -168,8 +168,12 @@
     const blocks = []; for (let b = 0; b + h <= ens.length; b += h) { let d = 0; for (let i = b; i < b + h; i++) d += (oos.base[i] - oos.y[i]) ** 2 - (ens[i] - oos.y[i]) ** 2; blocks.push(d / h); }
     const md = blocks.length ? blocks.reduce((s, x) => s + x, 0) / blocks.length : 0, sdd = blocks.length > 1 ? Math.sqrt(blocks.reduce((s, x) => s + (x - md) ** 2, 0) / (blocks.length - 1)) : Infinity;
     const tStat = sdd > 0 && isFinite(sdd) ? md / (sdd / Math.sqrt(blocks.length)) : 0, clear = tStat >= 1.64 && skEns > 0;
+    // Has the edge held up lately? Skill over the most recent third of the test; if it has turned negative, the
+    // models get half the trust (patterns that stop working usually stop quietly).
+    const r0 = Math.floor(ens.length * 2 / 3), sRecent = scores(ens.slice(r0), oos.y.slice(r0)), sBaseRecent = scores(oos.base.slice(r0), oos.y.slice(r0));
+    const recentSkill = sRecent && sBaseRecent && sBaseRecent.brier > 0 ? 1 - sRecent.brier / sBaseRecent.brier : 0, fading = clear && recentSkill < 0;
     // Trust in the models: none without a clear edge, full at 5% better Brier than the base rate.
-    const trust = clear ? clamp(skEns / 0.05, 0, 1) : 0;
+    const trust = clear ? clamp(skEns / 0.05, 0, 1) * (fading ? 0.5 : 1) : 0;
     // Final model on everything labeled, applied to today's (unlabeled) row.
     const S = scaler(labeled.map(r => r.x)), Z = labeled.map(r => S.z(r.x)), Y = labeled.map(r => r.y), m = logisticFit(Z, Y, l2), gb = gbtFit(Z, Y, gbtOpts);
     const last = rows[rows.length - 1], zNow = S.z(last.x), pL = m.predict(zNow), nn = knn(Z, Y, zNow, opts.k || 40), pK = nn.p, pG = gb.predict(zNow);
@@ -181,8 +185,8 @@
     const conf = ens.map((p, i) => ({ p, y: oos.y[i] })).filter(x => Math.abs(x.p - 0.5) >= 0.1), confRight = conf.filter(x => (x.p > 0.5) === !!x.y).length;
     return { horizonBars: h, asOf: new Date(last.time * 1000).toISOString().slice(0, 10), from: new Date(points[0].time * 1000).toISOString().slice(0, 10), bars: v.length, trainedOn: labeled.length,
       upPct: finalP * 100, models: { logisticPct: pL * 100, analogsPct: pK * 100, treesPct: pG * 100, baseRatePct: base * 100, blendedPct: pEns * 100 }, trust, treeSplits: F.names.map(([key, name], j) => ({ key, name, uses: gb.uses[j] })).filter(x => x.uses).sort((a, b) => b.uses - a.uses).slice(0, 5),
-      oos: { predictions: oos.y.length, independent: Math.max(1, Math.floor(oos.y.length / h)), base: sBase, logistic: sLogit, analogs: sKnn, ensemble: sEns, trees: sGbt, skillLogistic: skill(sLogit), skillAnalogs: skill(sKnn), skillTrees: skill(sGbt), skillEnsemble: skEns, tStat, blocks: blocks.length, confident: { n: conf.length, right: confRight }, reliability: reliability(ens, oos.y) },
-      edge: clear, l2, drivers: contrib, analogs, features: F.names.map(([, n]) => n), usedMarket: F.names.length > 11 };
+      oos: { predictions: oos.y.length, independent: Math.max(1, Math.floor(oos.y.length / h)), base: sBase, logistic: sLogit, analogs: sKnn, ensemble: sEns, trees: sGbt, skillLogistic: skill(sLogit), skillAnalogs: skill(sKnn), skillTrees: skill(sGbt), skillEnsemble: skEns, tStat, blocks: blocks.length, confident: { n: conf.length, right: confRight }, reliability: reliability(ens, oos.y), recentSkill, recentPredictions: ens.length - r0 },
+      edge: clear, fading, l2, drivers: contrib, analogs, features: F.names.map(([, n]) => n), usedMarket: F.names.length > 11 };
   }
 
   /* Reliability: out-of-sample predictions grouped by what they said, against how often the outcome actually came true.

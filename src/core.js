@@ -295,6 +295,24 @@
   function hhi(weightsPct) { return weightsPct.reduce((a, w) => a + Math.pow(Number(w) / 100, 2), 0); }
 
   /* ---------- risk / reward ---------- */
+  /* Realized gains by calendar year, split into short-term (lot held a year or less) and long-term, plus dividends,
+     in the reporting currency at each date's rate. rateOf(currency, date) → Decimal or null; a sale or dividend whose
+     rate is unknown is counted in `unknownRates` and left out. FIFO lots, as in buildPositions. */
+  function taxYears(positions, rateOf) {
+    const Y = new Map(), get = (y) => { if (!Y.has(y)) Y.set(y, { year: y, shortTerm: ZERO, longTerm: ZERO, dividends: ZERO, sales: 0, unknownRates: 0 }); return Y.get(y); };
+    for (const p of positions) {
+      for (const r of p.realized) {
+        const y = get(String(r.date).slice(0, 4)); y.sales++;
+        const rs = rateOf(p.currency, r.date); if (rs == null) { y.unknownRates++; continue; }
+        for (const c of r.consumed) {
+          const proceeds = r.proceeds.times(c.qty).div(r.qty).times(rs), rl = rateOf(p.currency, c.date) || rs, gain = proceeds.minus(c.cost.times(rl));
+          if ((Date.parse(r.date) - Date.parse(c.date)) / 864e5 > 365) y.longTerm = y.longTerm.plus(gain); else y.shortTerm = y.shortTerm.plus(gain);
+        }
+      }
+      for (const i of p.income) { const y = get(String(i.date).slice(0, 4)), r = rateOf(i.currency || p.currency, i.date); if (r == null) { y.unknownRates++; continue; } y.dividends = y.dividends.plus(i.amount.times(r)); }
+    }
+    return [...Y.values()].sort((a, b) => b.year.localeCompare(a.year));
+  }
   /* Paper account (virtual US dollars): orders in time order → cash, open positions and closed trades. Each buy is
      mirrored into SPY at the same moment with the same dollars; a sell closes the same fraction of the position and of
      its SPY mirror, so every trade can be judged against "the same trade in the S&P 500". No margin, no short selling:
@@ -700,7 +718,7 @@
       maxDrawdownYrPct: maxDrawdown(yr.map(p => p.close ?? p.value)).mdd * 100, trend };
   }
 
-  MD.core = { paperLedger, paperValue, D, dec, applyTick, straddleMove, expectedMoveFromVol, normCdf, normInv, projectPrice, impliedVolFromMove, ema, rsi, macd, betaTo, periodReturns, technicals, ZERO, ONE, sum, BASE_CURRENCIES, ECB_CODES, makeRegistry, PAIR_PRIORITY, marketPair, parsePair, quote, invert, cross, rateFromTable, convert, spreadBps,
+  MD.core = { taxYears, paperLedger, paperValue, D, dec, applyTick, straddleMove, expectedMoveFromVol, normCdf, normInv, projectPrice, impliedVolFromMove, ema, rsi, macd, betaTo, periodReturns, technicals, ZERO, ONE, sum, BASE_CURRENCIES, ECB_CODES, makeRegistry, PAIR_PRIORITY, marketPair, parsePair, quote, invert, cross, rateFromTable, convert, spreadBps,
     fmtNum, fmtMoney, fmtPct, GRAMS_PER, UNIT_NAMES, convertWeight, bullion, TX_TYPES, validDate, validateTx, activeTxs, buildPositions, valuePosition, realizedInReporting,
     netLiquidation, allocation, hhi, rewardRisk, returnsFrom, mean, stdev, annVol, maxDrawdown, cagr, sharpe, correlation, alignByTime, seriesStats, rng, gauss, percentile,
     touchProbability, goalSimulation, sma, backtest, fxStress, ripple, catalystImpact, evaluateForecast, calibration, evaluateAlert, materiality, inQuietHours,

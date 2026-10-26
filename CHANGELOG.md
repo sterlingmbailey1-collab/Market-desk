@@ -1,5 +1,19 @@
 # Changelog
 
+## Version 31 (2026-10-26)
+- **The ML checks whether its edge still holds.**
+  - The model now also scores itself on the most recent third of its out-of-sample test. If it has done worse than
+    the base rate there, while still showing an edge overall, its weight is halved and the card says the edge has
+    faded.
+  - Tested on synthetic data: a pattern that stops working is flagged, one that keeps working isn't.
+  - Claude also gets the recent skill wherever the ML's odds go into a prompt.
+- **Realized gains and dividends by year** (Portfolio).
+  - Realized gains are split into short-term (held a year or less) and long-term, matched first-in first-out, with
+    dividends.
+  - Amounts are in your reporting currency at each date's reference rate. Anything without a rate is left out and
+    listed.
+  - A summary to check against your broker's statements, not tax advice.
+
 ## Version 30 (2026-10-26)
 - **Desk consensus** on stock and crypto pages. Every model on the desk with an open call on the asset is combined
   into one chance of a rise per horizon (next two weeks, 1–4 months, 4–12 months). That covers the quick take, the

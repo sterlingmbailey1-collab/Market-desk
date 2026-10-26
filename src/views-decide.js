@@ -21,9 +21,19 @@
       h("button", { class: "btn ghost", type: "button", onclick: () => importModal(app) }, "Import CSV")]));
     const sum = h("div", {}), hold = h("div", {}), alloc = h("div", {}), risk = h("div", {}), ledger = h("div", {}), analysis = h("div", { class: "stack", style: "gap:18px" });
     const anSec = U.section("Portfolio analysis · " + R, analysis); anSec.id = "sec-analysis";
-    root.append(sum, U.section("Holdings · " + R, hold), h("div", { class: "grid g2" }, U.section("Allocation", alloc), U.section("Risk & currency exposure", risk)), anSec, MD.sentiment ? MD.sentiment.section(app) : null, U.section("Transaction ledger", ledger, [h("button", { class: "btn ghost sm", type: "button", onclick: () => U.download("market-desk-transactions.csv", C.txsToCSV(app.store.cached("tx"))) }, "Export CSV")]));
+    const taxBox = h("div", { class: "stack" }), taxSec = U.section("Realized gains and dividends by year · " + R, taxBox); taxSec.id = "sec-tax";
+    // Realized gains split short-term / long-term by each lot's holding period (FIFO), and dividends, at each date's rate.
+    const paintTax = (pv) => {
+      const ys = C.taxYears(pv.rows.map(r => r.p), pv.rateOf), m = (x) => h("span", { class: "num " + U.signCls(Number(x)) }, U.money(x, R, { sign: true }));
+      taxBox.replaceChildren(!ys.length ? h("div", { class: "empty" }, "No sales or dividends recorded yet.") : U.table([{ t: "Year", v: "year" }, { t: "Short-term gains", v: (y) => m(y.shortTerm), n: true }, { t: "Long-term gains", v: (y) => m(y.longTerm), n: true }, { t: "Total realized", v: (y) => m(y.shortTerm.plus(y.longTerm)), n: true }, { t: "Dividends", v: (y) => U.money(y.dividends, R), n: true }, { t: "Sales", v: "sales", n: true }],
+          ys.map(y => Object.assign({}, y, { _cls: y.unknownRates ? "warn" : "" }))),
+        ys.some(y => y.unknownRates) ? h("p", { class: "small warn-t" }, ys.filter(y => y.unknownRates).map(y => y.year + ": " + y.unknownRates + " item" + (y.unknownRates > 1 ? "s" : "") + " left out (no exchange rate for the date)").join("; ") + ".") : null,
+        h("p", { class: "tiny muted" }, "Short-term = shares held a year or less, long-term = more than a year, matched first-in first-out after fees. Converted at each date's reference rate. A summary to check against your broker's tax statements, not tax advice: wash sales, lot choices and local rules aren't applied."));
+    };
+    root.append(sum, U.section("Holdings · " + R, hold), h("div", { class: "grid g2" }, U.section("Allocation", alloc), U.section("Risk & currency exposure", risk)), anSec, MD.sentiment ? MD.sentiment.section(app) : null, taxSec, U.section("Transaction ledger", ledger, [h("button", { class: "btn ghost sm", type: "button", onclick: () => U.download("market-desk-transactions.csv", C.txsToCSV(app.store.cached("tx"))) }, "Export CSV")]));
     const draw = () => U.async(sum, () => app.valuePortfolio(R), (pv) => {
       const t = pv.totals;
+      try { paintTax(pv); } catch (e) { taxBox.replaceChildren(h("p", { class: "small warn-t" }, U.errorText(e))); }
       sum.append(h("div", { class: "grid g4" },
         tileKV("Market value", U.money(t.valueR, R), pv.missing.length ? pv.missing.length + " holding(s) without a price" : "All holdings priced"),
         tileKV("Unrealized P&L", h("span", { class: U.signCls(t.pnlR) }, U.money(t.pnlR, R, { sign: true })), "Price " + U.money(t.priceEffectR, R, { sign: true }) + " · FX " + U.money(t.fxEffectR, R, { sign: true })),

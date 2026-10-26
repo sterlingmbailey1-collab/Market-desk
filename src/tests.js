@@ -45,6 +45,13 @@
     eq(Q.newsScore([{ s: 0, mat: 1, ts: d(0) }], now).label, "neutral");
     eq(Q.newsScore([{ s: -2, mat: 3, ts: d(0) }], now).score, -100);
   });
+  test("tax-year summary: FIFO lots split short- and long-term, dividends by year", () => {
+    const C = MD.core, tx = (o) => Object.assign({ assetId: "stock:AAA", assetClass: "stock", symbol: "AAA", currency: "USD", fees: "0", createdAt: 1 }, o);
+    const { positions } = C.buildPositions([tx({ id: "a", type: "buy", tradeDate: "2024-01-02", quantity: "10", price: "100" }), tx({ id: "b", type: "buy", tradeDate: "2025-06-01", quantity: "10", price: "120" }), tx({ id: "d", type: "dividend", tradeDate: "2025-03-01", amount: "20" }), tx({ id: "c", type: "sell", tradeDate: "2025-09-01", quantity: "15", price: "150" })]);
+    const ys = C.taxYears([...positions.values()], () => C.ONE);
+    eq(ys.length, 1); eq(ys[0].year, "2025"); eq(ys[0].longTerm, "500", "10 shares from the 2024 lot"); eq(ys[0].shortTerm, "150", "5 shares from the 2025 lot"); eq(ys[0].dividends, "20"); eq(ys[0].sales, 1);
+    const none = C.taxYears([...positions.values()], () => null); eq(none[0].unknownRates, 2); eq(none[0].longTerm, "0");
+  });
   test("paper account: cash, fractional sells, the SPY mirror, and no margin or shorting", () => {
     const C = MD.core, a = { assetId: "stock:AAA", symbol: "AAA" };
     const L = C.paperLedger([
@@ -394,6 +401,12 @@
     ok(sig.oos.tStat > 1.64, "the real pattern's edge is clear across independent blocks: t = " + sig.oos.tStat);
     ok(sig.oos.predictions > 500 && sig.analogs.length === 8 && sig.upPct >= 20 && sig.upPct <= 80);
     ok(M.forecast(mk(3, 0).slice(0, 300), { horizonBars: 21 }).error, "too little history is refused");
+  });
+  test("machine learning: an edge that has faded lately gets half the trust", () => {
+    const C = MD.core, M = MD.ml, mk = (seed, cut) => { const r = C.rng(seed), rets = [], pts = []; let p = 100; for (let i = 0; i < 1300; i++) { const m5 = rets.slice(-5).reduce((s, x) => s + x, 0), e = -(i < cut ? 0.35 : 0) * m5 + 0.01 * C.gauss(r); rets.push(e); p *= Math.exp(e); pts.push({ time: 1800000000 + i * 86400, close: p, value: p }); } return pts; };
+    const steady = M.forecast(mk(3, 1e9), { horizonBars: 5 }), faded = M.forecast(mk(7, 950), { horizonBars: 5 });
+    ok(steady.edge && !steady.fading && steady.oos.recentSkill > 0, "a pattern that still works isn't flagged: " + steady.oos.recentSkill);
+    ok(faded.edge && faded.fading && faded.oos.recentSkill < 0 && faded.trust <= 0.5, "a pattern that stopped working lately is flagged and trusted half: " + JSON.stringify({ edge: faded.edge, rs: faded.oos.recentSkill, trust: faded.trust }));
   });
   test("machine learning: the learned combiner is used only when it beats the logged odds out of sample", () => {
     const C = MD.core, r = C.rng(21), mk = (informative) => Array.from({ length: 80 }, () => { const m = 20 + r() * 60, up = r() * 100 < (informative ? m : 50), c = 30 + r() * 40; return { c, m, r: c, ml: m, final: c, up }; });

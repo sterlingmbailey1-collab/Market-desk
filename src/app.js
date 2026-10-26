@@ -170,7 +170,7 @@
     const sum = (f) => rows.reduce((a, r) => { const x = f(r); return x ? a.plus(x) : a; }, C.ZERO);
     const totals = { valueR: sum(r => r.v.valueR), costR: sum(r => r.p.qty.gt(0) ? r.v.costR : null), pnlR: sum(r => r.p.qty.gt(0) ? r.v.pnlR : null), priceEffectR: sum(r => r.p.qty.gt(0) ? r.v.priceEffectR : null), fxEffectR: sum(r => r.p.qty.gt(0) ? r.v.fxEffectR : null), realizedR: sum(r => r.realized.pnl), netLiq: sum(r => r.nl && r.nl.net), exitCosts: sum(r => r.nl && r.nl.costs) };
     const missing = rows.filter(r => r.p.qty.gt(0) && !r.v.valueR);
-    return { R, rows, totals, issues, missing, estimatedBasis: rows.some(r => r.v.costBasisStatus === "estimated" && r.p.qty.gt(0)), ratesAt: rates.fetchedAt, ratesSource: rates.table && rates.table.source };
+    return { rateOf: (cur, date) => rateFor(cur, date, null), R, rows, totals, issues, missing, estimatedBasis: rows.some(r => r.v.costBasisStatus === "estimated" && r.p.qty.gt(0)), ratesAt: rates.fetchedAt, ratesSource: rates.table && rates.table.source };
   };
   async function ratesOnDate(date, cur, R) {
     if (cur === R) return { direct: C.ONE, usdR: R === "USD" ? C.ONE : null };

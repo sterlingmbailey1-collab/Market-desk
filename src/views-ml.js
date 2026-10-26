@@ -32,7 +32,7 @@
     if (!r) return null;
     const o = r.oos;
     return { horizonDays: r.days, upPct: +r.upPct.toFixed(1), edgeOutOfSample: r.edge, trustPct: Math.round(r.trust * 100), logisticPct: +r.models.logisticPct.toFixed(1), boostedTreesPct: r.models.treesPct != null ? +r.models.treesPct.toFixed(1) : null, similarSetupsPct: +r.models.analogsPct.toFixed(1), baseRatePct: +r.models.baseRatePct.toFixed(1),
-      outOfSample: { predictions: o.predictions, independent: o.independent, accuracyPct: +(o.ensemble.accuracy * 100).toFixed(1), alwaysMajorityAccuracyPct: +(Math.max(r.models.baseRatePct, 100 - r.models.baseRatePct)).toFixed(1), brierSkillPct: +(o.skillEnsemble * 100).toFixed(1), tStatVsBaseRate: +(o.tStat || 0).toFixed(2), auc: o.ensemble.auc != null ? +o.ensemble.auc.toFixed(3) : null },
+      outOfSample: { predictions: o.predictions, independent: o.independent, accuracyPct: +(o.ensemble.accuracy * 100).toFixed(1), alwaysMajorityAccuracyPct: +(Math.max(r.models.baseRatePct, 100 - r.models.baseRatePct)).toFixed(1), brierSkillPct: +(o.skillEnsemble * 100).toFixed(1), tStatVsBaseRate: +(o.tStat || 0).toFixed(2), recentBrierSkillPct: o.recentSkill != null ? +(o.recentSkill * 100).toFixed(1) : null, edgeFadingLately: !!r.fading, auc: o.ensemble.auc != null ? +o.ensemble.auc.toFixed(3) : null },
       topDrivers: r.drivers.slice(0, 4).map(d => d.name + (d.push > 0 ? " (pushes up)" : " (pushes down)")), similarPastSetups: { n: r.analogs.length, roseAfter: r.analogs.filter(a => a.up).length },
       trainedOn: r.from + " to " + r.asOf + " (" + r.bars + " daily bars)", note: "Logistic regression + gradient-boosted trees + nearest-neighbour analogs (equal weights), walk-forward validated; the odds stay at the base rate unless the models beat it clearly out of sample (t >= 1.64 over independent blocks)." };
   }
@@ -53,6 +53,7 @@
       MD.day ? MD.day.probBar(Math.round(r.upPct), "Higher in " + label, "Lower") : h("p", {}, pct(r.upPct) + " chance higher in " + label),
       h("p", { class: "small " + (r.edge ? "" : "muted") }, r.edge
         ? "Beat the base rate on data it hadn't seen, clearly across " + o.blocks + " independent stretches (t = " + o.tStat.toFixed(1) + "): Brier skill " + sgn(o.skillEnsemble * 100) + ", AUC " + (o.ensemble.auc != null ? o.ensemble.auc.toFixed(2) : "—") + ", right " + pct(o.ensemble.accuracy * 100) + " of the time against " + pct(majority) + " for always guessing the more common outcome. Its odds count with " + Math.round(r.trust * 100) + "% weight; the rest is the base rate."
+        + (r.fading ? " But the edge has faded lately: over the most recent " + o.recentPredictions + " test predictions it did worse than the base rate (skill " + sgn(o.recentSkill * 100) + "), so its weight is halved." : "")
         : "No clear edge on data it hadn't seen (Brier skill " + sgn(o.skillEnsemble * 100) + " against the base rate, t = " + (isFinite(o.tStat) ? o.tStat.toFixed(1) : "—") + " across " + o.blocks + " independent stretches; 1.6 or more counts), so the odds stay at the base rate: how often " + r.symbol + " rose over " + label + " in its history. That's an honest answer, not a failure: most price patterns don't repeat reliably."),
       h("div", { class: "kpis k4" },
         kpi("Logistic model", pct(r.models.logisticPct), "Brier skill " + sgn(o.skillLogistic * 100) + " · L2 " + r.l2),
