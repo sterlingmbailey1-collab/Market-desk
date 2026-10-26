@@ -10079,6 +10079,46 @@ Reply with ONLY JSON: {"summary": "2-3 sentences on the theme and how to approac
     return { rows: rows.sort((x, y) => y.score - x.score), at: Date.now(), size: list.length };
   }
 
+  /* Machine-learning scan: the ML model (MD.mlView) trained on every name in the watchlist and holdings, ranked with
+     the ones that show a clear out-of-sample edge first. Each forecast is logged once a day and graded. */
+  let lastMl = null;
+  async function mlScan(app, days, onProgress) {
+    const list = universe(app), rows = []; let done = 0;
+    await pool(list, 2, async (a) => {
+      try { const r = await MD.mlView.run(app, a, days); rows.push({ a, r }); MD.mlView.log(app, a, r).catch(() => {}); } catch (e) { rows.push({ a, err: U.errorText(e) }); }
+      onProgress && onProgress(++done, list.length);
+    });
+    rows.sort((x, y) => (y.r && y.r.edge ? 1 : 0) - (x.r && x.r.edge ? 1 : 0) || (y.r ? Math.abs(y.r.upPct - 50) : -1) - (x.r ? Math.abs(x.r.upPct - 50) : -1));
+    lastMl = { at: Date.now(), days, rows };
+    return lastMl;
+  }
+  function mlSection(app) {
+    const box = h("div", { class: "stack" }), prog = h("span", { class: "small muted" });
+    let days = app.ls.get("ml.scanDays", 30);
+    const seg = h("div", {}), paintSeg = () => seg.replaceChildren(U.seg(MD.mlView.HZ.map(x => x[0]), (MD.mlView.HZ.find(x => x[1] === days) || MD.mlView.HZ[1])[0], (v) => { days = MD.mlView.HZ.find(x => x[0] === v)[1]; app.ls.set("ml.scanDays", days); paintSeg(); }));
+    const btn = h("button", { class: "btn ghost", type: "button", onclick: async () => {
+      btn.disabled = true; box.replaceChildren(h("div", { class: "skeleton" }, "Training…"));
+      try {
+        const res = await mlScan(app, days, (d, n) => { prog.textContent = "Trained " + d + " of " + n; });
+        const ok = res.rows.filter(x => x.r), edge = ok.filter(x => x.r.edge), label = (MD.mlView.HZ.find(x => x[1] === res.days) || [res.days + " days"])[0];
+        prog.textContent = "Trained " + ok.length + " models · " + U.fmtTs(res.at);
+        box.replaceChildren(!res.rows.length ? h("div", { class: "empty" }, "Add stocks, ETFs or coins to your watchlist or portfolio first.") : h("div", { class: "stack" },
+          h("div", { class: "row", style: "gap:8px;flex-wrap:wrap" }, h("span", { class: "pill" }, ok.length + " trained"), h("span", { class: "pill " + (edge.length ? "ok" : "") }, edge.length + " with a clear edge"), res.rows.length > ok.length ? h("span", { class: "pill bad" }, (res.rows.length - ok.length) + " without enough history") : null),
+          U.table([
+            { t: "Asset", v: (x) => h("span", { class: "who sym" }, h("b", {}, x.a.symbol), h("span", { class: "tiny muted" }, (x.a.held ? "Holding" : "Watchlist"))) },
+            { t: "Chance higher in " + label, n: true, v: (x) => x.r ? h("span", { class: x.r.upPct > 52 ? "up" : x.r.upPct < 48 ? "down" : "" }, Math.round(x.r.upPct) + "%") : h("span", { class: "tiny warn-t" }, x.err) },
+            { t: "Clear edge?", v: (x) => x.r ? (x.r.edge ? h("span", { class: "verdict sm positive" }, "Yes · t " + x.r.oos.tStat.toFixed(1)) : h("span", { class: "small muted" }, "No (t " + (isFinite(x.r.oos.tStat) ? x.r.oos.tStat.toFixed(1) : "—") + ")")) : "—" },
+            { t: "Brier skill", n: true, v: (x) => x.r ? (x.r.oos.skillEnsemble >= 0 ? "+" : "") + (x.r.oos.skillEnsemble * 100).toFixed(1) + "%" : "—" },
+            { t: "Base rate", n: true, v: (x) => x.r ? Math.round(x.r.models.baseRatePct) + "%" : "—" },
+            { t: "Strongest driver today", v: (x) => x.r && x.r.drivers[0] ? h("span", { class: "small" }, (x.r.drivers[0].push > 0 ? "▲ " : "▼ ") + x.r.drivers[0].name) : "—" }], res.rows, { onRow: (x) => app.openAsset(x.a) }),
+          h("p", { class: "tiny muted" }, "Each model is trained in your browser on that asset's daily history and scored only on stretches it hadn't seen. Without a clear edge (t ≥ 1.64 across independent stretches) its odds are just the base rate. Forecasts are logged once a day and graded; see the scorecard's Machine-learning model row.")));
+      } catch (e) { box.replaceChildren(U.errorBox({ message: U.errorText(e) })); }
+      btn.disabled = false;
+    } }, "Run the machine-learning scan");
+    paintSeg();
+    box.append(h("div", { class: "empty" }, "Trains the ML model on every name in your watchlist and holdings and ranks them, the ones with a clear out-of-sample edge first."));
+    return U.section("Machine-learning scan", h("div", { class: "stack" }, h("div", { class: "row", style: "gap:8px;flex-wrap:wrap;align-items:center" }, seg, btn, prog), box));
+  }
   function view(root, app) {
     const box = h("div", { class: "stack" }), prog = h("span", { class: "small muted" }), aiBox = h("div", { class: "stack" });
     let last = null;
@@ -10106,6 +10146,7 @@ Reply with ONLY JSON: {"summary": "2-3 sentences on the theme and how to approac
       if (!aiBox._ready) { aiBox._ready = true; aiBox.replaceChildren(MD.oppAI.runner(app, "AI: what needs attention today", (S, signal) => triage(app, last, S, signal), triageView(app))); }
     };
     root.append(U.section("Watchlist scanner", h("div", { class: "stack" }, h("p", { class: "small muted" }, "Measures every stock, ETF and coin in your watchlist and portfolio for overbought or oversold readings, 52-week extremes, moving-average crosses, big moves, volatility spikes, earnings within two weeks and smart-money activity."), h("div", { class: "row" }, runBtn, prog), box)),
+      mlSection(app),
       U.section("AI triage", h("div", { class: "stack" }, h("p", { class: "small muted" }, "Claude ranks what deserves your attention, checks the news behind the biggest signals and suggests whether to review a position, research further or do nothing. A second review checks it."), aiBox)));
     aiBox.append(h("div", { class: "empty" }, "Run the scan first."));
   }
@@ -10113,7 +10154,7 @@ Reply with ONLY JSON: {"summary": "2-3 sentences on the theme and how to approac
     if (!scanRes) throw new Error("Run the scan first.");
     const flagged = scanRes.rows.filter(r => r.signals.length).slice(0, 12);
     if (!flagged.length) return { summary: "Nothing in your watchlist or holdings shows an unusual signal right now. No action needed.", items: [], at: Date.now() };
-    const facts = flagged.map(r => ({ symbol: r.a.symbol, name: r.a.name, class: r.a.cls, held: r.a.held, last: r.last, return1WPct: r.r && r.r["1W"] != null ? +r.r["1W"].toFixed(1) : null, return1MPct: r.r && r.r["1M"] != null ? +r.r["1M"].toFixed(1) : null, rsi14: r.t && r.t.rsi14 != null ? +r.t.rsi14.toFixed(0) : null, signals: r.signals.map(s => s.sev + ": " + s.text) }));
+    const facts = flagged.map(r => ({ symbol: r.a.symbol, name: r.a.name, class: r.a.cls, held: r.a.held, last: r.last, return1WPct: r.r && r.r["1W"] != null ? +r.r["1W"].toFixed(1) : null, return1MPct: r.r && r.r["1M"] != null ? +r.r["1M"].toFixed(1) : null, rsi14: r.t && r.t.rsi14 != null ? +r.t.rsi14.toFixed(0) : null, signals: r.signals.map(s => s.sev + ": " + s.text), mlModel: (() => { const x = lastMl && lastMl.rows.find(y => y.a.symbol === r.a.symbol && y.r); return x ? { horizonDays: lastMl.days, upPct: Math.round(x.r.upPct), clearEdgeOutOfSample: x.r.edge } : null; })() }));
     const lim = await app.caps.sample.limits().catch(() => null);
     const tools = lim && lim.tools ? A().tools(app, S, ["search_news", "crypto_news", "stock_snapshot", "zacks_view", "my_portfolio", "search_web", "explain_move", "base_rates", "market_pulse"]) : undefined;
     const prompt = `Today is ${new Date().toISOString().slice(0, 10)}. Triage the investor's watchlist and holdings: the app measured the signals below. Decide what deserves attention today and why.
