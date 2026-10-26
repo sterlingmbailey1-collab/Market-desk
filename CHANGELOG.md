@@ -1,5 +1,9 @@
 # Changelog
 
+## Version 24 (2026-10-26)
+- The AI day-trade plan also gets the ML model's next-session odds and out-of-sample record. They count only with a
+  clear edge.
+
 ## Version 23 (2026-10-26)
 - **Market regimes (unsupervised machine learning)** in the Market Brain. k-means clusters three years of S&P 500
   days by trend, volatility, distance from the 200-day average and drawdown. You see:
@@ -11,8 +15,6 @@
 - **Machine-learning scan** (Opportunities → Watchlist scanner). The ML model is trained on every name in your
   watchlist and holdings, and the names are ranked with clear out-of-sample edges first. Each forecast is logged and
   graded, and the AI triage sees the results.
-- The AI day-trade plan also gets the ML model's next-session odds and out-of-sample record. They count only with a
-  clear edge.
 
 ## Version 22 (2026-10-26)
 - **Fix: overlapping text in the Recommendations prediction log.** The "▲ 61% up" pill no longer spills into the
