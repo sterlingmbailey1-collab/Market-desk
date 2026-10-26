@@ -27,6 +27,15 @@
     eq(r.length, 2); eq(r[0].key, "days"); eq(r[0].n, 1); near(r[0].upPct, 52, 1e-9);
     const m = r[1]; eq(m.n, 3, "ML's newer call replaces its older one"); near(m.upPct, (40 + 70 * 2 + 64) / 4, 1e-9); near(m.agreePct, 75, 1e-9, "ML leans the other way"); near(m.spread, 30, 1e-9);
   });
+  test("ML Platt calibration: overconfident odds are shrunk, and only when it helps on held-back data", () => {
+    const C = MD.core, r = C.rng(5), sig = (x) => 1 / (1 + Math.exp(-x)), ps = [], ys = [];
+    for (let i = 0; i < 900; i++) { const z = C.gauss(r); ps.push(sig(3 * z)); ys.push(r() < sig(z) ? 1 : 0); }
+    const p = MD.ml.platt(ps, ys);
+    ok(p.used && p.brierCal < p.brierRaw, JSON.stringify({ used: p.used, raw: p.brierRaw, cal: p.brierCal }));
+    ok(p.slope > 0.2 && p.slope < 0.5, "slope near 1/3: " + p.slope);
+    ok(p.apply(0.95) < 0.8 && p.apply(0.05) > 0.2, "extreme odds pulled in");
+    eq(MD.ml.platt(ps.slice(0, 100), ys.slice(0, 100)).used, false, "too few predictions");
+  });
   test("ML reliability table bins out-of-sample odds against outcomes", () => {
     const r = MD.ml.reliability([0.3, 0.35, 0.5, 0.65, 0.7, 0.62], [0, 1, 1, 1, 1, 0]);
     eq(r.length, 3); eq(r[0].n, 2); near(r[0].predictedPct, 32.5, 1e-9); near(r[0].actualPct, 50, 1e-9);

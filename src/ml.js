@@ -177,16 +177,31 @@
     // Final model on everything labeled, applied to today's (unlabeled) row.
     const S = scaler(labeled.map(r => r.x)), Z = labeled.map(r => S.z(r.x)), Y = labeled.map(r => r.y), m = logisticFit(Z, Y, l2), gb = gbtFit(Z, Y, gbtOpts);
     const last = rows[rows.length - 1], zNow = S.z(last.x), pL = m.predict(zNow), nn = knn(Z, Y, zNow, opts.k || 40), pK = nn.p, pG = gb.predict(zNow);
-    const base = (Y.reduce((s, x) => s + x, 0) + 1) / (Y.length + 2), pEns = (pL + pK + pG) / 3;
+    const base = (Y.reduce((s, x) => s + x, 0) + 1) / (Y.length + 2), pRaw = (pL + pK + pG) / 3;
+    // The ensemble's odds recalibrated on its own out-of-sample record, when that helped on held-back data.
+    const cal = platt(ens, oos.y), pEns = cal.used ? cal.apply(pRaw) : pRaw;
     const finalP = clamp(base + (pEns - base) * trust, 0.2, 0.8);
     const contrib = F.names.map(([key, name], j) => ({ key, name, value: last.x[j], z: zNow[j], weight: m.w[j + 1], push: m.w[j + 1] * zNow[j] })).sort((a, b) => Math.abs(b.push) - Math.abs(a.push));
     const analogs = nn.idx.slice(0, 8).map(i => { const r = labeled[i]; return { date: new Date(r.time * 1000).toISOString().slice(0, 10), forwardPct: (v[r.i + h] / v[r.i] - 1) * 100, up: !!r.y }; });
     // Reliability of confident out-of-sample calls: when the blended model said 60%+ one way, how often was it right.
     const conf = ens.map((p, i) => ({ p, y: oos.y[i] })).filter(x => Math.abs(x.p - 0.5) >= 0.1), confRight = conf.filter(x => (x.p > 0.5) === !!x.y).length;
     return { horizonBars: h, asOf: new Date(last.time * 1000).toISOString().slice(0, 10), from: new Date(points[0].time * 1000).toISOString().slice(0, 10), bars: v.length, trainedOn: labeled.length,
-      upPct: finalP * 100, models: { logisticPct: pL * 100, analogsPct: pK * 100, treesPct: pG * 100, baseRatePct: base * 100, blendedPct: pEns * 100 }, trust, treeSplits: F.names.map(([key, name], j) => ({ key, name, uses: gb.uses[j] })).filter(x => x.uses).sort((a, b) => b.uses - a.uses).slice(0, 5),
+      upPct: finalP * 100, models: { logisticPct: pL * 100, analogsPct: pK * 100, treesPct: pG * 100, baseRatePct: base * 100, blendedPct: pEns * 100, rawBlendedPct: pRaw * 100 }, platt: { used: cal.used, brierRaw: cal.brierRaw ?? null, brierCal: cal.brierCal ?? null, slope: cal.slope ?? null }, trust, treeSplits: F.names.map(([key, name], j) => ({ key, name, uses: gb.uses[j] })).filter(x => x.uses).sort((a, b) => b.uses - a.uses).slice(0, 5),
       oos: { predictions: oos.y.length, independent: Math.max(1, Math.floor(oos.y.length / h)), base: sBase, logistic: sLogit, analogs: sKnn, ensemble: sEns, trees: sGbt, skillLogistic: skill(sLogit), skillAnalogs: skill(sKnn), skillTrees: skill(sGbt), skillEnsemble: skEns, tStat, blocks: blocks.length, confident: { n: conf.length, right: confRight }, reliability: reliability(ens, oos.y), recentSkill, recentPredictions: ens.length - r0 },
       edge: clear, fading, l2, drivers: contrib, analogs, features: F.names.map(([, n]) => n), usedMarket: F.names.length > 11 };
+  }
+
+  /* Platt scaling: refit a model's odds on its own out-of-sample record (logistic regression on the log-odds). Fitted on
+     the first two thirds and kept only if it lowered the Brier score on the last third; then refitted on everything. */
+  function platt(ps, ys, minN = 150) {
+    if (ps.length < minN) return { used: false, reason: "too few out-of-sample predictions" };
+    const lg = (p) => { const q = clamp(p, 1e-4, 1 - 1e-4); return Math.log(q / (1 - q)); };
+    const fit = (a, b) => logisticFit(ps.slice(a, b).map(p => [lg(p)]), ys.slice(a, b), 1, 25);
+    const cut = Math.floor(ps.length * 2 / 3), m1 = fit(0, cut), tp = ps.slice(cut), ty = ys.slice(cut);
+    const brierRaw = scores(tp, ty).brier, brierCal = scores(tp.map(p => m1.predict([lg(p)])), ty).brier;
+    if (!(brierCal < brierRaw)) return { used: false, brierRaw, brierCal, reason: "didn't improve the held-back stretch" };
+    const all = fit(0, ps.length);
+    return { used: true, brierRaw, brierCal, slope: all.w[1], intercept: all.w[0], apply: (p) => all.predict([lg(p)]) };
   }
 
   /* Reliability: out-of-sample predictions grouped by what they said, against how often the outcome actually came true.
@@ -308,5 +323,5 @@
     return { used: true, n: items.length, brierStack: bStack, brierLogged: bLogged, apply: (it) => clamp(fAll(it), 5, 95) };
   }
 
-  MD.ml = { reliability, pooled, gbtFit, stacker, kmeans, regimes, FEATURES, features, label, scaler, logisticFit, knn, auc, scores, forecast };
+  MD.ml = { platt, reliability, pooled, gbtFit, stacker, kmeans, regimes, FEATURES, features, label, scaler, logisticFit, knn, auc, scores, forecast };
 })(typeof window !== "undefined" ? window : globalThis);

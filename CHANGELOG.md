@@ -1,5 +1,14 @@
 # Changelog
 
+## Version 37 (2026-10-26)
+- **ML odds recalibrated on their own record (Platt scaling).**
+  - The ensemble's raw odds are refitted on its own out-of-sample predictions.
+  - The fit is made on the first two thirds and kept only if it lowered the Brier score on the last third (data it
+    hadn't seen).
+  - Overconfident odds get pulled in; when recalibration doesn't help, it isn't used.
+  - The card says when it was applied and by how much it improved the held-back score. Tested on synthetic
+    overconfident odds.
+
 ## Version 36 (2026-10-26)
 - **What's new card on the dashboard.** It lists the features added since Version 25, each linking to its page:
   the game plan, paper trading, the screener, fresher recommendations, stronger AI and the portfolio additions. It
