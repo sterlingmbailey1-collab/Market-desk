@@ -1,5 +1,14 @@
 # Changelog
 
+## Version 33 (2026-10-26)
+- **The specialist panel learns from its record.**
+  - Every pick, AI decision and market call now logs each analyst's own odds: the lead analyst, fundamentals, quant
+    and news & macro.
+  - Once an analyst has 20 graded estimates, the team weighs it by its accuracy, from 0.5× to 2× (Brier score; a
+    coin flip counts 1×). Analysts who have been right count more, and ones who have been wrong count less.
+  - The disagreement check still uses the plain spread, so a confident outlier can't hide a split team.
+  - The AI scorecard shows how each analyst has done (graded, right, Brier) and its current weight.
+
 ## Version 32 (2026-10-26)
 - **Mid-cap discovery in Recommendations.** Every day, two sectors rotate in and the desk adds mid-sized companies
   ($2B–10B) from each, on the NYSE and Nasdaq, to the candidate pool. Picks reach beyond the same large names, and

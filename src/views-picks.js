@@ -295,9 +295,10 @@ Reply with ONLY JSON:
     // Specialist panel: three more analysts estimate each pick independently; the team's number (lead + panel, equal
     // weight) replaces the lead's, and wide disagreement lowers confidence.
     const PN = await MD.ai.panel(app, { task: "For each item, estimate the chance its price is HIGHER at the end of its window (horizonDays from now) than it is now.", items: picks.map(p => ({ id: p.symbol, name: p.asset.name, horizonDays: p.timeframeDays })), facts: table.filter(t => picks.some(p => p.symbol === t.symbol)), S, signal }).catch(e => { if (e && e.code === "cancelled") throw e; return null; });
+    const PW = MD.ai.panelWeights(app).weights;
     for (const p of picks) {
       const P = PN && PN[p.symbol]; if (!P) continue;
-      const T = MD.ai.teamUp(p.probs.claude, P), bw2 = MD.ai.blendFor(app, "ai-picks");
+      const T = MD.ai.teamUp(p.probs.claude, P, PW), bw2 = MD.ai.blendFor(app, "ai-picks");
       p.probs.lead = p.probs.claude; p.probs.panel = Object.assign({ spread: Math.round(T.spread) }, P.by); p.panelEvidence = P.evidence; p.panelRisks = P.risks;
       p.probs.claude = Math.round(T.upPct); p.upPct = p.probs.model != null ? bw2.wClaude * T.upPct + (1 - bw2.wClaude) * p.probs.model : T.upPct; p.probs.blended = Math.round(p.upPct);
       p.confidence = Math.max(0, p.confidence - MD.ai.disagreementPenalty(T.spread));
@@ -343,7 +344,7 @@ Reply with ONLY JSON:
       const mid = (p.moveLow + p.moveHigh) / 2;
       const f = { assetId: p.asset.id, asset: p.asset, symbol: p.symbol, source: "ai-picks", pickSetId: set.id, horizonDays: p.timeframeDays, dueAt: Date.now() + p.timeframeDays * 864e5, priceAtCreation: p.priceAtPick, currency: p.currency, priceSource: p.priceSource, thesis: p.why.join(" "), flatBandPct: 1 };
       if (p.lean === "either") Object.assign(f, { direction: "move", movePct: +p.moveLow.toFixed(1), probability: 0.5 + p.confidence / 400 });
-      else { const size = p.upPct != null ? (p.lean === "up" ? p.ifUpPct : p.ifDownPct) || mid : mid; Object.assign(f, { direction: p.lean, probability: p.leanProbabilityPct / 100, upProbability: p.upPct != null ? p.upPct / 100 : null, claudeUpPct: p.probs ? p.probs.claude : null, modelUpPct: p.probs ? p.probs.model : null, reviewerUpPct: p.probs && p.probs.reviewer != null ? p.probs.reviewer : null, mlUpPct: p.probs && p.probs.ml != null ? p.probs.ml : null, target: +(p.priceAtPick * (1 + (p.lean === "up" ? 1 : -1) * size / 100)).toPrecision(6) }); }
+      else { const size = p.upPct != null ? (p.lean === "up" ? p.ifUpPct : p.ifDownPct) || mid : mid; Object.assign(f, { direction: p.lean, probability: p.leanProbabilityPct / 100, upProbability: p.upPct != null ? p.upPct / 100 : null, claudeUpPct: p.probs ? p.probs.claude : null, modelUpPct: p.probs ? p.probs.model : null, reviewerUpPct: p.probs && p.probs.reviewer != null ? p.probs.reviewer : null, leadUpPct: p.probs && p.probs.panel && p.probs.lead != null ? p.probs.lead : null, panelUpPct: p.probs && p.probs.panel ? { fundamentals: p.probs.panel.fundamentals ?? null, quant: p.probs.panel.quant ?? null, news: p.probs.panel.news ?? null } : null, mlUpPct: p.probs && p.probs.ml != null ? p.probs.ml : null, target: +(p.priceAtPick * (1 + (p.lean === "up" ? 1 : -1) * size / 100)).toPrecision(6) }); }
       await app.store.create("forecasts", f);
     }
   }

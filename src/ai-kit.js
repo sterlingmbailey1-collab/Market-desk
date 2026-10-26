@@ -364,7 +364,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     return h("div", { class: "stack" },
       rows.length ? U.table([{ t: "Source", v: "label" }, { t: "Logged", v: (r) => String(r.logged), n: true }, { t: "Scored", v: (r) => String(r.scored), n: true }, { t: "Came true", v: (r) => r.hitPct != null ? r.hitPct.toFixed(0) + "%" : "—", n: true }, { t: "Brier (lower is better)", v: (r) => r.brier != null ? r.brier.toFixed(3) : "—", n: true }, { t: "If followed (avg)", v: (r) => r.followedPct == null ? "—" : h("span", { class: r.followedPct > 0 ? "up" : r.followedPct < 0 ? "down" : "", title: "Average return of its up/down calls if each had been acted on (down calls as shorts), " + r.followedN + " calls" }, (r.followedPct > 0 ? "+" : "") + r.followedPct.toFixed(2) + "%"), n: true }, { t: "Claude vs history", v: (r) => { const bw = blendFor(app, r.source); return bw.learned ? h("span", { title: "Brier on " + bw.n + " graded calls: Claude " + bw.brierClaude.toFixed(3) + ", history " + bw.brierModel.toFixed(3) + " (lower is better)" }, "blend " + Math.round(bw.wClaude * 100) + "/" + Math.round(100 - bw.wClaude * 100)) : h("span", { class: "muted" }, bw.n ? bw.n + "/10 graded" : "—"); } }, { t: "S&P 500 same windows", v: (r) => { if (!r.windows.length) return "—"; const el = h("span", { class: "num muted" }, "…"); spyOver(r.windows).then(v => { el.textContent = v == null ? "—" : (v > 0 ? "+" : "") + v.toFixed(2) + "%"; }, () => { el.textContent = "—"; }); return el; }, n: true }, { t: "By stated probability", v: (r) => r.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join(" · ") || "—" }], rows) : h("div", { class: "empty" }, "No forecasts logged yet."),
       all.scored ? h("div", { class: "row", style: "gap:16px;flex-wrap:wrap;align-items:center" }, h("div", { html: svg, style: "color:var(--muted);flex:1 1 260px;min-width:0" }), h("p", { class: "small muted", style: "flex:1 1 220px" }, "Each dot is a band of stated probability; its height is how often those calls came true. Dots below the dashed line mean the AI was overconfident in that band. Every AI that logs forecasts is told this record and asked to calibrate.")) : null,
-      lessonsPanel(app), howItDecides(app),
+      lessonsPanel(app), panelRecord(app), howItDecides(app),
       h("p", { class: "tiny muted" }, "Due forecasts are scored automatically while the page is open, from the close on their due date. A Brier score of 0.25 is what always saying 50% would earn."));
   }
 
@@ -606,9 +606,25 @@ Reply with ONLY JSON: {"estimates": [{"id": "the item's id", "upProbabilityPct":
     return out;
   }
   /* The team's probability: the lead analyst and each specialist count equally; their spread is the disagreement. */
-  function teamUp(leadPct, P) {
-    const xs = [leadPct].concat(P ? Object.values(P.by) : []), m = xs.reduce((a, b) => a + b, 0) / xs.length;
-    return { upPct: m, spread: Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length), n: xs.length };
+  // The lead analyst and the specialists, averaged with learned weights (W from panelWeights) or equally.
+  function teamUp(leadPct, P, W) {
+    const xs = [["lead", leadPct]].concat(P ? Object.entries(P.by) : []), w = xs.map(([k]) => (W && W[k]) || 1), sw = w.reduce((a, b) => a + b, 0);
+    const m = xs.reduce((a, [, v], i) => a + v * w[i], 0) / sw, eq = xs.reduce((a, [, v]) => a + v, 0) / xs.length;
+    return { upPct: m, spread: Math.sqrt(xs.reduce((a, [, v]) => a + (v - eq) ** 2, 0) / xs.length), n: xs.length, weighted: !!W && w.some(x => x !== 1) };
+  }
+  // Each panel member's record over graded forecasts that logged its estimate (leadUpPct, panelUpPct), and its weight.
+  function panelWeights(app) {
+    const byId = new Map(app.store.cached("forecasts").map(f => [f.id, f])), rows = [];
+    for (const e of app.store.cached("evals")) { const f = byId.get(e.forecastId); if (!f || !f.panelUpPct || f.leadUpPct == null || e.realizedReturnPct == null) continue; rows.push(Object.assign({ lead: f.leadUpPct, up: Number(e.realizedReturnPct) > 0 }, f.panelUpPct)); }
+    return MD.quant.memberWeights(rows, ["lead"].concat(PANEL.map(([k]) => k)), 20);
+  }
+  function panelRecord(app) {
+    const pw = panelWeights(app), NAMES = { lead: "Lead analyst", fundamentals: "Fundamentals analyst", quant: "Quant analyst", news: "News & macro analyst" };
+    const rows = Object.entries(pw.stats).map(([k, s]) => ({ k, name: NAMES[k] || k, n: s.n, brier: s.brier, hit: s.hitPct, w: pw.weights[k] }));
+    if (!rows.some(r => r.n)) return h("p", { class: "small muted" }, "Specialist panel: each analyst's own odds are logged with every pick, AI decision and market call; once each has 20 graded estimates, the team weighs them by their record.");
+    return h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, "How each analyst has done"),
+      U.table([{ t: "Analyst", v: "name" }, { t: "Graded", v: (r) => String(r.n), n: true }, { t: "Right", v: (r) => r.hit != null ? r.hit.toFixed(0) + "%" : "—", n: true }, { t: "Brier", v: (r) => r.brier != null ? r.brier.toFixed(3) : "—", n: true }, { t: "Weight in the team", v: (r) => r.n >= 20 ? r.w.toFixed(2) + "×" : "1× (needs 20)", n: true }], rows),
+      h("p", { class: "tiny muted" }, "Lower Brier is better (0.25 = always saying 50%). Weights run from 0.5× to 2× and only apply once an analyst has 20 graded estimates."));
   }
   // Wide disagreement lowers confidence: 2 points per point of spread beyond 10.
   const disagreementPenalty = (spread) => Math.max(0, Math.round((spread - 10) * 2));
@@ -645,5 +661,5 @@ Reply with ONLY JSON: {"estimates": [{"id": "the item's id", "upProbabilityPct":
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { consensusCard, sourceWeight, stackFor, panel, panelOn, teamUp, disagreementPenalty, followed, spyEach, openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { panelWeights, panelRecord, consensusCard, sourceWeight, stackFor, panel, panelOn, teamUp, disagreementPenalty, followed, spyEach, openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);

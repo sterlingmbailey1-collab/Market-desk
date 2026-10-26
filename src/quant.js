@@ -284,6 +284,19 @@
   /* Where an open up/down call stands: the move since it was made, that move in daily-volatility units for the bars
      elapsed (positive = in the call's favour), and the chance it finishes beyond its flat band on the called side,
      from a driftless walk over the bars left. Geometry only: it knows nothing about the reasons behind the call. */
+  /* Learned weights for the members of a forecasting team from graded rows {member: upPct, …, up: bool}: a member
+     with `minN`+ graded estimates gets 0.25 / its Brier score (a coin flip = 1), kept within 0.5–2; others weigh 1. */
+  function memberWeights(rows, members, minN = 20) {
+    const weights = {}, stats = {};
+    for (const k of members) {
+      const xs = rows.filter(r => r[k] != null && isFinite(r[k]) && r.up != null);
+      const brier = xs.length ? xs.reduce((a, r) => a + (r[k] / 100 - (r.up ? 1 : 0)) ** 2, 0) / xs.length : null;
+      const hit = xs.length ? xs.filter(r => (r[k] > 50) === !!r.up && r[k] !== 50).length / xs.length * 100 : null;
+      stats[k] = { n: xs.length, brier, hitPct: hit };
+      weights[k] = xs.length >= minN && brier > 0 ? Math.max(0.5, Math.min(2, 0.25 / brier)) : 1;
+    }
+    return { weights, stats, learned: members.some(k => stats[k].n >= minN) };
+  }
   /* Portfolio health (0–100) from measured numbers against the investor's risk setting: diversification (effective
      number of holdings, 8+ = full marks), the largest position against the single-position band, volatility and the
      past year's worst drop against the risk band, and how independently the holdings move (average correlation). */
@@ -513,6 +526,6 @@
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { healthScore, deskConsensus, minVarWeights, ercWeights, riskShares, newsScore, TECH_ALERTS, techState, evaluateTechAlert, alertText, tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { memberWeights, healthScore, deskConsensus, minVarWeights, ercWeights, riskShares, newsScore, TECH_ALERTS, techState, evaluateTechAlert, alertText, tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);

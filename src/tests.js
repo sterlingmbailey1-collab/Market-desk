@@ -7,6 +7,13 @@
   const near = (a, b, tol, msg) => { if (!(Math.abs(Number(a) - Number(b)) <= tol)) throw new Error((msg || "") + " expected ≈" + b + " got " + a); };
   const ok = (c, msg) => { if (!c) throw new Error(msg || "assertion failed"); };
 
+  test("learned weights for the specialist panel from graded estimates", () => {
+    const Q = MD.quant, rows = Array.from({ length: 30 }, (_, i) => ({ lead: 50, quant: i % 2 ? 80 : 20, news: i % 2 ? 10 : 90, up: !!(i % 2) }));
+    const w = Q.memberWeights(rows, ["lead", "quant", "news", "fundamentals"], 20);
+    near(w.weights.lead, 1, 1e-9, "a coin flip weighs 1"); eq(w.weights.quant, 2, "a member that's been right is capped at 2×"); eq(w.weights.news, 0.5, "one that's been wrong floors at 0.5×"); eq(w.weights.fundamentals, 1, "no record yet");
+    near(w.stats.quant.brier, 0.04, 1e-9); eq(w.stats.quant.hitPct, 100); ok(w.learned);
+    eq(Q.memberWeights(rows.slice(0, 10), ["quant"], 20).weights.quant, 1, "too few graded estimates");
+  });
   test("portfolio health score against the risk band", () => {
     const Q = MD.quant, good = Q.healthScore({ effective: 9, topWeightPct: 12, volPct: 14, maxDrawdownPct: -15, avgCorr: 0.3, risk: "mid" });
     eq(good.parts.length, 5); eq(good.parts.find(p => p.key === "diversification").value, 100); eq(good.parts.find(p => p.key === "concentration").value, 100); eq(good.parts.find(p => p.key === "independence").value, 70);

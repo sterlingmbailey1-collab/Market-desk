@@ -1053,6 +1053,18 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("advisor tool: odds lookup filtered to a team", adv.res.get_betting_odds && adv.res.get_betting_odds.games.length === 1 && /Dolphins/.test(adv.res.get_betting_odds.games[0].game) && adv.res.get_betting_odds.games[0].markets.ml.fairPct, JSON.stringify(adv.res.get_betting_odds || {}).slice(0, 200));
   check("advisor tool: exact bet maths (+250 on $40)", adv.res.bet_math && adv.res.bet_math.decimal === 3.5 && adv.res.bet_math.profitIfWin === 100 && adv.res.bet_math.impliedPct === 28.57 && adv.res.bet_math.edgePct === 5, JSON.stringify(adv.res.bet_math || {}));
   check("advisor tool: Zacks view and tracked bets", adv.res.zacks_view && adv.res.zacks_view.facts && adv.res.get_my_bets && adv.res.get_my_bets.totalBets >= 1, JSON.stringify(adv.res.get_my_bets || {}).slice(0, 200));
+  // ---- Learned panel weights: each analyst's logged odds are graded, and the team leans on the ones that were right
+  const pwT = await page.evaluate(async () => {
+    const app = MD.app, logged = app.store.cached("forecasts").filter(f => f.panelUpPct && f.leadUpPct != null).map(f => f.source);
+    const before = MD.ai.panelWeights(app).weights;
+    for (let i = 0; i < 22; i++) { const up = !!(i % 2), f = await app.store.create("forecasts", { assetId: "stock:ZZT", symbol: "ZZT", source: "ai-picks", horizonDays: 30, dueAt: Date.now() - 864e5, priceAtCreation: 100, currency: "USD", direction: "up", probability: 0.55, leadUpPct: 55, panelUpPct: { fundamentals: 50, quant: up ? 85 : 15, news: up ? 10 : 90 } }); await app.store.create("evals", { forecastId: f.id, evaluatedAt: Date.now(), priceAtDue: up ? 105 : 95, realizedReturnPct: up ? 5 : -5, actualDirection: up ? "up" : "down", directionHit: up, brier: 0.2, probability: 0.55, source: "ai-picks" }); }
+    const pw = MD.ai.panelWeights(app), T = MD.ai.teamUp(50, { by: { fundamentals: 50, quant: 80, news: 20 } }, pw.weights), E = MD.ai.teamUp(50, { by: { fundamentals: 50, quant: 80, news: 20 } });
+    return { logged: [...new Set(logged)], before, w: pw.weights, weighted: T.upPct, equal: E.upPct };
+  });
+  check("specialist panel learns: each analyst's odds are logged with picks, decisions and market calls, and the team weighs them by their graded record", ["ai-picks", "ai-decide", "ai-market"].every(s => pwT.logged.includes(s)) && pwT.before.quant === 1 && pwT.w.quant === 2 && pwT.w.news === 0.5 && pwT.weighted > pwT.equal + 5, JSON.stringify(pwT));
+  await page.evaluate(() => { MD.app.ls.set("resTab", "journal"); MD.app.go("research", {}); }); await page.waitForTimeout(2000);
+  const anTxt2 = await page.locator("#content").innerText();
+  check("scorecard shows how each analyst has done and its weight in the team", /How each analyst has done/i.test(anTxt2) && /Quant analyst/.test(anTxt2) && /2\.00×/.test(anTxt2), (anTxt2.match(/How each analyst has done[\s\S]{0,400}/i) || [""])[0]);
   check("no uncaught errors overall", errors.length === 0, errors.slice(0, 5).join(" | "));
   const fail = results.filter(r => !r.ok).length;
   console.log(`\n${results.length - fail}/${results.length} checks passed`);

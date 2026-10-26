@@ -354,7 +354,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     const modelUp = br ? (ml && ml.edgeOutOfSample ? Math.round((br.model.upPct + ml.upPct) / 2 * 10) / 10 : br.model.upPct) : null;
     // Specialist panel: three more analysts estimate the same odds independently; the team's number is used.
     const PN = await MD.ai.panel(app, { task: "Estimate the chance the S&P 500 (SPY) closes the " + target + " session ABOVE " + refLabel + " (" + (ref ? ref.toFixed(2) : "n/a") + ").", items: [{ id: "spy", symbol: "SPY", horizonDays: 1 }], facts: measured, S, signal: opts.signal }).catch(e => { if (e && e.code === "cancelled") throw e; return null; });
-    if (PN && PN.spy) { const T = MD.ai.teamUp(claudeUp, PN.spy); panelInfo = Object.assign({ lead: Math.round(claudeUp), spread: Math.round(T.spread) }, PN.spy.by); claudeUp = Math.max(25, Math.min(75, T.upPct)); conf = Math.max(0, conf - MD.ai.disagreementPenalty(T.spread)); }
+    if (PN && PN.spy) { const T = MD.ai.teamUp(claudeUp, PN.spy, MD.ai.panelWeights(app).weights); panelInfo = Object.assign({ lead: Math.round(claudeUp), spread: Math.round(T.spread) }, PN.spy.by); claudeUp = Math.max(25, Math.min(75, T.upPct)); conf = Math.max(0, conf - MD.ai.disagreementPenalty(T.spread)); }
     const bw = MD.ai.blendFor(app, "ai-market");
     let up = modelUp != null ? bw.wClaude * claudeUp + (1 - bw.wClaude) * modelUp : claudeUp;
     const rv = await MD.ai.review(app, { task: "Will SPY close the " + target + " session above " + refLabel + "?", S, signal: opts.signal, facts: measured, items: [{ id: "call", upProbabilityPct: Math.round(up), drivers: r.drivers, confidence: conf }] }).catch(() => null);
@@ -372,7 +372,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     // Only the first call per session counts for the record; later ones are shown but not logged.
     const first = !app.store.cached("marketcalls").some(c => c.target === target && c.forecastId);
     if (first && ref > 0 && up !== 50) {
-      const f = await app.store.create("forecasts", { assetId: SPY.id, asset: SPY, symbol: "SPY", source: "ai-market", horizonDays: 1, dueAt: Q.closeTimeUTC(target), priceAtCreation: ref, currency: "USD", priceSource: refLabel, direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: call.summary, flatBandPct: 0, sessionDate: target, claudeUpPct: call.probs.claude, modelUpPct: call.probs.model, reviewerUpPct: call.probs.reviewer ?? null, mlUpPct: call.probs.ml ?? null }).catch(() => null);
+      const f = await app.store.create("forecasts", { assetId: SPY.id, asset: SPY, symbol: "SPY", source: "ai-market", horizonDays: 1, dueAt: Q.closeTimeUTC(target), priceAtCreation: ref, currency: "USD", priceSource: refLabel, direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: call.summary, flatBandPct: 0, sessionDate: target, claudeUpPct: call.probs.claude, modelUpPct: call.probs.model, reviewerUpPct: call.probs.reviewer ?? null, leadUpPct: call.panel ? call.panel.lead : null, panelUpPct: call.panel ? { fundamentals: call.panel.fundamentals ?? null, quant: call.panel.quant ?? null, news: call.panel.news ?? null } : null, mlUpPct: call.probs.ml ?? null }).catch(() => null);
       call.forecastId = f && f.id; call.dueAt = Q.closeTimeUTC(target);
     }
     return app.store.create("marketcalls", call);

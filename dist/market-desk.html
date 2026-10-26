@@ -1821,6 +1821,19 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
   /* Where an open up/down call stands: the move since it was made, that move in daily-volatility units for the bars
      elapsed (positive = in the call's favour), and the chance it finishes beyond its flat band on the called side,
      from a driftless walk over the bars left. Geometry only: it knows nothing about the reasons behind the call. */
+  /* Learned weights for the members of a forecasting team from graded rows {member: upPct, …, up: bool}: a member
+     with `minN`+ graded estimates gets 0.25 / its Brier score (a coin flip = 1), kept within 0.5–2; others weigh 1. */
+  function memberWeights(rows, members, minN = 20) {
+    const weights = {}, stats = {};
+    for (const k of members) {
+      const xs = rows.filter(r => r[k] != null && isFinite(r[k]) && r.up != null);
+      const brier = xs.length ? xs.reduce((a, r) => a + (r[k] / 100 - (r.up ? 1 : 0)) ** 2, 0) / xs.length : null;
+      const hit = xs.length ? xs.filter(r => (r[k] > 50) === !!r.up && r[k] !== 50).length / xs.length * 100 : null;
+      stats[k] = { n: xs.length, brier, hitPct: hit };
+      weights[k] = xs.length >= minN && brier > 0 ? Math.max(0.5, Math.min(2, 0.25 / brier)) : 1;
+    }
+    return { weights, stats, learned: members.some(k => stats[k].n >= minN) };
+  }
   /* Portfolio health (0–100) from measured numbers against the investor's risk setting: diversification (effective
      number of holdings, 8+ = full marks), the largest position against the single-position band, volatility and the
      past year's worst drop against the risk band, and how independently the holdings move (average correlation). */
@@ -2050,7 +2063,7 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
     for (let i = 1; i < 10; i++) { const p = nyParts(new Date(now.getTime() + i * 864e5)); if (tradingDay(p.ymd, p.dow)) return p.ymd; }
     return s.date;
   }
-  MD.quant = { healthScore, deskConsensus, minVarWeights, ercWeights, riskShares, newsScore, TECH_ALERTS, techState, evaluateTechAlert, alertText, tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
+  MD.quant = { memberWeights, healthScore, deskConsensus, minVarWeights, ercWeights, riskShares, newsScore, TECH_ALERTS, techState, evaluateTechAlert, alertText, tradePreview, riskGuard, callStanding, blendWeights, barrierOdds, decisionMath, intradaySignals, calibrateFrom, closeTimeUTC, targetSession, cleanRule, ruleText, backtestRule, ruleToday, backtestVerdict, rsiSeries, states, summarize, baseRates, directionModel, barsFor, bigMoveChance, ols, dailyReturns, factorModel, attribute, lastMove, recentCorrelation,
     vwap, openingRange, pivots, atr, gapStats, sessionVolumeShare, rvol, positionSize, tradeStats, session, nyParts, HOLIDAYS, EARLY };
 })(typeof window !== "undefined" ? window : globalThis);
 
@@ -2382,6 +2395,13 @@ details.rg p { margin: 6px 0 2px; color: var(--ink); }
   const near = (a, b, tol, msg) => { if (!(Math.abs(Number(a) - Number(b)) <= tol)) throw new Error((msg || "") + " expected ≈" + b + " got " + a); };
   const ok = (c, msg) => { if (!c) throw new Error(msg || "assertion failed"); };
 
+  test("learned weights for the specialist panel from graded estimates", () => {
+    const Q = MD.quant, rows = Array.from({ length: 30 }, (_, i) => ({ lead: 50, quant: i % 2 ? 80 : 20, news: i % 2 ? 10 : 90, up: !!(i % 2) }));
+    const w = Q.memberWeights(rows, ["lead", "quant", "news", "fundamentals"], 20);
+    near(w.weights.lead, 1, 1e-9, "a coin flip weighs 1"); eq(w.weights.quant, 2, "a member that's been right is capped at 2×"); eq(w.weights.news, 0.5, "one that's been wrong floors at 0.5×"); eq(w.weights.fundamentals, 1, "no record yet");
+    near(w.stats.quant.brier, 0.04, 1e-9); eq(w.stats.quant.hitPct, 100); ok(w.learned);
+    eq(Q.memberWeights(rows.slice(0, 10), ["quant"], 20).weights.quant, 1, "too few graded estimates");
+  });
   test("portfolio health score against the risk band", () => {
     const Q = MD.quant, good = Q.healthScore({ effective: 9, topWeightPct: 12, volPct: 14, maxDrawdownPct: -15, avgCorr: 0.3, risk: "mid" });
     eq(good.parts.length, 5); eq(good.parts.find(p => p.key === "diversification").value, 100); eq(good.parts.find(p => p.key === "concentration").value, 100); eq(good.parts.find(p => p.key === "independence").value, 70);
@@ -8721,7 +8741,7 @@ Reply with ONLY JSON: {"summary": "two sentences: how good the calls have been a
     return h("div", { class: "stack" },
       rows.length ? U.table([{ t: "Source", v: "label" }, { t: "Logged", v: (r) => String(r.logged), n: true }, { t: "Scored", v: (r) => String(r.scored), n: true }, { t: "Came true", v: (r) => r.hitPct != null ? r.hitPct.toFixed(0) + "%" : "—", n: true }, { t: "Brier (lower is better)", v: (r) => r.brier != null ? r.brier.toFixed(3) : "—", n: true }, { t: "If followed (avg)", v: (r) => r.followedPct == null ? "—" : h("span", { class: r.followedPct > 0 ? "up" : r.followedPct < 0 ? "down" : "", title: "Average return of its up/down calls if each had been acted on (down calls as shorts), " + r.followedN + " calls" }, (r.followedPct > 0 ? "+" : "") + r.followedPct.toFixed(2) + "%"), n: true }, { t: "Claude vs history", v: (r) => { const bw = blendFor(app, r.source); return bw.learned ? h("span", { title: "Brier on " + bw.n + " graded calls: Claude " + bw.brierClaude.toFixed(3) + ", history " + bw.brierModel.toFixed(3) + " (lower is better)" }, "blend " + Math.round(bw.wClaude * 100) + "/" + Math.round(100 - bw.wClaude * 100)) : h("span", { class: "muted" }, bw.n ? bw.n + "/10 graded" : "—"); } }, { t: "S&P 500 same windows", v: (r) => { if (!r.windows.length) return "—"; const el = h("span", { class: "num muted" }, "…"); spyOver(r.windows).then(v => { el.textContent = v == null ? "—" : (v > 0 ? "+" : "") + v.toFixed(2) + "%"; }, () => { el.textContent = "—"; }); return el; }, n: true }, { t: "By stated probability", v: (r) => r.buckets.filter(b => b.n).map(b => b.range + ": " + b.hitPct.toFixed(0) + "% of " + b.n).join(" · ") || "—" }], rows) : h("div", { class: "empty" }, "No forecasts logged yet."),
       all.scored ? h("div", { class: "row", style: "gap:16px;flex-wrap:wrap;align-items:center" }, h("div", { html: svg, style: "color:var(--muted);flex:1 1 260px;min-width:0" }), h("p", { class: "small muted", style: "flex:1 1 220px" }, "Each dot is a band of stated probability; its height is how often those calls came true. Dots below the dashed line mean the AI was overconfident in that band. Every AI that logs forecasts is told this record and asked to calibrate.")) : null,
-      lessonsPanel(app), howItDecides(app),
+      lessonsPanel(app), panelRecord(app), howItDecides(app),
       h("p", { class: "tiny muted" }, "Due forecasts are scored automatically while the page is open, from the close on their due date. A Brier score of 0.25 is what always saying 50% would earn."));
   }
 
@@ -8963,9 +8983,25 @@ Reply with ONLY JSON: {"estimates": [{"id": "the item's id", "upProbabilityPct":
     return out;
   }
   /* The team's probability: the lead analyst and each specialist count equally; their spread is the disagreement. */
-  function teamUp(leadPct, P) {
-    const xs = [leadPct].concat(P ? Object.values(P.by) : []), m = xs.reduce((a, b) => a + b, 0) / xs.length;
-    return { upPct: m, spread: Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length), n: xs.length };
+  // The lead analyst and the specialists, averaged with learned weights (W from panelWeights) or equally.
+  function teamUp(leadPct, P, W) {
+    const xs = [["lead", leadPct]].concat(P ? Object.entries(P.by) : []), w = xs.map(([k]) => (W && W[k]) || 1), sw = w.reduce((a, b) => a + b, 0);
+    const m = xs.reduce((a, [, v], i) => a + v * w[i], 0) / sw, eq = xs.reduce((a, [, v]) => a + v, 0) / xs.length;
+    return { upPct: m, spread: Math.sqrt(xs.reduce((a, [, v]) => a + (v - eq) ** 2, 0) / xs.length), n: xs.length, weighted: !!W && w.some(x => x !== 1) };
+  }
+  // Each panel member's record over graded forecasts that logged its estimate (leadUpPct, panelUpPct), and its weight.
+  function panelWeights(app) {
+    const byId = new Map(app.store.cached("forecasts").map(f => [f.id, f])), rows = [];
+    for (const e of app.store.cached("evals")) { const f = byId.get(e.forecastId); if (!f || !f.panelUpPct || f.leadUpPct == null || e.realizedReturnPct == null) continue; rows.push(Object.assign({ lead: f.leadUpPct, up: Number(e.realizedReturnPct) > 0 }, f.panelUpPct)); }
+    return MD.quant.memberWeights(rows, ["lead"].concat(PANEL.map(([k]) => k)), 20);
+  }
+  function panelRecord(app) {
+    const pw = panelWeights(app), NAMES = { lead: "Lead analyst", fundamentals: "Fundamentals analyst", quant: "Quant analyst", news: "News & macro analyst" };
+    const rows = Object.entries(pw.stats).map(([k, s]) => ({ k, name: NAMES[k] || k, n: s.n, brier: s.brier, hit: s.hitPct, w: pw.weights[k] }));
+    if (!rows.some(r => r.n)) return h("p", { class: "small muted" }, "Specialist panel: each analyst's own odds are logged with every pick, AI decision and market call; once each has 20 graded estimates, the team weighs them by their record.");
+    return h("div", { class: "stack", style: "gap:4px" }, h("span", { class: "label" }, "How each analyst has done"),
+      U.table([{ t: "Analyst", v: "name" }, { t: "Graded", v: (r) => String(r.n), n: true }, { t: "Right", v: (r) => r.hit != null ? r.hit.toFixed(0) + "%" : "—", n: true }, { t: "Brier", v: (r) => r.brier != null ? r.brier.toFixed(3) : "—", n: true }, { t: "Weight in the team", v: (r) => r.n >= 20 ? r.w.toFixed(2) + "×" : "1× (needs 20)", n: true }], rows),
+      h("p", { class: "tiny muted" }, "Lower Brier is better (0.25 = always saying 50%). Weights run from 0.5× to 2× and only apply once an analyst has 20 graded estimates."));
   }
   // Wide disagreement lowers confidence: 2 points per point of spread beyond 10.
   const disagreementPenalty = (spread) => Math.max(0, Math.round((spread - 10) * 2));
@@ -9002,7 +9038,7 @@ Reply with ONLY JSON: {"estimates": [{"id": "the item's id", "upProbabilityPct":
   }
   const list = (label, xs) => xs && xs.length ? h("div", {}, h("span", { class: "label" }, label), h("ul", { class: "small", style: "margin:4px 0 0;padding-left:1.1em;display:grid;gap:3px" }, xs.map(x => h("li", {}, x)))) : null;
 
-  MD.ai = { consensusCard, sourceWeight, stackFor, panel, panelOn, teamUp, disagreementPenalty, followed, spyEach, openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
+  MD.ai = { panelWeights, panelRecord, consensusCard, sourceWeight, stackFor, panel, panelOn, teamUp, disagreementPenalty, followed, spyEach, openCalls, monitorCalls, statusCard, blendFor, assetMemory, assetNote, memoryCard, calibrateUp, findAsset, session, tools, TOOLS, selectTools, intentsOf, toolCap, baseRatesFor, contextNote, profileNote, RISK, HZ, trackRecord, calibrationNote, scoreDue, scorecard, learn, latestLessons, scoredCalls, SOURCE_LABEL, review, blend, errText, logBox, meters, sources, reviewBadge, list, rnd };
 })(typeof window !== "undefined" ? window : globalThis);
 
 </script>
@@ -9364,7 +9400,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     const modelUp = br ? (ml && ml.edgeOutOfSample ? Math.round((br.model.upPct + ml.upPct) / 2 * 10) / 10 : br.model.upPct) : null;
     // Specialist panel: three more analysts estimate the same odds independently; the team's number is used.
     const PN = await MD.ai.panel(app, { task: "Estimate the chance the S&P 500 (SPY) closes the " + target + " session ABOVE " + refLabel + " (" + (ref ? ref.toFixed(2) : "n/a") + ").", items: [{ id: "spy", symbol: "SPY", horizonDays: 1 }], facts: measured, S, signal: opts.signal }).catch(e => { if (e && e.code === "cancelled") throw e; return null; });
-    if (PN && PN.spy) { const T = MD.ai.teamUp(claudeUp, PN.spy); panelInfo = Object.assign({ lead: Math.round(claudeUp), spread: Math.round(T.spread) }, PN.spy.by); claudeUp = Math.max(25, Math.min(75, T.upPct)); conf = Math.max(0, conf - MD.ai.disagreementPenalty(T.spread)); }
+    if (PN && PN.spy) { const T = MD.ai.teamUp(claudeUp, PN.spy, MD.ai.panelWeights(app).weights); panelInfo = Object.assign({ lead: Math.round(claudeUp), spread: Math.round(T.spread) }, PN.spy.by); claudeUp = Math.max(25, Math.min(75, T.upPct)); conf = Math.max(0, conf - MD.ai.disagreementPenalty(T.spread)); }
     const bw = MD.ai.blendFor(app, "ai-market");
     let up = modelUp != null ? bw.wClaude * claudeUp + (1 - bw.wClaude) * modelUp : claudeUp;
     const rv = await MD.ai.review(app, { task: "Will SPY close the " + target + " session above " + refLabel + "?", S, signal: opts.signal, facts: measured, items: [{ id: "call", upProbabilityPct: Math.round(up), drivers: r.drivers, confidence: conf }] }).catch(() => null);
@@ -9382,7 +9418,7 @@ Reply with ONLY JSON: {"upProbabilityPct": 30-70, "summary": "2-3 sentences", "d
     // Only the first call per session counts for the record; later ones are shown but not logged.
     const first = !app.store.cached("marketcalls").some(c => c.target === target && c.forecastId);
     if (first && ref > 0 && up !== 50) {
-      const f = await app.store.create("forecasts", { assetId: SPY.id, asset: SPY, symbol: "SPY", source: "ai-market", horizonDays: 1, dueAt: Q.closeTimeUTC(target), priceAtCreation: ref, currency: "USD", priceSource: refLabel, direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: call.summary, flatBandPct: 0, sessionDate: target, claudeUpPct: call.probs.claude, modelUpPct: call.probs.model, reviewerUpPct: call.probs.reviewer ?? null, mlUpPct: call.probs.ml ?? null }).catch(() => null);
+      const f = await app.store.create("forecasts", { assetId: SPY.id, asset: SPY, symbol: "SPY", source: "ai-market", horizonDays: 1, dueAt: Q.closeTimeUTC(target), priceAtCreation: ref, currency: "USD", priceSource: refLabel, direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: call.summary, flatBandPct: 0, sessionDate: target, claudeUpPct: call.probs.claude, modelUpPct: call.probs.model, reviewerUpPct: call.probs.reviewer ?? null, leadUpPct: call.panel ? call.panel.lead : null, panelUpPct: call.panel ? { fundamentals: call.panel.fundamentals ?? null, quant: call.panel.quant ?? null, news: call.panel.news ?? null } : null, mlUpPct: call.probs.ml ?? null }).catch(() => null);
       call.forecastId = f && f.id; call.dueAt = Q.closeTimeUTC(target);
     }
     return app.store.create("marketcalls", call);
@@ -10315,7 +10351,7 @@ Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoi
     // Specialist panel: three more analysts estimate the same odds independently; the team's number is used.
     const lead = Math.round(claudeUp), PN = await MD.ai.panel(app, { task: "Estimate the chance " + asset.symbol + " is HIGHER in " + days + " days than now.", items: [{ id: "decision", symbol: asset.symbol, name: measured.name, horizonDays: days }], facts: measured, S, signal: opts.signal }).catch(e => { if (e && e.code === "cancelled") throw e; return null; });
     let panelInfo = null;
-    if (PN && PN.decision) { const T = MD.ai.teamUp(claudeUp, PN.decision); panelInfo = Object.assign({ lead, spread: Math.round(T.spread) }, PN.decision.by); claudeUp = T.upPct; conf = Math.max(0, conf - MD.ai.disagreementPenalty(T.spread)); }
+    if (PN && PN.decision) { const T = MD.ai.teamUp(claudeUp, PN.decision, MD.ai.panelWeights(app).weights); panelInfo = Object.assign({ lead, spread: Math.round(T.spread) }, PN.decision.by); claudeUp = T.upPct; conf = Math.max(0, conf - MD.ai.disagreementPenalty(T.spread)); }
     const bw = MD.ai.blendFor(app, "ai-decide");
     let up = modelUp != null ? bw.wClaude * claudeUp + (1 - bw.wClaude) * modelUp : claudeUp;
     const rv = await MD.ai.review(app, { task: "Should this investor " + decision + " " + asset.symbol + " over " + days + " days?", S, signal: opts.signal, facts: measured, items: [{ id: "decision", decision, upProbabilityPct: Math.round(up), reasons: r.reasons, preMortem: r.preMortem || null, specialistPanel: panelInfo, confidence: conf }] }).catch(() => null);
@@ -10332,7 +10368,7 @@ Reply with ONLY JSON: {"decision": "buy"|"accumulate"|"hold"|"trim"|"sell"|"avoi
     const out = { conflict, panel: panelInfo, preMortem: String(r.preMortem || ""), fit, assetId: asset.id, symbol: asset.symbol, at: Date.now(), days, decision, headline: String(r.headline || ""), upPct: up, probs: { claude: Math.round(claudeUp), model: modelUp, ml: ml ? ml.upPct : null, mlEdge: ml ? ml.edgeOutOfSample : null, reviewer: review && review.probabilityPct != null ? Math.round(review.probabilityPct) : null, final: up }, calibration: cal.applied ? cal : null, stacked: stk.used ? { n: stk.n } : null,
       ifUpPct: r1(ifUp), ifDownPct: r1(ifDown), math, aiSizePct: Math.max(0, Math.min(100, Number(r.positionSizePct) || 0)), cap, entryPlan: String(r.entryPlan || ""), exitPlan: r.exitPlan || null, reasons: (r.reasons || []).slice(0, 5).map(String), risks: (r.risks || []).slice(0, 4).map(String), changeMyMind: String(r.changeMyMind || ""), confidence: conf, review, sources: S.verify(r.sources), price: measured.price, position, toolCalls: S.calls };
     if (!app.demo && out.price > 0 && up !== 50) {
-      const f = await app.store.create("forecasts", { assetId: asset.id, asset: MD.common.slim(asset), symbol: asset.symbol, source: "ai-decide", horizonDays: days, dueAt: Date.now() + days * 864e5, priceAtCreation: out.price, currency: "USD", priceSource: q ? q.source : "quote", direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: out.headline + " (" + decision + ")", flatBandPct: 1, claudeUpPct: out.probs.claude, modelUpPct: out.probs.model, reviewerUpPct: out.probs.reviewer ?? null, mlUpPct: ml ? ml.upPct : null }).catch(() => null);
+      const f = await app.store.create("forecasts", { assetId: asset.id, asset: MD.common.slim(asset), symbol: asset.symbol, source: "ai-decide", horizonDays: days, dueAt: Date.now() + days * 864e5, priceAtCreation: out.price, currency: "USD", priceSource: q ? q.source : "quote", direction: up > 50 ? "up" : "down", probability: Math.max(up, 100 - up) / 100, thesis: out.headline + " (" + decision + ")", flatBandPct: 1, claudeUpPct: out.probs.claude, modelUpPct: out.probs.model, reviewerUpPct: out.probs.reviewer ?? null, leadUpPct: out.panel ? out.panel.lead : null, panelUpPct: out.panel ? { fundamentals: out.panel.fundamentals ?? null, quant: out.panel.quant ?? null, news: out.panel.news ?? null } : null, mlUpPct: ml ? ml.upPct : null }).catch(() => null);
       out.forecastId = f && f.id;
       await app.store.put("decisions", idOf(asset), JSON.parse(JSON.stringify(out))).catch(() => {});
     }
@@ -12304,9 +12340,10 @@ Reply with ONLY JSON:
     // Specialist panel: three more analysts estimate each pick independently; the team's number (lead + panel, equal
     // weight) replaces the lead's, and wide disagreement lowers confidence.
     const PN = await MD.ai.panel(app, { task: "For each item, estimate the chance its price is HIGHER at the end of its window (horizonDays from now) than it is now.", items: picks.map(p => ({ id: p.symbol, name: p.asset.name, horizonDays: p.timeframeDays })), facts: table.filter(t => picks.some(p => p.symbol === t.symbol)), S, signal }).catch(e => { if (e && e.code === "cancelled") throw e; return null; });
+    const PW = MD.ai.panelWeights(app).weights;
     for (const p of picks) {
       const P = PN && PN[p.symbol]; if (!P) continue;
-      const T = MD.ai.teamUp(p.probs.claude, P), bw2 = MD.ai.blendFor(app, "ai-picks");
+      const T = MD.ai.teamUp(p.probs.claude, P, PW), bw2 = MD.ai.blendFor(app, "ai-picks");
       p.probs.lead = p.probs.claude; p.probs.panel = Object.assign({ spread: Math.round(T.spread) }, P.by); p.panelEvidence = P.evidence; p.panelRisks = P.risks;
       p.probs.claude = Math.round(T.upPct); p.upPct = p.probs.model != null ? bw2.wClaude * T.upPct + (1 - bw2.wClaude) * p.probs.model : T.upPct; p.probs.blended = Math.round(p.upPct);
       p.confidence = Math.max(0, p.confidence - MD.ai.disagreementPenalty(T.spread));
@@ -12352,7 +12389,7 @@ Reply with ONLY JSON:
       const mid = (p.moveLow + p.moveHigh) / 2;
       const f = { assetId: p.asset.id, asset: p.asset, symbol: p.symbol, source: "ai-picks", pickSetId: set.id, horizonDays: p.timeframeDays, dueAt: Date.now() + p.timeframeDays * 864e5, priceAtCreation: p.priceAtPick, currency: p.currency, priceSource: p.priceSource, thesis: p.why.join(" "), flatBandPct: 1 };
       if (p.lean === "either") Object.assign(f, { direction: "move", movePct: +p.moveLow.toFixed(1), probability: 0.5 + p.confidence / 400 });
-      else { const size = p.upPct != null ? (p.lean === "up" ? p.ifUpPct : p.ifDownPct) || mid : mid; Object.assign(f, { direction: p.lean, probability: p.leanProbabilityPct / 100, upProbability: p.upPct != null ? p.upPct / 100 : null, claudeUpPct: p.probs ? p.probs.claude : null, modelUpPct: p.probs ? p.probs.model : null, reviewerUpPct: p.probs && p.probs.reviewer != null ? p.probs.reviewer : null, mlUpPct: p.probs && p.probs.ml != null ? p.probs.ml : null, target: +(p.priceAtPick * (1 + (p.lean === "up" ? 1 : -1) * size / 100)).toPrecision(6) }); }
+      else { const size = p.upPct != null ? (p.lean === "up" ? p.ifUpPct : p.ifDownPct) || mid : mid; Object.assign(f, { direction: p.lean, probability: p.leanProbabilityPct / 100, upProbability: p.upPct != null ? p.upPct / 100 : null, claudeUpPct: p.probs ? p.probs.claude : null, modelUpPct: p.probs ? p.probs.model : null, reviewerUpPct: p.probs && p.probs.reviewer != null ? p.probs.reviewer : null, leadUpPct: p.probs && p.probs.panel && p.probs.lead != null ? p.probs.lead : null, panelUpPct: p.probs && p.probs.panel ? { fundamentals: p.probs.panel.fundamentals ?? null, quant: p.probs.panel.quant ?? null, news: p.probs.panel.news ?? null } : null, mlUpPct: p.probs && p.probs.ml != null ? p.probs.ml : null, target: +(p.priceAtPick * (1 + (p.lean === "up" ? 1 : -1) * size / 100)).toPrecision(6) }); }
       await app.store.create("forecasts", f);
     }
   }
