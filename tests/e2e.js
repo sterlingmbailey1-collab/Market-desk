@@ -44,6 +44,8 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
   check("dashboard shows what's new, with links, until dismissed", /What's new/i.test(await page.locator("#content").innerText()) && await page.locator(".whatsnew a").count() === 6);
   await page.click(".whatsnew button:has-text('Got it')"); await page.waitForTimeout(200);
   check("what's new stays dismissed", await page.locator(".whatsnew").count() === 0 && await page.evaluate(() => MD.app.ls.get("whatsNew") === 42));
+  check("data saver is on by default: live prices off, no ticker tape, no background checks", await page.evaluate(() => MD.app.settings.dataSaver === true && MD.app.settings.liveRate === 0 && MD.app.settings.tape === false) && await page.locator("#tape .tk").count() === 0);
+  await page.evaluate(() => MD.app.saveSettings({ tape: true })); await page.waitForTimeout(2500);
   check("ticker tape shows markets and opens them", await page.locator("#tape .tape-set").first().locator(".tk").count() >= 8, String(await page.locator("#tape .tk").count()));
   check("account storage selected", await page.locator("text=Saved to account").count() > 0);
 

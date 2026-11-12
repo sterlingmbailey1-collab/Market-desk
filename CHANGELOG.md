@@ -1,5 +1,15 @@
 # Changelog
 
+## Version 45 (2026-11-12)
+- **Data saver, on by default.** Every live price update and background check is a paid Exa request, so now:
+  - live prices start off (pick a speed next to any price to turn them on)
+  - the ticker tape is off
+  - no automatic background checks run: price alerts, forecast scoring, open-call checks, the daily digest, paper
+    auto-sells and the Market Brain's study.
+
+  Each can be switched back on: Settings → Data saver, the ticker-tape box, or the live-speed control. This is
+  applied once to existing settings too.
+
 ## Version 44 (2026-10-26)
 - **Set mix on every recommendation set.** One line shows:
   - how many picks are NYSE and how many Nasdaq (plus crypto)

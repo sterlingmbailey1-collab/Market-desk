@@ -16,7 +16,7 @@
     assumptions: { stockExitPct: 0.05, cryptoExitPct: 0.5, metalSpreadPct: 3, cardFeePct: 13, cardShipping: 5, fxSpreadMajorPct: 0.1, fxSpreadOtherPct: 1, riskFreePct: 4, inflationPct: 2.5 },
     betting: { oddsFormat: "american", bankroll: 1000, unit: 10, kelly: 0.25, minEdge: 1 },
     profile: { risk: "mid", horizon: "mid", goals: "", avoid: "", income: false },
-    customCurrencies: [], dashboard: ["brief", "today", "brain", "aistatus", "changes", "portfolio", "paper", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], brainAuto: true, universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
+    customCurrencies: [], dashboard: ["brief", "today", "brain", "aistatus", "changes", "portfolio", "paper", "fx", "watch", "alerts", "catalysts", "smart", "betting", "data"], brainAuto: true, dataSaver: true, universe: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSM", "ASML", "NVO", "TM"]
   };
   const ls = { get(k, d) { try { const v = localStorage.getItem("mdp." + k); return v ? JSON.parse(v) : d; } catch { return d; } }, set(k, v) { try { localStorage.setItem("mdp." + k, JSON.stringify(v)); } catch {} } };
 
@@ -40,6 +40,9 @@
       if (!app.settings.dashboard.includes(card)) { const i = card === "brief" ? 0 : card === "brain" || card === "today" ? Math.min(1, app.settings.dashboard.length) : card === "aistatus" ? Math.min(2, app.settings.dashboard.length) : app.settings.dashboard.indexOf("data"); app.settings.dashboard.splice(i < 0 ? app.settings.dashboard.length : i, 0, card); }
       app.settings.dashSeen = (app.settings.dashSeen || []).concat(card);
     }
+    // Data saver (v45), applied once: live prices start off, no ticker tape, no background checks. Every live
+    // update and background check is a paid Exa request; each can be switched back on.
+    if (!app.settings.dataSaverSet) Object.assign(app.settings, { dataSaver: true, liveRate: 0, tape: false, dataSaverSet: true });
     applySettings();
   }
   let saveTimer = null;
@@ -541,25 +544,26 @@ Request: "${q.replace(/"/g, "'")}"`, { modelTier: "quick" });
     app.on("settings", () => { renderTop(); if (app.settings.tape !== tapeOn) { tapeOn = app.settings.tape; renderTape(); } });
     rates.refresh().catch(() => {});
     D.onActivity(() => { const p = U.$("#livePill"); if (p) p.title = "Last data request " + new Date().toLocaleTimeString(); });
-    setInterval(() => { if (!document.hidden) app.checkAlerts(false).catch(() => {}); }, 120000);
-    setTimeout(() => app.checkAlerts(false).catch(() => {}), 8000);
+    const quiet = () => app.settings.dataSaver !== false;
+    setInterval(() => { if (!document.hidden && !quiet()) app.checkAlerts(false).catch(() => {}); }, 120000);
+    setTimeout(() => { if (!quiet()) app.checkAlerts(false).catch(() => {}); }, 8000);
     // Keep every AI's track record current: score due forecasts quietly while the page is open.
-    const autoScore = () => { if (app.demo || !D.available() || document.hidden || !MD.ai) return; MD.ai.scoreDue(app, { max: 12 }).then(r => { if (r.scored) { app.emit("data:evals"); if (app.settings.notify.toasts) U.toast("Scored " + r.scored + " due forecast" + (r.scored > 1 ? "s" : ""), "See Deep Research → Forecast journal for the AI scorecard."); } }).catch(() => {}); };
+    const autoScore = () => { if (quiet() || app.demo || !D.available() || document.hidden || !MD.ai) return; MD.ai.scoreDue(app, { max: 12 }).then(r => { if (r.scored) { app.emit("data:evals"); if (app.settings.notify.toasts) U.toast("Scored " + r.scored + " due forecast" + (r.scored > 1 ? "s" : ""), "See Deep Research → Forecast journal for the AI scorecard."); } }).catch(() => {}); };
     setTimeout(autoScore, 20000); setInterval(autoScore, 30 * 60e3);
     // Every two hours, price the open AI calls and tell the inbox once when one turns clearly for or against its call.
     const autoCalls = () => {
-      if (app.demo || !D.available() || document.hidden || !MD.ai || app.settings.callWatch === false || Date.now() - (app.ls.get("callmon.at", 0) || 0) < 2 * 3600e3) return;
+      if (quiet() || app.demo || !D.available() || document.hidden || !MD.ai || app.settings.callWatch === false || Date.now() - (app.ls.get("callmon.at", 0) || 0) < 2 * 3600e3) return;
       app.ls.set("callmon.at", Date.now()); MD.ai.monitorCalls(app, { max: 20 }).then(r => { if (r.sent.length && app.settings.notify.toasts) U.toast(r.sent.length + " open AI call" + (r.sent.length > 1 ? "s" : "") + " moved clearly", "See Alerts & Research Inbox."); }).catch(() => {});
     };
     setTimeout(autoCalls, 70000); setInterval(autoCalls, 30 * 60e3);
     // Once a session has been studied, the Market Brain studies each new session after the close.
     // Once a day after 6 a.m. New York time, the daily digest goes to the inbox (Today's Game Plan has the switch).
-    const autoDigest = () => { if (MD.today) MD.today.autoDigest(app).then(d => { if (d) renderNav(); }).catch(() => {}); };
+    const autoDigest = () => { if (!quiet() && MD.today) MD.today.autoDigest(app).then(d => { if (d) renderNav(); }).catch(() => {}); };
     setTimeout(autoDigest, 30000); setInterval(autoDigest, 30 * 60e3);
     // Auto-followed paper positions are sold once their pick's window ends.
-    const autoPaper = () => { if (MD.paper && !document.hidden && D.available()) MD.paper.autoExit(app).then(s => { if (s.length && app.settings.notify.toasts) U.toast("Paper account: " + s.length + " auto-followed pick" + (s.length > 1 ? "s" : "") + " sold at the end of the window"); }).catch(() => {}); };
+    const autoPaper = () => { if (!quiet() && MD.paper && !document.hidden && D.available()) MD.paper.autoExit(app).then(s => { if (s.length && app.settings.notify.toasts) U.toast("Paper account: " + s.length + " auto-followed pick" + (s.length > 1 ? "s" : "") + " sold at the end of the window"); }).catch(() => {}); };
     setTimeout(autoPaper, 40000); setInterval(autoPaper, 30 * 60e3);
-    const autoBrain = () => { if (MD.brain) MD.brain.autoStudy(app).catch(() => {}); };
+    const autoBrain = () => { if (!quiet() && MD.brain) MD.brain.autoStudy(app).catch(() => {}); };
     setTimeout(autoBrain, 45000); setInterval(autoBrain, 30 * 60e3);
     try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => renderView()); } catch {}
     new MutationObserver(() => { if (app.settings.theme === "system") { app._hostTheme = document.documentElement.getAttribute("data-theme"); renderView(); } }).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });

@@ -368,7 +368,8 @@ ${rows.map(r => `<tr><td>${esc(r.p.symbol)} — ${esc(r.p.name)}</td><td>${esc(r
     } else if (tab === "access") {
       const fs = h("input", { type: "range", min: "0.85", max: "1.4", step: "0.05", value: String(s.fontScale) }), rm = h("input", { type: "checkbox", checked: s.reduceMotion }), tp = h("input", { type: "checkbox", checked: s.tape !== false });
       fs.oninput = () => app.saveSettings({ fontScale: Number(fs.value) }); rm.onchange = () => app.saveSettings({ reduceMotion: rm.checked }); tp.onchange = () => app.saveSettings({ tape: tp.checked });
-      body.append(h("div", { class: "form" }, U.field("Text size", fs), h("label", { class: "chk" }, rm, "Reduce motion"), h("label", { class: "chk" }, tp, "Show the market ticker tape")), h("h3", {}, "Keyboard shortcuts"), U.table([{ t: "Keys", v: 0 }, { t: "Action", v: 1 }], app.SHORTCUTS));
+      const ds = h("input", { type: "checkbox", checked: s.dataSaver !== false, onchange: () => app.saveSettings({ dataSaver: ds.checked }) });
+      body.append(h("div", { class: "form" }, U.field("Text size", fs), h("label", { class: "chk" }, rm, "Reduce motion"), h("label", { class: "chk" }, tp, "Show the market ticker tape"), h("label", { class: "chk" }, ds, "Data saver: no automatic background checks (price alerts, forecast scoring, open-call checks, daily digest, paper auto-sells, Market Brain study). They run only when you open them. Every check is a paid Exa request.")), h("h3", {}, "Keyboard shortcuts"), U.table([{ t: "Keys", v: 0 }, { t: "Action", v: 1 }], app.SHORTCUTS));
     }
   };
 })(typeof window !== "undefined" ? window : globalThis);
